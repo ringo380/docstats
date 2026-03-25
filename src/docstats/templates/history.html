@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Search History - docstats{% endblock %}
+{% block content %}
+<h2>Search History</h2>
+
+{% if not entries %}
+<p><em>No search history yet. Searches from both the CLI and web UI appear here.</em></p>
+{% else %}
+<div style="overflow-x: auto;">
+<table class="results-table striped">
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Search Parameters</th>
+            <th>Results</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for entry in entries %}
+        <tr>
+            <td>{{ entry.searched_at.strftime("%Y-%m-%d %H:%M") if entry.searched_at else "" }}</td>
+            <td>
+                {% for k, v in entry.query_params.items() %}
+                {% if k not in ("version", "limit", "skip") %}
+                <code>{{ k }}={{ v }}</code>
+                {% endif %}
+                {% endfor %}
+            </td>
+            <td>{{ entry.result_count }}</td>
+            <td>
+                <a href="/?{{ entry.query_params | urlencode }}" role="button" class="outline secondary" style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">Re-run</a>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}
