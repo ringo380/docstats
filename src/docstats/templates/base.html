@@ -75,6 +75,22 @@
     <main class="container">
         {% block content %}{% endblock %}
     </main>
+    <script>
+    document.addEventListener('htmx:responseError', function(e) {
+        var target = e.detail.target;
+        if (!target) return;
+        var status = e.detail.xhr ? e.detail.xhr.status : 0;
+        var msg;
+        if (status === 0) {
+            msg = 'Network error. Check your connection and try again.';
+        } else if (status === 408 || status === 504) {
+            msg = 'The request timed out. The NPI Registry may be slow \u2014 try again.';
+        } else {
+            msg = 'Something went wrong (error ' + status + '). Please try again.';
+        }
+        target.innerHTML = '<div class="flash flash-error">' + msg + '</div>';
+    });
+    </script>
     <footer class="container">
         <small>docstats &mdash; NPI Registry lookup for HMO referrals. Data from <a href="https://npiregistry.cms.hhs.gov/" target="_blank">CMS NPPES</a>.</small>
     </footer>

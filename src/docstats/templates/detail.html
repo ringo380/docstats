@@ -1,6 +1,10 @@
 {% extends "base.html" %}
-{% block title %}{{ result.display_name }} - docstats{% endblock %}
+{% block title %}{% if result %}{{ result.display_name }} - {% endif %}docstats{% endblock %}
 {% block content %}
+{% if error %}
+<div class="flash flash-error">{{ error }}</div>
+<a href="/" role="button" class="outline secondary">Back to Search</a>
+{% else %}
 <hgroup>
     <h2>{{ result.display_name }}</h2>
     <p>
@@ -103,5 +107,6 @@
         </tbody>
     </table>
 </div>
+{% endif %}
 {% endif %}
 {% endblock %}
