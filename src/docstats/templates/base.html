@@ -88,7 +88,10 @@
         } else {
             msg = 'Something went wrong (error ' + status + '). Please try again.';
         }
-        target.innerHTML = '<div class="flash flash-error">' + msg + '</div>';
+        var div = document.createElement('div');
+        div.className = 'flash flash-error';
+        div.textContent = msg;
+        target.replaceChildren(div);
     });
     </script>
     <footer class="container">
