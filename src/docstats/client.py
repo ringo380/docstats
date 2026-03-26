@@ -149,6 +149,10 @@ class NPPESClient:
             raise NPPESError(
                 "The NPI Registry is temporarily unavailable. Please try again."
             ) from e
+        except httpx.TimeoutException as e:
+            raise NPPESError(
+                "The NPI Registry took too long to respond. Please try again."
+            ) from e
         except httpx.RequestError as e:
             raise NPPESError(
                 "Could not reach the NPI Registry. Check your internet connection and try again."

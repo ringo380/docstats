@@ -271,6 +271,8 @@ document.querySelectorAll('input[name="entity_mode"]').forEach(function(radio) {
 document.querySelector('form').addEventListener('htmx:beforeRequest', function(e) {
     // Only clear for the main search submit, not for suggestion fetches
     if (e.detail.target && e.detail.target.id === 'results') {
+        document.getElementById('results').innerHTML =
+            '<div style="text-align: center; padding: 2rem;"><span aria-busy="true">Searching the NPI Registry\u2026</span></div>';
         ['suggest-first', 'suggest-name', 'suggest-org', 'suggest-specialty'].forEach(clearSuggestions);
     }
 });
