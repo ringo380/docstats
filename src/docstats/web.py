@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+import os
+import secrets
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response as StarletteResponse
 
 from docstats.cache import ResponseCache
 from docstats.client import NPPESClient, NPPESError
@@ -24,6 +28,55 @@ app = FastAPI(title="docstats", description="NPI Registry lookup for HMO referra
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+
+# --- Pre-launch protections ---
+
+BASIC_AUTH_USER = os.environ.get("DOCSTATS_AUTH_USER", "")
+BASIC_AUTH_PASS = os.environ.get("DOCSTATS_AUTH_PASS", "")
+
+
+class PreLaunchMiddleware(BaseHTTPMiddleware):
+    """Block search engines and optionally require basic auth."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Basic auth gate (only when credentials are configured)
+        if BASIC_AUTH_USER and BASIC_AUTH_PASS:
+            import base64
+
+            auth = request.headers.get("authorization", "")
+            if not auth.startswith("Basic "):
+                return StarletteResponse(
+                    status_code=401,
+                    headers={"WWW-Authenticate": 'Basic realm="docstats"'},
+                )
+            try:
+                decoded = base64.b64decode(auth.split(" ", 1)[1]).decode()
+                user, passwd = decoded.split(":", 1)
+            except Exception:
+                return StarletteResponse(
+                    status_code=401,
+                    headers={"WWW-Authenticate": 'Basic realm="docstats"'},
+                )
+            if not (secrets.compare_digest(user, BASIC_AUTH_USER)
+                    and secrets.compare_digest(passwd, BASIC_AUTH_PASS)):
+                return StarletteResponse(
+                    status_code=401,
+                    headers={"WWW-Authenticate": 'Basic realm="docstats"'},
+                )
+
+        response = await call_next(request)
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        return response
+
+
+app.add_middleware(PreLaunchMiddleware)
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots_txt():
+    """Block all crawlers while in development."""
+    return "User-agent: *\nDisallow: /\n"
+
 
 # US state codes for the search form dropdown
 US_STATES = [
