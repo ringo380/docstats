@@ -26,6 +26,36 @@
         .htmx-request .htmx-indicator { display: inline-block; }
         .htmx-request.htmx-indicator { display: inline-block; }
         nav .active { font-weight: 700; }
+        .autocomplete-wrap { position: relative; }
+        .suggestion-list {
+            position: absolute;
+            z-index: 100;
+            top: 100%;
+            left: 0;
+            right: 0;
+            max-height: 260px;
+            overflow-y: auto;
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            background: var(--pico-card-background-color);
+            border: 1px solid var(--pico-muted-border-color);
+            border-top: none;
+            border-radius: 0 0 var(--pico-border-radius) var(--pico-border-radius);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            display: none;
+        }
+        .suggestion-list:not(:empty) { display: block; }
+        .suggestion-list li {
+            padding: 0.5rem 0.75rem;
+            cursor: pointer;
+            font-size: 0.9rem;
+            border-bottom: 1px solid var(--pico-muted-border-color);
+        }
+        .suggestion-list li:last-child { border-bottom: none; }
+        .suggestion-list li:hover,
+        .suggestion-list li.active { background: var(--pico-primary-focus); }
+        .suggestion-list li small { color: var(--pico-muted-color); }
     </style>
 </head>
 <body>

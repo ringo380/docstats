@@ -26,7 +26,18 @@
         <div class="grid">
             <label>
                 First Name
-                <input type="text" name="first" placeholder="John" value="{{ q.first or '' }}">
+                <div class="autocomplete-wrap">
+                    <input type="text" name="first" placeholder="John" value="{{ q.first or '' }}"
+                           hx-get="/api/suggest/names"
+                           hx-trigger="input changed delay:300ms[this.value.length >= 2]"
+                           hx-target="#suggest-first"
+                           hx-swap="innerHTML"
+                           hx-vals='js:{"q": this.value, "field": "first_name"}'
+                           hx-params="none"
+                           autocomplete="off"
+                           role="combobox" aria-expanded="false" aria-controls="suggest-first">
+                    <ul id="suggest-first" class="suggestion-list" role="listbox"></ul>
+                </div>
             </label>
             <label style="max-width: 140px;">
                 Middle
@@ -34,7 +45,18 @@
             </label>
             <label>
                 Last Name
-                <input type="text" name="name" placeholder="Smith" value="{{ q.name or '' }}">
+                <div class="autocomplete-wrap">
+                    <input type="text" name="name" placeholder="Smith" value="{{ q.name or '' }}"
+                           hx-get="/api/suggest/names"
+                           hx-trigger="input changed delay:300ms[this.value.length >= 2]"
+                           hx-target="#suggest-name"
+                           hx-swap="innerHTML"
+                           hx-vals='js:{"q": this.value, "field": "last_name"}'
+                           hx-params="none"
+                           autocomplete="off"
+                           role="combobox" aria-expanded="false" aria-controls="suggest-name">
+                    <ul id="suggest-name" class="suggestion-list" role="listbox"></ul>
+                </div>
             </label>
         </div>
     </div>
@@ -43,14 +65,32 @@
     <div id="fields-organization" style="display: none;">
         <label>
             Organization Name
-            <input type="text" name="org" placeholder="Kaiser Permanente" value="{{ q.org or '' }}">
+            <div class="autocomplete-wrap">
+                <input type="text" name="org" placeholder="Kaiser Permanente" value="{{ q.org or '' }}"
+                       hx-get="/api/suggest/names"
+                       hx-trigger="input changed delay:300ms[this.value.length >= 2]"
+                       hx-target="#suggest-org"
+                       hx-swap="innerHTML"
+                       hx-vals='js:{"q": this.value, "field": "organization_name"}'
+                       hx-params="none"
+                       autocomplete="off"
+                       role="combobox" aria-expanded="false" aria-controls="suggest-org">
+                <ul id="suggest-org" class="suggestion-list" role="listbox"></ul>
+            </div>
         </label>
     </div>
 
     <!-- Shared fields: specialty + location -->
     <label>
         Specialty
-        <input type="text" name="specialty" placeholder="Orthopedic Surgery, Family Medicine, etc." value="{{ q.specialty or '' }}">
+        <div class="autocomplete-wrap">
+            <input type="text" name="specialty" id="specialty-input"
+                   placeholder="Orthopedic Surgery, Family Medicine, etc."
+                   value="{{ q.specialty or '' }}"
+                   autocomplete="off"
+                   role="combobox" aria-expanded="false" aria-controls="suggest-specialty">
+            <ul id="suggest-specialty" class="suggestion-list" role="listbox"></ul>
+        </div>
     </label>
 
     <div class="grid">
@@ -101,23 +141,141 @@
 </div>
 
 <script>
-// Entity type toggle: show/hide individual vs organization fields
+// --- Autocomplete engine (reusable for all fields) ---
+function initAutocomplete(inputEl, listEl) {
+    var activeIdx = -1;
+
+    function getItems() { return listEl.querySelectorAll('li'); }
+
+    function setActive(idx) {
+        var items = getItems();
+        items.forEach(function(li) { li.classList.remove('active'); });
+        activeIdx = idx;
+        if (idx >= 0 && idx < items.length) {
+            items[idx].classList.add('active');
+            items[idx].scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    function selectItem(li) {
+        inputEl.value = li.dataset.value;
+        listEl.innerHTML = '';
+        inputEl.setAttribute('aria-expanded', 'false');
+        if (li.dataset.extra) {
+            var extra = JSON.parse(li.dataset.extra);
+            Object.keys(extra).forEach(function(name) {
+                var field = document.querySelector('[name="' + name + '"]');
+                if (field) field.value = extra[name];
+            });
+        }
+    }
+
+    function dismiss() {
+        listEl.innerHTML = '';
+        inputEl.setAttribute('aria-expanded', 'false');
+        activeIdx = -1;
+    }
+
+    inputEl.addEventListener('keydown', function(e) {
+        var items = getItems();
+        if (!items.length) return;
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setActive(Math.min(activeIdx + 1, items.length - 1));
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setActive(Math.max(activeIdx - 1, 0));
+        } else if (e.key === 'Enter' && activeIdx >= 0) {
+            e.preventDefault();
+            selectItem(items[activeIdx]);
+        } else if (e.key === 'Escape') {
+            dismiss();
+        }
+    });
+
+    listEl.addEventListener('click', function(e) {
+        var li = e.target.closest('li');
+        if (li) selectItem(li);
+    });
+
+    // Reset active index when htmx swaps new suggestions
+    listEl.addEventListener('htmx:afterSwap', function() {
+        activeIdx = -1;
+        inputEl.setAttribute('aria-expanded', getItems().length > 0 ? 'true' : 'false');
+    });
+
+    // Clear suggestions when input drops below 2 chars
+    inputEl.addEventListener('input', function() {
+        if (inputEl.value.length < 2) dismiss();
+    });
+
+    // Dismiss on outside click (delay lets click-on-suggestion register)
+    document.addEventListener('mousedown', function(e) {
+        if (!inputEl.contains(e.target) && !listEl.contains(e.target)) {
+            dismiss();
+        }
+    });
+}
+
+// --- Init autocomplete on name/org fields ---
+initAutocomplete(document.querySelector('[name="first"]'), document.getElementById('suggest-first'));
+initAutocomplete(document.querySelector('[name="name"]'), document.getElementById('suggest-name'));
+initAutocomplete(document.querySelector('[name="org"]'), document.getElementById('suggest-org'));
+
+// --- Specialty: client-side filtering from static taxonomy list ---
+var taxonomies = [];
+var specialtyInput = document.getElementById('specialty-input');
+var specialtyList = document.getElementById('suggest-specialty');
+
+fetch('/api/taxonomies')
+    .then(function(r) { return r.json(); })
+    .then(function(data) { taxonomies = data; });
+
+function renderSpecialtySuggestions(q) {
+    if (q.length < 2) { specialtyList.innerHTML = ''; return; }
+    var lower = q.toLowerCase();
+    var matches = taxonomies.filter(function(t) { return t.toLowerCase().indexOf(lower) !== -1; }).slice(0, 10);
+    specialtyList.innerHTML = matches.map(function(m) {
+        return '<li role="option" data-value="' + m.replace(/"/g, '&quot;') + '"><strong>' + m + '</strong></li>';
+    }).join('');
+    specialtyInput.setAttribute('aria-expanded', matches.length > 0 ? 'true' : 'false');
+}
+
+specialtyInput.addEventListener('input', function() {
+    renderSpecialtySuggestions(this.value.trim());
+});
+
+initAutocomplete(specialtyInput, specialtyList);
+
+// --- Entity type toggle ---
+function clearSuggestions(id) { document.getElementById(id).innerHTML = ''; }
+
 document.querySelectorAll('input[name="entity_mode"]').forEach(function(radio) {
     radio.addEventListener('change', function(e) {
         var isInd = e.target.value === 'individual';
         document.getElementById('fields-individual').style.display = isInd ? '' : 'none';
         document.getElementById('fields-organization').style.display = isInd ? 'none' : '';
         document.getElementById('entity-type').value = isInd ? 'NPI-1' : 'NPI-2';
-        // Clear hidden fields so stale values aren't submitted
         if (isInd) {
-            document.querySelector('#fields-organization input').value = '';
+            document.querySelector('#fields-organization input[name="org"]').value = '';
+            clearSuggestions('suggest-org');
         } else {
             document.querySelectorAll('#fields-individual input').forEach(function(i) { i.value = ''; });
+            clearSuggestions('suggest-first');
+            clearSuggestions('suggest-name');
         }
     });
 });
 
-// ZIP code autofill: type 5 digits → auto-populate city and state
+// Clear all suggestion dropdowns on form submit
+document.querySelector('form').addEventListener('htmx:beforeRequest', function(e) {
+    // Only clear for the main search submit, not for suggestion fetches
+    if (e.detail.target && e.detail.target.id === 'results') {
+        ['suggest-first', 'suggest-name', 'suggest-org', 'suggest-specialty'].forEach(clearSuggestions);
+    }
+});
+
+// --- ZIP code autofill ---
 document.getElementById('zip-input').addEventListener('input', function(e) {
     var zip = e.target.value.replace(/\D/g, '');
     var hint = document.getElementById('zip-hint');
