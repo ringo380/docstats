@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}{{ result.display_name }} - docstats{% endblock %}
+{% block content %}
+<hgroup>
+    <h2>{{ result.display_name }}</h2>
+    <p>
+        {% if result.is_individual %}
+        <span class="badge-ind">Individual</span>
+        {% else %}
+        <span class="badge-org">Organization</span>
+        {% endif %}
+        &mdash; NPI: <strong>{{ result.number }}</strong>
+        &mdash; Status: {{ result.status }}
+        {% if result.enumeration_date %}
+        &mdash; Enumerated: {{ result.enumeration_date }}
+        {% endif %}
+    </p>
+</hgroup>
+
+<div style="margin-bottom: 1.5rem;">
+    <span id="save-btn">
+        {% include "_save_button.html" %}
+    </span>
+    <a href="/provider/{{ result.number }}/export" role="button" class="outline">Export Referral</a>
+    <a href="/" role="button" class="outline secondary">Back to Search</a>
+</div>
+
+{% if saved_notes %}
+<div class="flash flash-success">
+    <strong>Saved</strong> &mdash; Notes: {{ saved_notes }}
+</div>
+{% endif %}
+
+{% if result.taxonomies %}
+<div class="detail-section">
+    <h3>Specialties</h3>
+    <table class="results-table">
+        <thead>
+            <tr><th>Specialty</th><th>Code</th><th>License</th><th>State</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for t in result.taxonomies %}
+            <tr>
+                <td {% if t.primary %}class="taxonomy-primary"{% endif %}>{{ t.desc }}</td>
+                <td><code>{{ t.code }}</code></td>
+                <td>{{ t.license or "" }}</td>
+                <td>{{ t.state or "" }}</td>
+                <td>{% if t.primary %}Primary{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if result.addresses %}
+<div class="detail-section">
+    <h3>Addresses</h3>
+    {% for addr in result.addresses %}
+    <div class="address-block">
+        <div class="address-label">{{ addr.address_purpose }}</div>
+        <div>{{ addr.address_1 }}</div>
+        {% if addr.address_2 %}<div>{{ addr.address_2 }}</div>{% endif %}
+        <div>{{ addr.city }}, {{ addr.state }} {{ addr.formatted_postal }}</div>
+        {% if addr.formatted_phone %}<div>Phone: {{ addr.formatted_phone }}</div>{% endif %}
+        {% if addr.formatted_fax %}<div>Fax: {{ addr.formatted_fax }}</div>{% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if result.other_names %}
+<div class="detail-section">
+    <h3>Other Names</h3>
+    <ul>
+        {% for name in result.other_names %}
+        <li>
+            {% if name.organization_name %}
+            {{ name.organization_name }}
+            {% elif name.first_name or name.last_name %}
+            {{ name.first_name or "" }} {{ name.last_name or "" }}
+            {% endif %}
+            {% if name.type %}<small>({{ name.type }})</small>{% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if result.identifiers %}
+<div class="detail-section">
+    <h3>Identifiers</h3>
+    <table class="results-table">
+        <thead><tr><th>Type</th><th>Identifier</th><th>State</th></tr></thead>
+        <tbody>
+            {% for ident in result.identifiers %}
+            <tr>
+                <td>{{ ident.get("desc", ident.get("code", "")) }}</td>
+                <td><code>{{ ident.get("identifier", "") }}</code></td>
+                <td>{{ ident.get("state", "") }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

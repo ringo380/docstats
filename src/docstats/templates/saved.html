@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Saved Providers - docstats{% endblock %}
+{% block content %}
+<h2>Saved Providers</h2>
+
+{% if not providers %}
+<p><em>No saved providers yet. Search for providers and save them for quick reference.</em></p>
+{% else %}
+<div style="overflow-x: auto;">
+<table class="results-table striped">
+    <thead>
+        <tr>
+            <th>NPI</th>
+            <th>Type</th>
+            <th>Name</th>
+            <th>Specialty</th>
+            <th>Location</th>
+            <th>Phone</th>
+            <th>Notes</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for p in providers %}
+        <tr id="saved-row-{{ p.npi }}">
+            <td><a href="/provider/{{ p.npi }}">{{ p.npi }}</a></td>
+            <td>
+                {% if p.entity_type == "Individual" %}
+                <span class="badge-ind">Ind</span>
+                {% else %}
+                <span class="badge-org">Org</span>
+                {% endif %}
+            </td>
+            <td><a href="/provider/{{ p.npi }}">{{ p.display_name }}</a></td>
+            <td>{{ p.specialty or "" }}</td>
+            <td>
+                {% if p.address_city and p.address_state %}
+                {{ p.address_city }}, {{ p.address_state }}
+                {% endif %}
+            </td>
+            <td>{{ p.phone or "" }}</td>
+            <td>{{ p.notes or "" }}</td>
+            <td>
+                <div style="display: flex; gap: 0.25rem;">
+                    <a href="/provider/{{ p.npi }}/export" role="button" class="outline secondary" style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">Export</a>
+                    <button
+                        hx-delete="/provider/{{ p.npi }}/save"
+                        hx-target="#saved-row-{{ p.npi }}"
+                        hx-swap="outerHTML"
+                        class="outline secondary"
+                        style="padding: 0.25rem 0.5rem; font-size: 0.8rem;"
+                    >Remove</button>
+                </div>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

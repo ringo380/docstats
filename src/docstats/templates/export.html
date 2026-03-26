@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Export - {{ result.display_name }} - docstats{% endblock %}
+{% block content %}
+<h2>Referral Export</h2>
+<p>{{ result.display_name }} (NPI: {{ result.number }})</p>
+
+<div class="export-block" id="export-text">{{ export_text }}</div>
+
+<div style="margin-top: 1rem;">
+    <button onclick="navigator.clipboard.writeText(document.getElementById('export-text').textContent).then(() => { this.textContent = 'Copied!'; setTimeout(() => this.textContent = 'Copy to Clipboard', 2000); })">Copy to Clipboard</button>
+    <a href="/provider/{{ result.number }}/export/text" role="button" class="outline">Download as Text</a>
+    <a href="/provider/{{ result.number }}" role="button" class="outline secondary">Back to Detail</a>
+</div>
+{% endblock %}

@@ -1,0 +1,371 @@
+"""FastAPI web application for docstats."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.templating import Jinja2Templates
+
+from docstats.cache import ResponseCache
+from docstats.client import NPPESClient, NPPESError
+from docstats.formatting import referral_export
+from docstats.scoring import SearchQuery, rank_results
+from docstats.storage import Storage, get_db_path
+
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="docstats", description="NPI Registry lookup for HMO referrals")
+
+TEMPLATE_DIR = Path(__file__).parent / "templates"
+templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+
+# US state codes for the search form dropdown
+US_STATES = [
+    ("AL", "Alabama"), ("AK", "Alaska"), ("AZ", "Arizona"), ("AR", "Arkansas"),
+    ("CA", "California"), ("CO", "Colorado"), ("CT", "Connecticut"), ("DE", "Delaware"),
+    ("FL", "Florida"), ("GA", "Georgia"), ("HI", "Hawaii"), ("ID", "Idaho"),
+    ("IL", "Illinois"), ("IN", "Indiana"), ("IA", "Iowa"), ("KS", "Kansas"),
+    ("KY", "Kentucky"), ("LA", "Louisiana"), ("ME", "Maine"), ("MD", "Maryland"),
+    ("MA", "Massachusetts"), ("MI", "Michigan"), ("MN", "Minnesota"), ("MS", "Mississippi"),
+    ("MO", "Missouri"), ("MT", "Montana"), ("NE", "Nebraska"), ("NV", "Nevada"),
+    ("NH", "New Hampshire"), ("NJ", "New Jersey"), ("NM", "New Mexico"), ("NY", "New York"),
+    ("NC", "North Carolina"), ("ND", "North Dakota"), ("OH", "Ohio"), ("OK", "Oklahoma"),
+    ("OR", "Oregon"), ("PA", "Pennsylvania"), ("RI", "Rhode Island"), ("SC", "South Carolina"),
+    ("SD", "South Dakota"), ("TN", "Tennessee"), ("TX", "Texas"), ("UT", "Utah"),
+    ("VT", "Vermont"), ("VA", "Virginia"), ("WA", "Washington"), ("WV", "West Virginia"),
+    ("WI", "Wisconsin"), ("WY", "Wyoming"), ("DC", "District of Columbia"),
+]
+
+# --- Dependency injection ---
+
+_storage: Storage | None = None
+_client: NPPESClient | None = None
+
+
+def get_storage() -> Storage:
+    global _storage
+    if _storage is None:
+        _storage = Storage()
+    return _storage
+
+
+def get_client() -> NPPESClient:
+    global _client
+    if _client is None:
+        db_path = get_db_path()
+        cache = ResponseCache(db_path)
+        _client = NPPESClient(cache=cache)
+    return _client
+
+
+# --- Routes ---
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    """Landing page with search form."""
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "active_page": "search",
+        "states": US_STATES,
+        "q": {},
+        "initial_results": False,
+    })
+
+
+@app.get("/search", response_class=HTMLResponse)
+async def search(
+    request: Request,
+    name: str = Query("", alias="name"),
+    first: str = Query("", alias="first"),
+    middle: str = Query("", alias="middle"),
+    org: str = Query("", alias="org"),
+    specialty: str = Query("", alias="specialty"),
+    city: str = Query("", alias="city"),
+    state: str = Query("", alias="state"),
+    zip: str = Query("", alias="zip"),
+    type: str = Query("", alias="type"),
+    limit: int = Query(10, alias="limit"),
+    storage: Storage = Depends(get_storage),
+    client: NPPESClient = Depends(get_client),
+):
+    """Search providers -- returns partial HTML for htmx."""
+    name = name.strip()
+    first = first.strip()
+    middle = middle.strip()
+    org = org.strip()
+    specialty = specialty.strip()
+    city = city.strip()
+    state = state.strip()
+    zip = zip.strip()
+
+    def _error(msg: str):
+        return templates.TemplateResponse("_results.html", {
+            "request": request,
+            "error": msg,
+            "results": None,
+            "result_count": 0,
+        })
+
+    # Validate: need at least one real search field
+    if not any([name, first, org, specialty, city, zip]):
+        return _error("Please fill in at least one search field.")
+
+    # Validate: can't mix individual and org fields
+    if (name or first) and org:
+        return _error(
+            "Cannot search by individual name and organization name at the same time. "
+            "Use the Individual or Organization toggle to switch modes."
+        )
+
+    try:
+        response = client.search(
+            last_name=name or None,
+            first_name=first or None,
+            organization_name=org or None,
+            taxonomy_description=specialty or None,
+            city=city or None,
+            state=state or None,
+            postal_code=zip or None,
+            enumeration_type=type or None,
+            limit=limit,
+        )
+    except NPPESError as e:
+        return _error(str(e))
+
+    # Log search to history using form field names so re-run links work
+    params: dict[str, str] = {}
+    if name:
+        params["name"] = name
+    if first:
+        params["first"] = first
+    if org:
+        params["org"] = org
+    if specialty:
+        params["specialty"] = specialty
+    if state:
+        params["state"] = state
+    if city:
+        params["city"] = city
+    if zip:
+        params["zip"] = zip
+    if type:
+        params["type"] = type
+    storage.log_search(params, response.result_count)
+
+    # Rank results by relevance (middle name is used here, not sent to API)
+    query = SearchQuery(
+        last_name=name or None,
+        first_name=first or None,
+        middle_name=middle or None,
+        organization_name=org or None,
+        specialty=specialty or None,
+        city=city or None,
+        state=state or None,
+        postal_code=zip or None,
+    )
+    ranked = rank_results(response.results, query)
+
+    return templates.TemplateResponse("_results.html", {
+        "request": request,
+        "results": ranked,
+        "result_count": response.result_count,
+        "error": None,
+    })
+
+
+@app.get("/api/zip/{code}")
+async def zip_lookup(
+    code: str,
+    storage: Storage = Depends(get_storage),
+):
+    """Return city/state for a ZIP code (used by frontend autofill)."""
+    result = storage.lookup_zip(code)
+    if result:
+        return JSONResponse({"city": result["city"], "state": result["state"]})
+    return JSONResponse({"city": None, "state": None})
+
+
+@app.get("/provider/{npi}", response_class=HTMLResponse)
+async def provider_detail(
+    request: Request,
+    npi: str,
+    storage: Storage = Depends(get_storage),
+    client: NPPESClient = Depends(get_client),
+):
+    """Show full provider detail."""
+    saved = storage.get_provider(npi)
+    saved_notes = None
+
+    if saved:
+        result = saved.to_npi_result()
+        saved_notes = saved.notes
+    else:
+        try:
+            result = client.lookup(npi)
+        except NPPESError as e:
+            return templates.TemplateResponse("detail.html", {
+                "request": request,
+                "active_page": "search",
+                "result": None,
+                "error": str(e),
+                "is_saved": False,
+                "saved_notes": None,
+            })
+        if result is None:
+            return HTMLResponse(
+                content=f"<main class='container'><p>No provider found for NPI {npi}.</p>"
+                        f"<a href='/'>Back to Search</a></main>",
+                status_code=404,
+            )
+
+    return templates.TemplateResponse("detail.html", {
+        "request": request,
+        "active_page": "search",
+        "result": result,
+        "is_saved": saved is not None,
+        "npi": npi,
+        "saved_notes": saved_notes,
+    })
+
+
+@app.post("/provider/{npi}/save", response_class=HTMLResponse)
+async def save_provider(
+    request: Request,
+    npi: str,
+    storage: Storage = Depends(get_storage),
+    client: NPPESClient = Depends(get_client),
+):
+    """Save a provider -- returns button partial for htmx swap."""
+    saved = storage.get_provider(npi)
+    if saved:
+        return templates.TemplateResponse("_save_button.html", {
+            "request": request,
+            "is_saved": True,
+            "npi": npi,
+        })
+
+    try:
+        result = client.lookup(npi)
+    except NPPESError:
+        result = None
+
+    if result:
+        storage.save_provider(result)
+        return templates.TemplateResponse("_save_button.html", {
+            "request": request,
+            "is_saved": True,
+            "npi": npi,
+        })
+
+    # Lookup failed -- don't claim it was saved
+    return HTMLResponse(
+        content='<span style="color: #c62828;">Could not look up this provider. Try again.</span>'
+    )
+
+
+@app.delete("/provider/{npi}/save", response_class=HTMLResponse)
+async def remove_provider(
+    request: Request,
+    npi: str,
+    storage: Storage = Depends(get_storage),
+):
+    """Remove a saved provider -- returns button partial for htmx swap."""
+    storage.delete_provider(npi)
+
+    hx_target = request.headers.get("hx-target", "")
+    if hx_target.startswith("#saved-row-"):
+        return HTMLResponse(content="")
+
+    return templates.TemplateResponse("_save_button.html", {
+        "request": request,
+        "is_saved": False,
+        "npi": npi,
+    })
+
+
+@app.get("/saved", response_class=HTMLResponse)
+async def saved_list(
+    request: Request,
+    storage: Storage = Depends(get_storage),
+):
+    """List saved providers."""
+    providers = storage.list_providers()
+    return templates.TemplateResponse("saved.html", {
+        "request": request,
+        "active_page": "saved",
+        "providers": providers,
+    })
+
+
+@app.get("/provider/{npi}/export", response_class=HTMLResponse)
+async def export_view(
+    request: Request,
+    npi: str,
+    storage: Storage = Depends(get_storage),
+    client: NPPESClient = Depends(get_client),
+):
+    """Show referral export page."""
+    saved = storage.get_provider(npi)
+    if saved:
+        result = saved.to_npi_result()
+    else:
+        try:
+            result = client.lookup(npi)
+        except NPPESError as e:
+            return HTMLResponse(content=f"<p>Error: {e}</p>", status_code=500)
+        if result is None:
+            return HTMLResponse(content=f"<p>No provider found for NPI {npi}.</p>", status_code=404)
+
+    export_text = referral_export(result)
+
+    return templates.TemplateResponse("export.html", {
+        "request": request,
+        "active_page": "search",
+        "result": result,
+        "export_text": export_text,
+    })
+
+
+@app.get("/provider/{npi}/export/text")
+async def export_text(
+    npi: str,
+    storage: Storage = Depends(get_storage),
+    client: NPPESClient = Depends(get_client),
+):
+    """Download referral summary as plain text."""
+    saved = storage.get_provider(npi)
+    if saved:
+        result = saved.to_npi_result()
+    else:
+        try:
+            result = client.lookup(npi)
+        except NPPESError as e:
+            return PlainTextResponse(content=f"Error: {e}", status_code=500)
+        if result is None:
+            return PlainTextResponse(content=f"No provider found for NPI {npi}.", status_code=404)
+
+    text = referral_export(result)
+    return PlainTextResponse(
+        content=text,
+        headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
+    )
+
+
+@app.get("/history", response_class=HTMLResponse)
+async def history(
+    request: Request,
+    limit: int = Query(50),
+    storage: Storage = Depends(get_storage),
+):
+    """Show search history."""
+    entries = storage.get_history(limit=limit)
+    return templates.TemplateResponse("history.html", {
+        "request": request,
+        "active_page": "history",
+        "entries": entries,
+    })

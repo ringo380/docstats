@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Search - docstats{% endblock %}
+{% block content %}
+<h2>Provider Search</h2>
+
+<form hx-get="/search" hx-target="#results" hx-indicator="#search-spinner">
+
+    <!-- Entity type toggle -->
+    <fieldset>
+        <legend><strong>Search for:</strong></legend>
+        <div role="group">
+            <label>
+                <input type="radio" name="entity_mode" value="individual" checked>
+                Individual Provider
+            </label>
+            <label>
+                <input type="radio" name="entity_mode" value="organization">
+                Organization / Facility
+            </label>
+        </div>
+    </fieldset>
+    <input type="hidden" name="type" id="entity-type" value="NPI-1">
+
+    <!-- Individual name fields -->
+    <div id="fields-individual">
+        <div class="grid">
+            <label>
+                First Name
+                <input type="text" name="first" placeholder="John" value="{{ q.first or '' }}">
+            </label>
+            <label style="max-width: 140px;">
+                Middle
+                <input type="text" name="middle" placeholder="A" value="{{ q.middle or '' }}" maxlength="20">
+            </label>
+            <label>
+                Last Name
+                <input type="text" name="name" placeholder="Smith" value="{{ q.name or '' }}">
+            </label>
+        </div>
+    </div>
+
+    <!-- Organization name field -->
+    <div id="fields-organization" style="display: none;">
+        <label>
+            Organization Name
+            <input type="text" name="org" placeholder="Kaiser Permanente" value="{{ q.org or '' }}">
+        </label>
+    </div>
+
+    <!-- Shared fields: specialty + location -->
+    <label>
+        Specialty
+        <input type="text" name="specialty" placeholder="Orthopedic Surgery, Family Medicine, etc." value="{{ q.specialty or '' }}">
+    </label>
+
+    <div class="grid">
+        <label>
+            ZIP Code
+            <input type="text" name="zip" id="zip-input" placeholder="94110" value="{{ q.zip or '' }}" maxlength="5" inputmode="numeric">
+            <small id="zip-hint" style="display: none; color: var(--pico-primary);"></small>
+        </label>
+        <label>
+            City
+            <input type="text" name="city" id="city-input" placeholder="San Francisco" value="{{ q.city or '' }}">
+        </label>
+        <label>
+            State
+            <select name="state" id="state-select">
+                <option value="">Any State</option>
+                {% for code, label in states %}
+                <option value="{{ code }}" {% if q.state == code %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </label>
+    </div>
+
+    <div class="grid">
+        <label>
+            Max Results
+            <select name="limit">
+                <option value="10" {% if q.limit == "10" %}selected{% endif %}>10</option>
+                <option value="25" {% if q.limit == "25" %}selected{% endif %}>25</option>
+                <option value="50" {% if q.limit == "50" %}selected{% endif %}>50</option>
+                <option value="100" {% if q.limit == "100" %}selected{% endif %}>100</option>
+            </select>
+        </label>
+        <div></div>
+        <div style="display: flex; align-items: end;">
+            <button type="submit" style="width: 100%;">
+                Search
+                <span id="search-spinner" class="htmx-indicator" aria-busy="true"></span>
+            </button>
+        </div>
+    </div>
+</form>
+
+<div id="results">
+    {% if initial_results %}
+    {% include "_results.html" %}
+    {% endif %}
+</div>
+
+<script>
+// Entity type toggle: show/hide individual vs organization fields
+document.querySelectorAll('input[name="entity_mode"]').forEach(function(radio) {
+    radio.addEventListener('change', function(e) {
+        var isInd = e.target.value === 'individual';
+        document.getElementById('fields-individual').style.display = isInd ? '' : 'none';
+        document.getElementById('fields-organization').style.display = isInd ? 'none' : '';
+        document.getElementById('entity-type').value = isInd ? 'NPI-1' : 'NPI-2';
+        // Clear hidden fields so stale values aren't submitted
+        if (isInd) {
+            document.querySelector('#fields-organization input').value = '';
+        } else {
+            document.querySelectorAll('#fields-individual input').forEach(function(i) { i.value = ''; });
+        }
+    });
+});
+
+// ZIP code autofill: type 5 digits → auto-populate city and state
+document.getElementById('zip-input').addEventListener('input', function(e) {
+    var zip = e.target.value.replace(/\D/g, '');
+    var hint = document.getElementById('zip-hint');
+    if (zip.length === 5) {
+        fetch('/api/zip/' + zip)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.city) {
+                    document.getElementById('city-input').value = data.city;
+                    document.getElementById('state-select').value = data.state;
+                    hint.textContent = data.city + ', ' + data.state;
+                    hint.style.display = '';
+                } else {
+                    hint.style.display = 'none';
+                }
+            })
+            .catch(function() { hint.style.display = 'none'; });
+    } else {
+        hint.style.display = 'none';
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}docstats{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <style>
+        :root {
+            --pico-font-size: 93.75%;
+        }
+        .badge-ind { color: #2e7d32; font-weight: 600; }
+        .badge-org { color: #1565c0; font-weight: 600; }
+        .results-table td, .results-table th { padding: 0.5rem 0.75rem; font-size: 0.9rem; }
+        .detail-section { margin-bottom: 1.5rem; }
+        .detail-section h3 { margin-bottom: 0.5rem; border-bottom: 1px solid var(--pico-muted-border-color); padding-bottom: 0.25rem; }
+        .address-block { margin-bottom: 1rem; padding-left: 1rem; border-left: 3px solid var(--pico-primary); }
+        .address-label { font-weight: 600; font-size: 0.85rem; color: var(--pico-muted-color); text-transform: uppercase; }
+        .taxonomy-primary { font-weight: 600; }
+        .export-block { white-space: pre-wrap; font-family: monospace; background: var(--pico-card-background-color); padding: 1rem; border-radius: var(--pico-border-radius); border: 1px solid var(--pico-muted-border-color); }
+        .flash { padding: 0.75rem 1rem; border-radius: var(--pico-border-radius); margin-bottom: 1rem; }
+        .flash-success { background: #e8f5e9; color: #2e7d32; }
+        .flash-error { background: #ffebee; color: #c62828; }
+        .htmx-indicator { display: none; }
+        .htmx-request .htmx-indicator { display: inline-block; }
+        .htmx-request.htmx-indicator { display: inline-block; }
+        nav .active { font-weight: 700; }
+    </style>
+</head>
+<body>
+    <header class="container">
+        <nav>
+            <ul>
+                <li><a href="/"><strong>docstats</strong></a></li>
+            </ul>
+            <ul>
+                <li><a href="/" {% if active_page == "search" %}class="active"{% endif %}>Search</a></li>
+                <li><a href="/saved" {% if active_page == "saved" %}class="active"{% endif %}>Saved</a></li>
+                <li><a href="/history" {% if active_page == "history" %}class="active"{% endif %}>History</a></li>
+            </ul>
+        </nav>
+    </header>
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+    <footer class="container">
+        <small>docstats &mdash; NPI Registry lookup for HMO referrals. Data from <a href="https://npiregistry.cms.hhs.gov/" target="_blank">CMS NPPES</a>.</small>
+    </footer>
+</body>
+</html>
