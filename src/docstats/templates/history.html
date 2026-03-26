@@ -22,14 +22,14 @@
             <td>{{ entry.searched_at.strftime("%Y-%m-%d %H:%M") if entry.searched_at else "" }}</td>
             <td>
                 {% for k, v in entry.query_params.items() %}
-                {% if k not in ("version", "limit", "skip") %}
+                {% if k not in ("type", "limit") %}
                 <code>{{ k }}={{ v }}</code>
                 {% endif %}
                 {% endfor %}
             </td>
             <td>{{ entry.result_count }}</td>
             <td>
-                <a href="/?{{ entry.query_params | urlencode }}" role="button" class="outline secondary" style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">Re-run</a>
+                <a href="/search?{{ entry.query_params | urlencode }}" hx-get="/search?{{ entry.query_params | urlencode }}" hx-target="#results" hx-push-url="/" role="button" class="outline secondary" style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">Re-run</a>
             </td>
         </tr>
         {% endfor %}

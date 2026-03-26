@@ -137,24 +137,24 @@ async def search(
     except NPPESError as e:
         return _error(str(e))
 
-    # Log search to history
+    # Log search to history using form field names so re-run links work
     params: dict[str, str] = {}
     if name:
-        params["last_name"] = name
+        params["name"] = name
     if first:
-        params["first_name"] = first
+        params["first"] = first
     if org:
-        params["organization_name"] = org
+        params["org"] = org
     if specialty:
-        params["taxonomy_description"] = specialty
+        params["specialty"] = specialty
     if state:
         params["state"] = state
     if city:
         params["city"] = city
     if zip:
-        params["postal_code"] = zip
+        params["zip"] = zip
     if type:
-        params["enumeration_type"] = type
+        params["type"] = type
     storage.log_search(params, response.result_count)
 
     # Rank results by relevance (middle name is used here, not sent to API)
@@ -256,12 +256,16 @@ async def save_provider(
 
     if result:
         storage.save_provider(result)
+        return templates.TemplateResponse("_save_button.html", {
+            "request": request,
+            "is_saved": True,
+            "npi": npi,
+        })
 
-    return templates.TemplateResponse("_save_button.html", {
-        "request": request,
-        "is_saved": True,
-        "npi": npi,
-    })
+    # Lookup failed -- don't claim it was saved
+    return HTMLResponse(
+        content='<span style="color: #c62828;">Could not look up this provider. Try again.</span>'
+    )
 
 
 @app.delete("/provider/{npi}/save", response_class=HTMLResponse)
@@ -274,7 +278,7 @@ async def remove_provider(
     storage.delete_provider(npi)
 
     hx_target = request.headers.get("hx-target", "")
-    if hx_target.startswith("saved-row-"):
+    if hx_target.startswith("#saved-row-"):
         return HTMLResponse(content="")
 
     return templates.TemplateResponse("_save_button.html", {
