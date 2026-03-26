@@ -29,6 +29,12 @@ app = FastAPI(title="docstats", description="NPI Registry lookup for HMO referra
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
+
+def _render(name: str, context: dict) -> Response:
+    """Render a template, compatible with Starlette 0.50+."""
+    request = context["request"]
+    return templates.TemplateResponse(request, name, context)
+
 # --- Pre-launch protections ---
 
 BASIC_AUTH_USER = os.environ.get("DOCSTATS_AUTH_USER", "")
@@ -70,6 +76,12 @@ class PreLaunchMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(PreLaunchMiddleware)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return HTMLResponse(content="Internal Server Error", status_code=500)
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
@@ -123,7 +135,7 @@ def get_client() -> NPPESClient:
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Landing page with search form."""
-    return templates.TemplateResponse("index.html", {
+    return _render("index.html", {
         "request": request,
         "active_page": "search",
         "states": US_STATES,
@@ -159,7 +171,7 @@ async def search(
     zip = zip.strip()
 
     def _error(msg: str):
-        return templates.TemplateResponse("_results.html", {
+        return _render("_results.html", {
             "request": request,
             "error": msg,
             "results": None,
@@ -225,7 +237,7 @@ async def search(
     )
     ranked = rank_results(response.results, query)
 
-    return templates.TemplateResponse("_results.html", {
+    return _render("_results.html", {
         "request": request,
         "results": ranked,
         "result_count": response.result_count,
@@ -308,7 +320,7 @@ async def suggest_names(
         if len(suggestions) >= 8:
             break
 
-    return templates.TemplateResponse("_suggestions.html", {
+    return _render("_suggestions.html", {
         "request": request,
         "suggestions": suggestions,
     })
@@ -341,7 +353,7 @@ async def provider_detail(
         try:
             result = client.lookup(npi)
         except NPPESError as e:
-            return templates.TemplateResponse("detail.html", {
+            return _render("detail.html", {
                 "request": request,
                 "active_page": "search",
                 "result": None,
@@ -356,7 +368,7 @@ async def provider_detail(
                 status_code=404,
             )
 
-    return templates.TemplateResponse("detail.html", {
+    return _render("detail.html", {
         "request": request,
         "active_page": "search",
         "result": result,
@@ -376,7 +388,7 @@ async def save_provider(
     """Save a provider -- returns button partial for htmx swap."""
     saved = storage.get_provider(npi)
     if saved:
-        return templates.TemplateResponse("_save_button.html", {
+        return _render("_save_button.html", {
             "request": request,
             "is_saved": True,
             "npi": npi,
@@ -389,7 +401,7 @@ async def save_provider(
 
     if result:
         storage.save_provider(result)
-        return templates.TemplateResponse("_save_button.html", {
+        return _render("_save_button.html", {
             "request": request,
             "is_saved": True,
             "npi": npi,
@@ -414,7 +426,7 @@ async def remove_provider(
     if hx_target.startswith("#saved-row-"):
         return HTMLResponse(content="")
 
-    return templates.TemplateResponse("_save_button.html", {
+    return _render("_save_button.html", {
         "request": request,
         "is_saved": False,
         "npi": npi,
@@ -428,7 +440,7 @@ async def saved_list(
 ):
     """List saved providers."""
     providers = storage.list_providers()
-    return templates.TemplateResponse("saved.html", {
+    return _render("saved.html", {
         "request": request,
         "active_page": "saved",
         "providers": providers,
@@ -456,7 +468,7 @@ async def export_view(
 
     export_text = referral_export(result)
 
-    return templates.TemplateResponse("export.html", {
+    return _render("export.html", {
         "request": request,
         "active_page": "search",
         "result": result,
@@ -497,7 +509,7 @@ async def history(
 ):
     """Show search history."""
     entries = storage.get_history(limit=limit)
-    return templates.TemplateResponse("history.html", {
+    return _render("history.html", {
         "request": request,
         "active_page": "history",
         "entries": entries,
