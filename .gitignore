@@ -16,3 +16,4 @@ venv/
 .browser-pilot/
 .claude/
 CLAUDE.md
+.worktrees/
