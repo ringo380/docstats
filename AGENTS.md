@@ -32,6 +32,10 @@
 ## Gotchas
 - SQLite connections need `check_same_thread=False` for FastAPI/uvicorn
 - SQLite WAL mode (`PRAGMA journal_mode=WAL`) required for concurrent CLI+web access
+- SQLite FK enforcement is off by default — `PRAGMA foreign_keys = ON` must be set per-connection (after WAL pragma in `Storage.__init__`)
+- `INSERT OR REPLACE` triggers FK cascade deletes on the replaced row — use `INSERT ... ON CONFLICT(col) DO UPDATE SET ...` upsert to preserve child rows
+- Same-second SQLite timestamps make `ORDER BY created_at DESC` non-deterministic in tests — always include `id DESC` as a tiebreaker
+- Route ordering in `web.py` matters: specific routes (e.g., `/referral-lists/{id}/export`) must be declared before parameterized routes (`/referral-lists/{id}`) or FastAPI matches the wrong one
 - htmx `HX-Target` header includes the `#` prefix from CSS selectors
 - Pydantic `basic` field is a dict (not typed) because NPI-1 and NPI-2 have incompatible schemas — use `parsed_basic()` method
 - Starlette 0.50+ changed `TemplateResponse` signature — use `_render()` helper in `web.py` instead of calling `templates.TemplateResponse()` directly
