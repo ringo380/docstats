@@ -39,6 +39,7 @@ def _render(name: str, context: dict) -> Response:
 
 BASIC_AUTH_USER = os.environ.get("DOCSTATS_AUTH_USER", "")
 BASIC_AUTH_PASS = os.environ.get("DOCSTATS_AUTH_PASS", "")
+MAPBOX_TOKEN = os.environ.get("MAPBOX_PUBLIC_TOKEN", "")
 
 
 class PreLaunchMiddleware(BaseHTTPMiddleware):
@@ -141,6 +142,7 @@ async def index(request: Request):
         "states": US_STATES,
         "q": {},
         "initial_results": False,
+        "mapbox_token": MAPBOX_TOKEN,
     })
 
 

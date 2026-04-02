@@ -93,6 +93,20 @@
         </div>
     </label>
 
+    {% if mapbox_token %}
+    <label>
+        Location
+        <div class="autocomplete-wrap">
+            <input type="text" id="location-input"
+                   placeholder="Start typing an address, city, or ZIP&hellip;"
+                   autocomplete="off"
+                   role="combobox" aria-expanded="false" aria-controls="suggest-location">
+            <ul id="suggest-location" class="suggestion-list" role="listbox"></ul>
+        </div>
+        <small style="color: var(--pico-muted-color);">Fills city, state &amp; ZIP below</small>
+    </label>
+    {% endif %}
+
     <div class="grid">
         <label>
             ZIP Code
@@ -273,9 +287,75 @@ document.querySelector('form').addEventListener('htmx:beforeRequest', function(e
     if (e.detail.target && e.detail.target.id === 'results') {
         document.getElementById('results').innerHTML =
             '<div style="text-align: center; padding: 2rem;"><span aria-busy="true">Searching the NPI Registry\u2026</span></div>';
-        ['suggest-first', 'suggest-name', 'suggest-org', 'suggest-specialty'].forEach(clearSuggestions);
+        ['suggest-first', 'suggest-name', 'suggest-org', 'suggest-specialty', 'suggest-location'].forEach(clearSuggestions);
     }
 });
+
+// --- Location autocomplete (Mapbox Geocoding) ---
+{% if mapbox_token %}
+(function() {
+    var token = {{ mapbox_token | tojson }};
+    var locationInput = document.getElementById('location-input');
+    var locationList = document.getElementById('suggest-location');
+    var geoCoords = null;
+    var geoRequested = false;
+    var debounceTimer = null;
+
+    initAutocomplete(locationInput, locationList);
+
+    locationInput.addEventListener('focus', function() {
+        if (!geoRequested && navigator.geolocation) {
+            geoRequested = true;
+            navigator.geolocation.getCurrentPosition(
+                function(pos) { geoCoords = pos.coords.longitude + ',' + pos.coords.latitude; },
+                function() {}
+            );
+        }
+    });
+
+    function escapeHtml(str) {
+        var d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+
+    locationInput.addEventListener('input', function() {
+        var q = this.value.trim();
+        clearTimeout(debounceTimer);
+        if (q.length < 2) return;
+        debounceTimer = setTimeout(function() {
+            var url = 'https://api.mapbox.com/geocoding/v5/mapbox.places/'
+                + encodeURIComponent(q) + '.json'
+                + '?access_token=' + encodeURIComponent(token)
+                + '&country=us&types=address,place,postcode&limit=6';
+            if (geoCoords) url += '&proximity=' + encodeURIComponent(geoCoords);
+            fetch(url)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data.features || !data.features.length) {
+                        locationList.innerHTML = '';
+                        return;
+                    }
+                    locationList.innerHTML = data.features.map(function(f) {
+                        var city = '', state = '', zip = '';
+                        (f.context || []).forEach(function(c) {
+                            if (c.id.indexOf('place.') === 0) city = c.text;
+                            if (c.id.indexOf('region.') === 0) state = (c.short_code || '').replace('US-', '');
+                            if (c.id.indexOf('postcode.') === 0) zip = c.text;
+                        });
+                        if (!city && f.place_type && f.place_type.indexOf('place') !== -1) city = f.text;
+                        var extra = JSON.stringify({city: city, state: state, zip: zip});
+                        return '<li role="option" data-value="" data-extra=\''
+                            + extra.replace(/'/g, '&#39;') + '\'>'
+                            + '<strong>' + escapeHtml(f.place_name) + '</strong></li>';
+                    }).join('');
+                    locationInput.setAttribute('aria-expanded', 'true');
+                })
+                .catch(function() {});
+        }, 300);
+    });
+})();
+{% endif %}
 
 // --- ZIP code autofill ---
 document.getElementById('zip-input').addEventListener('input', function(e) {
