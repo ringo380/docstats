@@ -262,7 +262,7 @@ specialtyInput.addEventListener('input', function() {
 initAutocomplete(specialtyInput, specialtyList);
 
 // --- Entity type toggle ---
-function clearSuggestions(id) { document.getElementById(id).innerHTML = ''; }
+function clearSuggestions(id) { var el = document.getElementById(id); if (el) el.innerHTML = ''; }
 
 document.querySelectorAll('input[name="entity_mode"]').forEach(function(radio) {
     radio.addEventListener('change', function(e) {
@@ -313,12 +313,6 @@ document.querySelector('form').addEventListener('htmx:beforeRequest', function(e
         }
     });
 
-    function escapeHtml(str) {
-        var d = document.createElement('div');
-        d.textContent = str;
-        return d.innerHTML;
-    }
-
     locationInput.addEventListener('input', function() {
         var q = this.value.trim();
         clearTimeout(debounceTimer);
@@ -332,24 +326,28 @@ document.querySelector('form').addEventListener('htmx:beforeRequest', function(e
             fetch(url)
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
-                    if (!data.features || !data.features.length) {
-                        locationList.innerHTML = '';
-                        return;
-                    }
-                    locationList.innerHTML = data.features.map(function(f) {
-                        var city = '', state = '', zip = '';
-                        (f.context || []).forEach(function(c) {
-                            if (c.id.indexOf('place.') === 0) city = c.text;
-                            if (c.id.indexOf('region.') === 0) state = (c.short_code || '').replace('US-', '');
-                            if (c.id.indexOf('postcode.') === 0) zip = c.text;
+                    locationList.innerHTML = '';
+                    if (data.features && data.features.length) {
+                        data.features.forEach(function(f) {
+                            var city = '', state = '', zip = '';
+                            (f.context || []).forEach(function(c) {
+                                if (c.id.indexOf('place.') === 0) city = c.text;
+                                if (c.id.indexOf('region.') === 0) state = (c.short_code || '').replace('US-', '');
+                                if (c.id.indexOf('postcode.') === 0) zip = c.text;
+                            });
+                            if (!city && f.place_type && f.place_type.indexOf('place') !== -1) city = f.text;
+                            if (!zip && f.place_type && f.place_type.indexOf('postcode') !== -1) zip = f.text;
+                            var li = document.createElement('li');
+                            li.setAttribute('role', 'option');
+                            li.dataset.value = f.place_name;
+                            li.dataset.extra = JSON.stringify({city: city, state: state, zip: zip});
+                            var strong = document.createElement('strong');
+                            strong.textContent = f.place_name;
+                            li.appendChild(strong);
+                            locationList.appendChild(li);
                         });
-                        if (!city && f.place_type && f.place_type.indexOf('place') !== -1) city = f.text;
-                        var extra = JSON.stringify({city: city, state: state, zip: zip});
-                        return '<li role="option" data-value="" data-extra=\''
-                            + extra.replace(/'/g, '&#39;') + '\'>'
-                            + '<strong>' + escapeHtml(f.place_name) + '</strong></li>';
-                    }).join('');
-                    locationInput.setAttribute('aria-expanded', 'true');
+                    }
+                    locationList.dispatchEvent(new Event('htmx:afterSwap'));
                 })
                 .catch(function() {});
         }, 300);
