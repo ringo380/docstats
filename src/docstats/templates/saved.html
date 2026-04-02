@@ -4,7 +4,10 @@
 <h2>Saved Providers</h2>
 
 {% if not providers %}
-<p><em>No saved providers yet. Search for providers and save them for quick reference.</em></p>
+<div class="empty-state">
+    <p>No saved providers yet.</p>
+    <p><small>Search for providers and save them for quick reference.</small></p>
+</div>
 {% else %}
 <div style="overflow-x: auto;">
 <table class="results-table striped">

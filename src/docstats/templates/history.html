@@ -3,15 +3,38 @@
 {% block content %}
 <h2>Search History</h2>
 
+{% macro fmt_query(params) %}
+{%- set parts = [] -%}
+{%- if params.get("first") or params.get("name") -%}
+    {%- set name_parts = [] -%}
+    {%- if params.get("first") %}{% set _ = name_parts.append(params["first"]) %}{% endif -%}
+    {%- if params.get("name") %}{% set _ = name_parts.append(params["name"]) %}{% endif -%}
+    {%- set _ = parts.append(name_parts | join(" ")) -%}
+{%- endif -%}
+{%- if params.get("org") %}{% set _ = parts.append(params["org"]) %}{% endif -%}
+{%- if params.get("specialty") %}{% set _ = parts.append("\u2022 " + params["specialty"]) %}{% endif -%}
+{%- if params.get("city") and params.get("state") %}
+    {%- set _ = parts.append("\u2022 " + params["city"] + ", " + params["state"]) -%}
+{%- elif params.get("state") %}
+    {%- set _ = parts.append("\u2022 " + params["state"]) -%}
+{%- elif params.get("zip") %}
+    {%- set _ = parts.append("\u2022 ZIP " + params["zip"]) -%}
+{%- endif -%}
+{{ parts | join("  ") if parts else "—" }}
+{%- endmacro %}
+
 {% if not entries %}
-<p><em>No search history yet. Searches from both the CLI and web UI appear here.</em></p>
+<div class="empty-state">
+    <p>No search history yet.</p>
+    <p><small>Searches from both the CLI and web UI appear here.</small></p>
+</div>
 {% else %}
 <div style="overflow-x: auto;">
 <table class="results-table striped">
     <thead>
         <tr>
             <th>Date</th>
-            <th>Search Parameters</th>
+            <th>Search</th>
             <th>Results</th>
             <th></th>
         </tr>
@@ -19,14 +42,8 @@
     <tbody>
         {% for entry in entries %}
         <tr>
-            <td>{{ entry.searched_at.strftime("%Y-%m-%d %H:%M") if entry.searched_at else "" }}</td>
-            <td>
-                {% for k, v in entry.query_params.items() %}
-                {% if k not in ("type", "limit") %}
-                <code>{{ k }}={{ v }}</code>
-                {% endif %}
-                {% endfor %}
-            </td>
+            <td style="white-space: nowrap; color: var(--pico-muted-color); font-size: 0.85rem;">{{ entry.searched_at.strftime("%b %d, %H:%M") if entry.searched_at else "" }}</td>
+            <td>{{ fmt_query(entry.query_params) }}</td>
             <td>{{ entry.result_count }}</td>
             <td>
                 <a href="/search?{{ entry.query_params | urlencode }}" hx-get="/search?{{ entry.query_params | urlencode }}" hx-target="#results" hx-push-url="/" role="button" class="outline secondary" style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">Re-run</a>

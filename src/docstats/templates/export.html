@@ -1,14 +1,25 @@
 {% extends "base.html" %}
 {% block title %}Export - {{ result.display_name }} - docstats{% endblock %}
 {% block content %}
-<h2>Referral Export</h2>
-<p>{{ result.display_name }} (NPI: {{ result.number }})</p>
+<hgroup>
+    <h2>Referral Export</h2>
+    <p>
+        {{ result.display_name }}
+        {% if result.taxonomies %}
+        &mdash; {{ result.taxonomies[0].desc }}
+        {% endif %}
+        {% if result.addresses %}
+        &mdash; {{ result.addresses[0].city }}, {{ result.addresses[0].state }}
+        {% endif %}
+    </p>
+</hgroup>
 
+<div class="export-label">Referral Text</div>
 <div class="export-block" id="export-text">{{ export_text }}</div>
 
-<div style="margin-top: 1rem;">
-    <button onclick="navigator.clipboard.writeText(document.getElementById('export-text').textContent).then(() => { this.textContent = 'Copied!'; setTimeout(() => this.textContent = 'Copy to Clipboard', 2000); })">Copy to Clipboard</button>
+<div style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+    <button style="min-width: 11rem;" onclick="navigator.clipboard.writeText(document.getElementById('export-text').textContent).then(() => { this.textContent = 'Copied!'; setTimeout(() => this.textContent = 'Copy to Clipboard', 2000); })">Copy to Clipboard</button>
     <a href="/provider/{{ result.number }}/export/text" role="button" class="outline">Download as Text</a>
-    <a href="/provider/{{ result.number }}" role="button" class="outline secondary">Back to Detail</a>
+    <a href="/provider/{{ result.number }}" class="back-link" style="margin-left: auto;">&larr; Back to Detail</a>
 </div>
 {% endblock %}
