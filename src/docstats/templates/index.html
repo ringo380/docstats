@@ -21,44 +21,116 @@
     </fieldset>
     <input type="hidden" name="type" id="entity-type" value="NPI-1">
 
-    <!-- Individual name fields -->
+    <!-- Individual name fields + optional filters -->
     <div id="fields-individual">
-        <div class="grid">
-            <label>
-                First Name
-                <div class="autocomplete-wrap">
-                    <input type="text" name="first" placeholder="John" value="{{ q.first or '' }}"
-                           hx-get="/api/suggest/names"
-                           hx-trigger="input changed delay:300ms[this.value.length >= 2]"
-                           hx-target="#suggest-first"
-                           hx-swap="innerHTML"
-                           hx-vals='js:{"q": this.value, "field": "first_name"}'
-                           hx-params="none"
-                           autocomplete="off"
-                           role="combobox" aria-expanded="false" aria-controls="suggest-first">
-                    <ul id="suggest-first" class="suggestion-list" role="listbox"></ul>
-                </div>
-            </label>
-            <label style="max-width: 140px;">
-                Middle
-                <input type="text" name="middle" placeholder="A" value="{{ q.middle or '' }}" maxlength="20">
-            </label>
-            <label>
-                Last Name
-                <div class="autocomplete-wrap">
-                    <input type="text" name="name" placeholder="Smith" value="{{ q.name or '' }}"
-                           hx-get="/api/suggest/names"
-                           hx-trigger="input changed delay:300ms[this.value.length >= 2]"
-                           hx-target="#suggest-name"
-                           hx-swap="innerHTML"
-                           hx-vals='js:{"q": this.value, "field": "last_name"}'
-                           hx-params="none"
-                           autocomplete="off"
-                           role="combobox" aria-expanded="false" aria-controls="suggest-name">
-                    <ul id="suggest-name" class="suggestion-list" role="listbox"></ul>
-                </div>
-            </label>
+
+        <!-- Name mode: first / middle / last -->
+        <div id="ind-name-mode">
+            <div class="grid">
+                <label>
+                    First Name
+                    <div class="autocomplete-wrap">
+                        <input type="text" name="first" placeholder="John" value="{{ q.first or '' }}"
+                               hx-get="/api/suggest/names"
+                               hx-trigger="input changed delay:300ms[this.value.length >= 2]"
+                               hx-target="#suggest-first"
+                               hx-swap="innerHTML"
+                               hx-vals='js:{"q": this.value, "field": "first_name"}'
+                               hx-params="none"
+                               autocomplete="off"
+                               role="combobox" aria-expanded="false" aria-controls="suggest-first">
+                        <ul id="suggest-first" class="suggestion-list" role="listbox"></ul>
+                    </div>
+                </label>
+                <label style="max-width: 140px;">
+                    Middle
+                    <input type="text" name="middle" placeholder="A" value="{{ q.middle or '' }}" maxlength="20">
+                </label>
+                <label>
+                    Last Name
+                    <div class="autocomplete-wrap">
+                        <input type="text" name="name" placeholder="Smith" value="{{ q.name or '' }}"
+                               hx-get="/api/suggest/names"
+                               hx-trigger="input changed delay:300ms[this.value.length >= 2]"
+                               hx-target="#suggest-name"
+                               hx-swap="innerHTML"
+                               hx-vals='js:{"q": this.value, "field": "last_name"}'
+                               hx-params="none"
+                               autocomplete="off"
+                               role="combobox" aria-expanded="false" aria-controls="suggest-name">
+                        <ul id="suggest-name" class="suggestion-list" role="listbox"></ul>
+                    </div>
+                </label>
+            </div>
+            <div style="margin-top: 0.25rem;">
+                <small><a href="#" id="link-loc-mode" style="color: var(--pico-muted-color);">Search by location instead</a></small>
+            </div>
         </div>
+
+        <!-- Location fields (optional filter in name mode, or primary in location mode) -->
+        <div id="ind-loc-fields" style="display: none; margin-top: 0.5rem;">
+            {% if mapbox_token %}
+            <label>
+                Location
+                <div class="autocomplete-wrap">
+                    <input type="text" id="location-input"
+                           placeholder="Start typing an address, city, or ZIP&hellip;"
+                           autocomplete="off"
+                           role="combobox" aria-expanded="false" aria-controls="suggest-location">
+                    <ul id="suggest-location" class="suggestion-list" role="listbox"></ul>
+                </div>
+                <small style="color: var(--pico-muted-color);">Fills city, state &amp; ZIP below</small>
+            </label>
+            {% endif %}
+            <div class="grid">
+                <label>
+                    ZIP Code
+                    <input type="text" name="zip" id="zip-input" placeholder="94110" value="{{ q.zip or '' }}" maxlength="5" inputmode="numeric">
+                    <small id="zip-hint" style="display: none; color: var(--pico-primary);"></small>
+                </label>
+                <label>
+                    City
+                    <input type="text" name="city" id="city-input" placeholder="San Francisco" value="{{ q.city or '' }}">
+                </label>
+                <label>
+                    State
+                    <select name="state" id="state-select">
+                        <option value="">Any State</option>
+                        {% for code, label in states %}
+                        <option value="{{ code }}" {% if q.state == code %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+            </div>
+        </div>
+
+        <!-- "Search by name instead" link (only shown in location-primary mode) -->
+        <div id="ind-loc-mode-footer" style="display: none; margin-top: 0.25rem;">
+            <small><a href="#" id="link-name-mode" style="color: var(--pico-muted-color);">Search by name instead</a></small>
+        </div>
+
+        <!-- Optional specialty filter -->
+        <div id="filter-specialty" style="display: none; margin-top: 0.75rem;">
+            <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.25rem;">
+                <strong style="font-size: 0.9rem;">Specialty</strong>
+                <a href="#" id="btn-remove-specialty" style="font-size: 0.8rem; color: var(--pico-muted-color);">✕ Remove</a>
+            </div>
+            <div class="autocomplete-wrap">
+                <input type="text" name="specialty" id="specialty-input"
+                       placeholder="Orthopedic Surgery, Family Medicine, etc."
+                       value="{{ q.specialty or '' }}"
+                       autocomplete="off"
+                       role="combobox" aria-expanded="false" aria-controls="suggest-specialty">
+                <ul id="suggest-specialty" class="suggestion-list" role="listbox"></ul>
+            </div>
+        </div>
+
+        <!-- Filter add buttons -->
+        <div id="ind-filter-row" style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button type="button" id="btn-add-specialty" class="secondary outline" style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">+ Specialty</button>
+            <button type="button" id="btn-add-location" class="secondary outline" style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">+ Location</button>
+        </div>
+
     </div>
 
     <!-- Organization name field -->
@@ -77,54 +149,6 @@
                        role="combobox" aria-expanded="false" aria-controls="suggest-org">
                 <ul id="suggest-org" class="suggestion-list" role="listbox"></ul>
             </div>
-        </label>
-    </div>
-
-    <!-- Shared fields: specialty + location -->
-    <label>
-        Specialty
-        <div class="autocomplete-wrap">
-            <input type="text" name="specialty" id="specialty-input"
-                   placeholder="Orthopedic Surgery, Family Medicine, etc."
-                   value="{{ q.specialty or '' }}"
-                   autocomplete="off"
-                   role="combobox" aria-expanded="false" aria-controls="suggest-specialty">
-            <ul id="suggest-specialty" class="suggestion-list" role="listbox"></ul>
-        </div>
-    </label>
-
-    {% if mapbox_token %}
-    <label>
-        Location
-        <div class="autocomplete-wrap">
-            <input type="text" id="location-input"
-                   placeholder="Start typing an address, city, or ZIP&hellip;"
-                   autocomplete="off"
-                   role="combobox" aria-expanded="false" aria-controls="suggest-location">
-            <ul id="suggest-location" class="suggestion-list" role="listbox"></ul>
-        </div>
-        <small style="color: var(--pico-muted-color);">Fills city, state &amp; ZIP below</small>
-    </label>
-    {% endif %}
-
-    <div class="grid">
-        <label>
-            ZIP Code
-            <input type="text" name="zip" id="zip-input" placeholder="94110" value="{{ q.zip or '' }}" maxlength="5" inputmode="numeric">
-            <small id="zip-hint" style="display: none; color: var(--pico-primary);"></small>
-        </label>
-        <label>
-            City
-            <input type="text" name="city" id="city-input" placeholder="San Francisco" value="{{ q.city or '' }}">
-        </label>
-        <label>
-            State
-            <select name="state" id="state-select">
-                <option value="">Any State</option>
-                {% for code, label in states %}
-                <option value="{{ code }}" {% if q.state == code %}selected{% endif %}>{{ label }}</option>
-                {% endfor %}
-            </select>
         </label>
     </div>
 
@@ -273,12 +297,87 @@ document.querySelectorAll('input[name="entity_mode"]').forEach(function(radio) {
         if (isInd) {
             document.querySelector('#fields-organization input[name="org"]').value = '';
             clearSuggestions('suggest-org');
+            setIndMode('name');
+            setSpecialtyVisible(false);
         } else {
             document.querySelectorAll('#fields-individual input').forEach(function(i) { i.value = ''; });
             clearSuggestions('suggest-first');
             clearSuggestions('suggest-name');
         }
     });
+});
+
+// --- Individual search: name/location mode + optional specialty filter ---
+function setIndMode(mode) {
+    var nameSection = document.getElementById('ind-name-mode');
+    var locFields = document.getElementById('ind-loc-fields');
+    var locFooter = document.getElementById('ind-loc-mode-footer');
+    var btnAddLoc = document.getElementById('btn-add-location');
+
+    if (mode === 'location') {
+        nameSection.style.display = 'none';
+        locFields.style.display = '';
+        locFooter.style.display = '';
+        btnAddLoc.style.display = 'none';
+        document.querySelectorAll('#ind-name-mode input').forEach(function(i) { i.value = ''; });
+        clearSuggestions('suggest-first');
+        clearSuggestions('suggest-name');
+    } else {
+        nameSection.style.display = '';
+        locFields.style.display = 'none';
+        locFooter.style.display = 'none';
+        btnAddLoc.style.display = '';
+        var zipEl = document.getElementById('zip-input');
+        var cityEl = document.getElementById('city-input');
+        var stateEl = document.getElementById('state-select');
+        var hintEl = document.getElementById('zip-hint');
+        var locEl = document.getElementById('location-input');
+        if (zipEl) zipEl.value = '';
+        if (cityEl) cityEl.value = '';
+        if (stateEl) stateEl.value = '';
+        if (hintEl) hintEl.style.display = 'none';
+        if (locEl) { locEl.value = ''; clearSuggestions('suggest-location'); }
+    }
+}
+
+function setSpecialtyVisible(visible) {
+    var filterEl = document.getElementById('filter-specialty');
+    var btnAdd = document.getElementById('btn-add-specialty');
+    if (visible) {
+        filterEl.style.display = '';
+        btnAdd.style.display = 'none';
+    } else {
+        filterEl.style.display = 'none';
+        btnAdd.style.display = '';
+        var inp = document.getElementById('specialty-input');
+        if (inp) inp.value = '';
+        document.getElementById('suggest-specialty').innerHTML = '';
+    }
+}
+
+document.getElementById('link-loc-mode').addEventListener('click', function(e) {
+    e.preventDefault();
+    setIndMode('location');
+});
+
+document.getElementById('link-name-mode').addEventListener('click', function(e) {
+    e.preventDefault();
+    setIndMode('name');
+});
+
+document.getElementById('btn-add-specialty').addEventListener('click', function() {
+    setSpecialtyVisible(true);
+    document.getElementById('specialty-input').focus();
+});
+
+document.getElementById('btn-remove-specialty').addEventListener('click', function(e) {
+    e.preventDefault();
+    setSpecialtyVisible(false);
+});
+
+document.getElementById('btn-add-location').addEventListener('click', function() {
+    document.getElementById('ind-loc-fields').style.display = '';
+    document.getElementById('btn-add-location').style.display = 'none';
 });
 
 // Clear all suggestion dropdowns on form submit
@@ -354,6 +453,23 @@ document.querySelector('form').addEventListener('htmx:beforeRequest', function(e
     });
 })();
 {% endif %}
+
+// --- Page-load: auto-expand individual filters when values are pre-populated ---
+(function() {
+    var hasSpecialty = {{ (q.specialty or '') | tojson }} !== '';
+    var hasCity = {{ (q.city or '') | tojson }} !== '';
+    var hasZip = {{ (q.zip or '') | tojson }} !== '';
+    var hasName = {{ ((q.first or '') + (q.name or '')) | tojson }} !== '';
+    if (hasSpecialty) setSpecialtyVisible(true);
+    if (hasCity || hasZip) {
+        if (!hasName) {
+            setIndMode('location');
+        } else {
+            document.getElementById('ind-loc-fields').style.display = '';
+            document.getElementById('btn-add-location').style.display = 'none';
+        }
+    }
+})();
 
 // --- ZIP code autofill ---
 document.getElementById('zip-input').addEventListener('input', function(e) {
