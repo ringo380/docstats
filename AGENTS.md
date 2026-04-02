@@ -1,5 +1,8 @@
 # docstats
 
+<!-- This file mirrors CLAUDE.md for agents that read AGENTS.md instead (Codex, Gemini, etc.).
+     Keep in sync when updating CLAUDE.md. -->
+
 ## Build & Test
 - `pip install -e .` — install CLI
 - `pip install -e ".[web]"` — install CLI + web UI
