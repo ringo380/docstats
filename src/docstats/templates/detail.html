@@ -21,12 +21,12 @@
     </p>
 </hgroup>
 
-<div style="margin-bottom: 1.5rem;">
+<div class="action-bar">
     <span id="save-btn">
         {% include "_save_button.html" %}
     </span>
     <a href="/provider/{{ result.number }}/export" role="button" class="outline">Export Referral</a>
-    <a href="/" role="button" class="outline secondary">Back to Search</a>
+    <a href="/" class="back-link">&larr; Back to Search</a>
 </div>
 
 {% if saved_notes %}

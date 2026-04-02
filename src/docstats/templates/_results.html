@@ -9,20 +9,17 @@
     <table class="results-table striped">
         <thead>
             <tr>
-                <th>NPI</th>
                 <th>Type</th>
                 <th>Name</th>
                 <th>Specialty</th>
                 <th>Location</th>
                 <th>Phone</th>
                 <th>Status</th>
-                <th></th>
             </tr>
         </thead>
         <tbody>
             {% for r in results %}
-            <tr {% if r.status != "A" %}style="opacity: 0.5;"{% endif %}>
-                <td><a href="/provider/{{ r.number }}">{{ r.number }}</a></td>
+            <tr {% if r.status != "A" %}style="opacity: 0.55;"{% endif %}>
                 <td>
                     {% if r.is_individual %}
                     <span class="badge-ind">Ind</span>
@@ -40,13 +37,10 @@
                 <td>{{ r.phone or "" }}</td>
                 <td>
                     {% if r.status == "A" %}
-                    <span style="color: #2e7d32;" title="Active">&#9679;</span>
+                    <span class="status-active">Active</span>
                     {% else %}
-                    <span style="color: #9e9e9e;" title="Deactivated">&#9679;</span>
+                    <span class="status-inactive">Inactive</span>
                     {% endif %}
-                </td>
-                <td>
-                    <a href="/provider/{{ r.number }}" role="button" class="outline secondary" style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">View</a>
                 </td>
             </tr>
             {% endfor %}

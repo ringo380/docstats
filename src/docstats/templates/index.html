@@ -3,10 +3,11 @@
 {% block content %}
 <h2>Provider Search</h2>
 
+<article>
 <form hx-get="/search" hx-target="#results" hx-indicator="#search-spinner">
 
     <!-- Entity type toggle -->
-    <fieldset>
+    <fieldset class="entity-toggle">
         <legend><strong>Search for:</strong></legend>
         <div role="group">
             <label>
@@ -115,7 +116,7 @@
 
         <!-- Filter add buttons (location only; specialty is shared below) -->
         <div id="ind-filter-row" style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
-            <button type="button" id="btn-add-location" class="secondary outline" style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">+ Location</button>
+            <button type="button" id="btn-add-location" class="secondary outline" style="padding: 0.25rem 0.75rem; font-size: 0.82rem;">+ Location</button>
         </div>
 
     </div>
@@ -154,29 +155,29 @@
             <ul id="suggest-specialty" class="suggestion-list" role="listbox"></ul>
         </div>
     </div>
-    <div id="shared-filter-row" style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
-        <button type="button" id="btn-add-specialty" class="secondary outline" style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">+ Specialty</button>
-    </div>
-
-    <div class="grid">
-        <label>
-            Max Results
-            <select name="limit">
-                <option value="10" {% if q.limit == "10" %}selected{% endif %}>10</option>
-                <option value="25" {% if q.limit == "25" %}selected{% endif %}>25</option>
-                <option value="50" {% if q.limit == "50" %}selected{% endif %}>50</option>
-                <option value="100" {% if q.limit == "100" %}selected{% endif %}>100</option>
-            </select>
-        </label>
-        <div></div>
-        <div style="display: flex; align-items: end;">
-            <button type="submit" style="width: 100%;">
-                Search
-                <span id="search-spinner" class="htmx-indicator" aria-busy="true"></span>
-            </button>
+    <div id="shared-filter-row" style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+        <button type="button" id="btn-add-specialty" class="secondary outline" style="padding: 0.25rem 0.75rem; font-size: 0.82rem;">+ Specialty</button>
+        <div style="margin-left: auto; display: flex; align-items: center; gap: 0.5rem;">
+            <label style="margin: 0; display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; white-space: nowrap; color: var(--pico-muted-color);">
+                Max results
+                <select name="limit" style="margin: 0; padding: 0.25rem 0.5rem; font-size: 0.85rem; width: auto;">
+                    <option value="10" {% if q.limit == "10" %}selected{% endif %}>10</option>
+                    <option value="25" {% if q.limit == "25" %}selected{% endif %}>25</option>
+                    <option value="50" {% if q.limit == "50" %}selected{% endif %}>50</option>
+                    <option value="100" {% if q.limit == "100" %}selected{% endif %}>100</option>
+                </select>
+            </label>
         </div>
     </div>
+
+    <div style="margin-top: 1rem;">
+        <button type="submit" style="width: 100%;">
+            Search
+            <span id="search-spinner" class="htmx-indicator" aria-busy="true"></span>
+        </button>
+    </div>
 </form>
+</article>
 
 <div id="results">
     {% if initial_results %}
@@ -439,7 +440,7 @@ document.querySelector('form').addEventListener('htmx:beforeRequest', function(e
             fetch(url)
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
-                    locationList.innerHTML = '';
+                    clearSuggestions('suggest-location');
                     if (data.features && data.features.length) {
                         data.features.forEach(function(f) {
                             var city = '', state = '', zip = '';
