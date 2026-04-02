@@ -97,12 +97,15 @@
             color: var(--pico-color);
         }
         fieldset.entity-toggle div[role="group"] label:last-child { border-right: none; }
-        fieldset.entity-toggle div[role="group"] label:has(input:checked) {
-            background: var(--pico-primary);
-            color: #fff;
-            border-color: var(--pico-primary);
+        /* :has() requires Chrome 105+, Safari 15.4+, Firefox 121+; older browsers fall back to visible radios */
+        @supports selector(:has(*)) {
+            fieldset.entity-toggle div[role="group"] input[type="radio"] { display: none; }
+            fieldset.entity-toggle div[role="group"] label:has(input:checked) {
+                background: var(--pico-primary);
+                color: #fff;
+                border-color: var(--pico-primary);
+            }
         }
-        fieldset.entity-toggle div[role="group"] input[type="radio"] { display: none; }
 
         /* Status text badges */
         .status-active { color: var(--color-active); font-size: 0.8rem; font-weight: 500; }
@@ -110,8 +113,9 @@
 
         /* Action bar for detail page */
         .action-bar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
-        .action-bar .back-link { margin-left: auto; font-size: 0.9rem; color: var(--pico-muted-color); text-decoration: none; }
-        .action-bar .back-link:hover { color: var(--pico-color); }
+        .action-bar .back-link { margin-left: auto; }
+        .back-link { font-size: 0.9rem; color: var(--pico-muted-color); text-decoration: none; }
+        .back-link:hover { color: var(--pico-color); }
 
         /* Empty state */
         .empty-state { padding: 3rem 1rem; text-align: center; color: var(--pico-muted-color); }

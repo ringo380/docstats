@@ -440,7 +440,7 @@ document.querySelector('form').addEventListener('htmx:beforeRequest', function(e
             fetch(url)
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
-                    locationList.innerHTML = '';
+                    clearSuggestions('suggest-location');
                     if (data.features && data.features.length) {
                         data.features.forEach(function(f) {
                             var city = '', state = '', zip = '';

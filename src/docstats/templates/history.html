@@ -14,7 +14,9 @@
 {%- if params.get("org") %}{% set _ = parts.append(params["org"]) %}{% endif -%}
 {%- if params.get("specialty") %}{% set _ = parts.append("\u2022 " + params["specialty"]) %}{% endif -%}
 {%- if params.get("city") and params.get("state") %}
-    {%- set _ = parts.append("\u2022 " + params["city"] + ", " + params["state"]) -%}
+    {%- set loc = params["city"] + ", " + params["state"] -%}
+    {%- if params.get("zip") %}{%- set loc = loc + " " + params["zip"] -%}{% endif -%}
+    {%- set _ = parts.append("\u2022 " + loc) -%}
 {%- elif params.get("state") %}
     {%- set _ = parts.append("\u2022 " + params["state"]) -%}
 {%- elif params.get("zip") %}

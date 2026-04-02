@@ -18,7 +18,14 @@
 - SQLite for everything: saved providers, search history, response cache, ZIP codes
 - Single DB at `~/.local/share/docstats/docstats.db`
 - Typeahead: name/org fields use htmx (server-side NPPES queries), specialty uses client-side filtering from static taxonomy list
+- Location autocomplete uses Mapbox Geocoding API (client-side fetch, 300ms debounce) — reads `MAPBOX_PUBLIC_TOKEN` env var; gracefully absent if unset
+- `initAutocomplete(inputEl, listEl)` in `index.html` is reusable for any field; `data-value=""` + `data-extra='{"field":"val"}'` pattern populates sibling fields on selection without htmx
 - Web errors return HTTP 200 with error HTML partial (not 4xx/5xx) — htmx swaps normally; `htmx:responseError` in `base.html` handles true network/server failures
+- Individual search form uses progressive disclosure: name fields shown by default; specialty and location are optional filters revealed via pill buttons; both filters are available in NPI-1 and NPI-2 modes
+- Status indicators in results table use text labels (`.status-active` / `.status-inactive` CSS classes) — not color-only dots
+- Entity type toggle uses a segmented pill control styled with CSS `:has(input:checked)` inside `@supports selector(:has(*))` — older browsers fall back to visible radio buttons
+- Typography: IBM Plex Sans (body) and IBM Plex Mono (brand, code, export block) loaded from Google Fonts; apply `font-family: 'IBM Plex Mono', monospace` to new code/identifier elements
+- CSS utility classes in `base.html`: `.action-bar` (flex row for primary actions), `.back-link` (muted nav link, auto-margin inside `.action-bar`), `.empty-state` (centered muted placeholder), `.status-active`, `.status-inactive`
 
 ## NPPES API
 - Endpoint: `https://npiregistry.cms.hhs.gov/api/?version=2.1`
@@ -43,6 +50,13 @@
 - `httpx.TimeoutException` is a subclass of `RequestError` — catch it first or it's dead code
 - Templates must guard against `None` models — routes pass `result=None` on `NPPESError`
 - `scoring.py` result ranking is currently only integrated into the Web UI (`web.py`), not the CLI (`cli.py`)
+- `querySelectorAll('input')` does not match `<select>` elements — when clearing a form section, reset selects explicitly (e.g. `el.value = ''`) in addition to iterating inputs
+- Use `clearSuggestions(id)` to clear suggestion lists in `index.html` — do not set `.innerHTML = ''` directly
+- To trigger `initAutocomplete`'s `activeIdx` reset for a non-htmx list, dispatch `new Event('htmx:afterSwap')` on the list element after populating it
+- JS that references elements inside `{% if ... %}` blocks must null-guard or be inside the same conditional — the element won't exist when the condition is false
+- Mapbox Geocoding: for `postcode`-type features, the ZIP is in `f.text` not `f.context` — add `if (!zip && place_type is postcode) zip = f.text` alongside the `place`-type city fallback
+- Mapbox tokens: `pk.` = public (safe for client-side JS), `sk.` = secret (server-side only)
+- To safely inject a Python template variable into JS, use `{{ var | tojson }}` — handles escaping
 
 ## Deployment (Railway)
 - Hosted at https://docstats-production.up.railway.app
@@ -51,6 +65,7 @@
 - Railpack doesn't install pyproject.toml optional extras — `requirements.txt` must include all web deps explicitly
 - Pre-launch protections active (issue #57 tracks removal): basic auth, robots.txt, X-Robots-Tag header, meta noindex
 - Auth creds set as Railway env vars: `DOCSTATS_AUTH_USER`, `DOCSTATS_AUTH_PASS`
+- `MAPBOX_PUBLIC_TOKEN` — Railway env var for address autocomplete (use `pk.` public token, not `sk.` secret)
 - SQLite data doesn't persist across redeploys (ephemeral filesystem)
 - Deploy: `railway up --detach --service docstats`
 
