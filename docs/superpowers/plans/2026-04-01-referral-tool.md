@@ -1,6 +1,6 @@
 # Referral Request Tool Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Steps use checkbox (`- [ ]`) syntax for tracking progress. Implement task-by-task.
 
 **Goal:** Build a multi-provider referral request builder on top of the existing saved providers feature, letting users add doctors to named referral lists with appointment location/phone overrides, then export a combined referral document.
 
@@ -1428,7 +1428,7 @@ async def remove_from_referral_list(
     <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
         {% if edit %}
         <button type="button"
-                onclick="document.getElementById('entry-form-{{ npi }}').innerHTML = '';"
+                onclick="var ef = document.getElementById('entry-form-{{ npi }}'); if (ef) ef.replaceChildren();"
                 class="outline secondary"
                 style="padding: 0.3rem 0.75rem; font-size: 0.85rem;">Cancel</button>
         <button type="submit"

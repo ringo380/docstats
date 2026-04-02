@@ -238,8 +238,8 @@ The printable view is rendered entirely in the Jinja2 template — no Python for
 ## Navigation & UX Details
 
 - **Quick-add**: If no referral lists exist yet when the user clicks "+ Add to List", the list selector shows only "+ Create new list…". Selecting it reveals an inline name input. On submit, the list is created and the provider is added in one request.
-- **Multi-list**: A provider can appear on multiple lists. The saved-providers row shows the first list name badge; if on multiple lists, shows "✓ N lists" (no dropdown — click opens the edit form for the first list).
-- **Address override UX**: The add/edit form pre-fills override fields with the NPI-sourced address and phone from `saved_providers`. User edits only what differs. If the user clears the override fields, the entry falls back to NPI data.
+- **Multi-list**: A provider can appear on multiple lists. The saved-providers row shows the first list name badge; if on multiple lists, shows "✓ [first list name] (+N)" where N is the count of additional lists (no dropdown — click opens the edit form for the first list).
+- **Address override UX**: The add/edit form shows the NPI-sourced address and phone as hint text in the labels (e.g., "blank = use NPI address: 123 Main St"). Override fields are empty by default on a new add — the user types only what differs from the NPI listing. On edit, override fields are pre-filled with any previously saved overrides. If override fields are left blank, the entry falls back to NPI data.
 - **`.gitignore`**: Add `.superpowers/` to `.gitignore`.
 
 ---
