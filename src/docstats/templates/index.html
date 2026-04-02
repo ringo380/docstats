@@ -69,6 +69,10 @@
 
         <!-- Location fields (optional filter in name mode, or primary in location mode) -->
         <div id="ind-loc-fields" style="display: none; margin-top: 0.5rem;">
+            <!-- Remove button shown only when location is an optional filter (not in location-primary mode) -->
+            <div id="ind-loc-filter-header" style="display: none; justify-content: flex-end; margin-bottom: 0.25rem;">
+                <a href="#" id="btn-remove-location" style="font-size: 0.8rem; color: var(--pico-muted-color);">✕ Remove</a>
+            </div>
             {% if mapbox_token %}
             <label>
                 Location
@@ -109,25 +113,8 @@
             <small><a href="#" id="link-name-mode" style="color: var(--pico-muted-color);">Search by name instead</a></small>
         </div>
 
-        <!-- Optional specialty filter -->
-        <div id="filter-specialty" style="display: none; margin-top: 0.75rem;">
-            <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.25rem;">
-                <strong style="font-size: 0.9rem;">Specialty</strong>
-                <a href="#" id="btn-remove-specialty" style="font-size: 0.8rem; color: var(--pico-muted-color);">✕ Remove</a>
-            </div>
-            <div class="autocomplete-wrap">
-                <input type="text" name="specialty" id="specialty-input"
-                       placeholder="Orthopedic Surgery, Family Medicine, etc."
-                       value="{{ q.specialty or '' }}"
-                       autocomplete="off"
-                       role="combobox" aria-expanded="false" aria-controls="suggest-specialty">
-                <ul id="suggest-specialty" class="suggestion-list" role="listbox"></ul>
-            </div>
-        </div>
-
-        <!-- Filter add buttons -->
+        <!-- Filter add buttons (location only; specialty is shared below) -->
         <div id="ind-filter-row" style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
-            <button type="button" id="btn-add-specialty" class="secondary outline" style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">+ Specialty</button>
             <button type="button" id="btn-add-location" class="secondary outline" style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">+ Location</button>
         </div>
 
@@ -150,6 +137,25 @@
                 <ul id="suggest-org" class="suggestion-list" role="listbox"></ul>
             </div>
         </label>
+    </div>
+
+    <!-- Specialty filter (shared: available for both individual and org searches) -->
+    <div id="filter-specialty" style="display: none; margin-top: 0.75rem;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.25rem;">
+            <strong style="font-size: 0.9rem;">Specialty</strong>
+            <a href="#" id="btn-remove-specialty" style="font-size: 0.8rem; color: var(--pico-muted-color);">✕ Remove</a>
+        </div>
+        <div class="autocomplete-wrap">
+            <input type="text" name="specialty" id="specialty-input"
+                   placeholder="Orthopedic Surgery, Family Medicine, etc."
+                   value="{{ q.specialty or '' }}"
+                   autocomplete="off"
+                   role="combobox" aria-expanded="false" aria-controls="suggest-specialty">
+            <ul id="suggest-specialty" class="suggestion-list" role="listbox"></ul>
+        </div>
+    </div>
+    <div id="shared-filter-row" style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <button type="button" id="btn-add-specialty" class="secondary outline" style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">+ Specialty</button>
     </div>
 
     <div class="grid">
@@ -301,6 +307,7 @@ document.querySelectorAll('input[name="entity_mode"]').forEach(function(radio) {
             setSpecialtyVisible(false);
         } else {
             document.querySelectorAll('#fields-individual input').forEach(function(i) { i.value = ''; });
+            document.getElementById('state-select').value = '';
             clearSuggestions('suggest-first');
             clearSuggestions('suggest-name');
         }
@@ -319,6 +326,7 @@ function setIndMode(mode) {
         locFields.style.display = '';
         locFooter.style.display = '';
         btnAddLoc.style.display = 'none';
+        document.getElementById('ind-loc-filter-header').style.display = 'none';
         document.querySelectorAll('#ind-name-mode input').forEach(function(i) { i.value = ''; });
         clearSuggestions('suggest-first');
         clearSuggestions('suggest-name');
@@ -351,7 +359,7 @@ function setSpecialtyVisible(visible) {
         btnAdd.style.display = '';
         var inp = document.getElementById('specialty-input');
         if (inp) inp.value = '';
-        document.getElementById('suggest-specialty').innerHTML = '';
+        clearSuggestions('suggest-specialty');
     }
 }
 
@@ -378,6 +386,12 @@ document.getElementById('btn-remove-specialty').addEventListener('click', functi
 document.getElementById('btn-add-location').addEventListener('click', function() {
     document.getElementById('ind-loc-fields').style.display = '';
     document.getElementById('btn-add-location').style.display = 'none';
+    document.getElementById('ind-loc-filter-header').style.display = 'flex';
+});
+
+document.getElementById('btn-remove-location').addEventListener('click', function(e) {
+    e.preventDefault();
+    setIndMode('name');
 });
 
 // Clear all suggestion dropdowns on form submit
@@ -460,13 +474,15 @@ document.querySelector('form').addEventListener('htmx:beforeRequest', function(e
     var hasCity = {{ (q.city or '') | tojson }} !== '';
     var hasZip = {{ (q.zip or '') | tojson }} !== '';
     var hasName = {{ ((q.first or '') + (q.name or '')) | tojson }} !== '';
+    var hasState = {{ (q.state or '') | tojson }} !== '';
     if (hasSpecialty) setSpecialtyVisible(true);
-    if (hasCity || hasZip) {
+    if (hasCity || hasZip || hasState) {
         if (!hasName) {
             setIndMode('location');
         } else {
             document.getElementById('ind-loc-fields').style.display = '';
             document.getElementById('btn-add-location').style.display = 'none';
+            document.getElementById('ind-loc-filter-header').style.display = 'flex';
         }
     }
 })();
