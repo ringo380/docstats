@@ -129,6 +129,7 @@ src/docstats/
 ├── normalize.py    # Name/phone/zip formatting
 ├── storage.py      # SQLite persistence
 ├── cache.py        # Response cache with TTL
+├── scoring.py      # Result ranking and scoring
 ├── formatting.py   # Rich terminal output + referral export
 └── templates/      # Jinja2 HTML templates (htmx + Pico CSS)
 ```
