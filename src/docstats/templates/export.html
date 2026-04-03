@@ -24,6 +24,6 @@
 <div style="margin-top: 1rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
     <button style="min-width: 12rem; padding: 0.65rem 1.25rem; font-weight: 600;" onclick="navigator.clipboard.writeText(document.getElementById('export-text').textContent).then(() => { this.textContent = '\u2713 Copied!'; setTimeout(() => this.textContent = 'Copy to Clipboard', 2000); })">Copy to Clipboard</button>
     <a href="/provider/{{ result.number }}/export/text" role="button" class="outline secondary">Download as Text</a>
-    <a href="/provider/{{ result.number }}" class="back-link" style="margin-left: auto;">&larr; Back to Detail</a>
+    <a href="/provider/{{ result.number }}" class="back-link">&larr; Back to Detail</a>
 </div>
 {% endblock %}

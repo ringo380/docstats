@@ -128,9 +128,7 @@
             color: var(--pico-muted-color);
             border-bottom: 2px solid var(--pico-muted-border-color);
         }
-        @supports selector(:has(*)) {
-            .results-table tbody tr:hover td { background-color: var(--pico-primary-focus); }
-        }
+        .results-table tbody tr:hover td { background-color: var(--pico-primary-focus); }
         .results-table.striped tbody tr:nth-child(even) td { background-color: rgba(0,0,0,0.018); }
         .row-inactive { opacity: 0.6; color: var(--pico-muted-color); }
         .row-inactive a { color: var(--pico-muted-color); }
@@ -321,6 +319,7 @@
             align-items: center;
             gap: 0.25rem;
             transition: color 0.12s;
+            margin-left: auto;
         }
         .back-link:hover { color: var(--pico-primary); text-decoration: underline; }
 
