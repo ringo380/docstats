@@ -79,7 +79,7 @@ class Storage:
                 (npi, display_name, entity_type, specialty, phone, fax,
                  address_line1, address_city, address_state, address_zip,
                  raw_json, notes, appt_address, saved_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(npi) DO UPDATE SET
                 display_name=excluded.display_name,
                 entity_type=excluded.entity_type,
@@ -107,6 +107,7 @@ class Storage:
                 provider.address_zip,
                 provider.raw_json,
                 provider.notes,
+                None,  # appt_address: always NULL on initial save; preserved via ON CONFLICT
                 provider.saved_at.isoformat() if provider.saved_at else datetime.now().isoformat(),
                 provider.updated_at.isoformat() if provider.updated_at else datetime.now().isoformat(),
             ),
@@ -139,21 +140,23 @@ class Storage:
         self._conn.commit()
         return cursor.rowcount > 0
 
-    def set_appt_address(self, npi: str, address: str) -> None:
-        """Set the appointment address for a saved provider."""
-        self._conn.execute(
+    def set_appt_address(self, npi: str, address: str) -> bool:
+        """Set the appointment address for a saved provider. Returns True if the NPI was found."""
+        cursor = self._conn.execute(
             "UPDATE saved_providers SET appt_address = ? WHERE npi = ?",
             (address.strip(), npi),
         )
         self._conn.commit()
+        return cursor.rowcount > 0
 
-    def clear_appt_address(self, npi: str) -> None:
-        """Clear the appointment address for a saved provider."""
-        self._conn.execute(
+    def clear_appt_address(self, npi: str) -> bool:
+        """Clear the appointment address for a saved provider. Returns True if the NPI was found."""
+        cursor = self._conn.execute(
             "UPDATE saved_providers SET appt_address = NULL WHERE npi = ?",
             (npi,),
         )
         self._conn.commit()
+        return cursor.rowcount > 0
 
     def log_search(self, params: dict[str, str], result_count: int) -> None:
         """Record a search in history."""

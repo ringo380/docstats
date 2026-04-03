@@ -80,10 +80,8 @@ def test_rehydrate_saved_provider(storage: Storage):
 
 def test_appt_address_column_exists(storage: Storage):
     """appt_address column should exist after init."""
-    row = storage._conn.execute(
-        "SELECT appt_address FROM saved_providers LIMIT 1"
-    ).fetchone()
-    assert row is None  # table is empty
+    cols = [r[1] for r in storage._conn.execute("PRAGMA table_info(saved_providers)")]
+    assert "appt_address" in cols
 
 
 def test_set_appt_address(storage: Storage):
