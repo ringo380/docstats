@@ -5,6 +5,7 @@
     <p><em>No results found. Try broadening your search or check for typos.</em></p>
     {% else %}
     <small class="results-meta"><strong>{{ result_count }}</strong> result{{ "s" if result_count != 1 }} found{% if result_count > results|length %} &mdash; showing {{ results|length }}{% endif %}</small>
+    {% if interp_desc %}<small class="results-interp">Searched as: <strong>{{ interp_desc }}</strong></small>{% endif %}
     <div style="overflow-x: auto;">
     <table class="results-table striped">
         <thead>

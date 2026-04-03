@@ -6,9 +6,8 @@ import logging
 import os
 import secrets
 from pathlib import Path
-from typing import Annotated
 
-from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi import Depends, FastAPI, Form, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -16,6 +15,7 @@ from starlette.responses import Response as StarletteResponse
 
 from docstats.cache import ResponseCache
 from docstats.client import NPPESClient, NPPESError
+from docstats.parse import build_interpretations, parse_query
 from docstats.formatting import referral_export
 from docstats.normalize import format_name
 from docstats.scoring import SearchQuery, rank_results
@@ -149,6 +149,7 @@ async def index(request: Request):
 @app.get("/search", response_class=HTMLResponse)
 async def search(
     request: Request,
+    query: str = Query("", alias="query"),
     name: str = Query("", alias="name"),
     first: str = Query("", alias="first"),
     middle: str = Query("", alias="middle"),
@@ -163,6 +164,7 @@ async def search(
     client: NPPESClient = Depends(get_client),
 ):
     """Search providers -- returns partial HTML for htmx."""
+    query = query.strip()
     name = name.strip()
     first = first.strip()
     middle = middle.strip()
@@ -178,56 +180,93 @@ async def search(
             "error": msg,
             "results": None,
             "result_count": 0,
+            "interp_desc": None,
         })
 
-    # Validate: need at least one real search field
-    if not any([name, first, org, specialty, city, zip]):
-        return _error("Please fill in at least one search field.")
+    response = None
+    interp_desc: str | None = None
 
-    # Validate: can't mix individual and org fields
-    if (name or first) and org:
-        return _error(
-            "Cannot search by individual name and organization name at the same time. "
-            "Use the Individual or Organization toggle to switch modes."
-        )
+    if query:
+        # Smart search bar path: try interpretations in sequence
+        parsed = parse_query(query)
+        interpretations = build_interpretations(parsed)
+        if not interpretations:
+            return _error("Please enter a provider name or specialty to search.")
 
-    try:
-        response = client.search(
-            last_name=name or None,
-            first_name=first or None,
-            organization_name=org or None,
-            taxonomy_description=specialty or None,
-            city=city or None,
-            state=state or None,
-            postal_code=zip or None,
-            enumeration_type=type or None,
-            limit=limit,
-        )
-    except NPPESError as e:
-        return _error(str(e))
+        last_error: Exception | None = None
+        for interp in interpretations:
+            try:
+                result = client.search(**interp, limit=limit)
+                if result.result_count > 0:
+                    response = result
+                    # Build human-readable "Searched as:" description
+                    parts = []
+                    fn = interp.get("first_name", "")
+                    ln = interp.get("last_name", "")
+                    org_name = interp.get("organization_name", "")
+                    tax = interp.get("taxonomy_description", "")
+                    if fn and ln:
+                        parts.append(f"{fn} {ln}")
+                    elif ln:
+                        parts.append(ln)
+                    elif org_name:
+                        parts.append(org_name)
+                    if tax:
+                        parts.append(tax)
+                    interp_desc = " · ".join(parts)
+                    break
+            except NPPESError as e:
+                last_error = e
 
-    # Log search to history using form field names so re-run links work
-    params: dict[str, str] = {}
-    if name:
-        params["name"] = name
-    if first:
-        params["first"] = first
-    if org:
-        params["org"] = org
-    if specialty:
-        params["specialty"] = specialty
-    if state:
-        params["state"] = state
-    if city:
-        params["city"] = city
-    if zip:
-        params["zip"] = zip
-    if type:
-        params["type"] = type
-    storage.log_search(params, response.result_count)
+        if response is None:
+            if last_error:
+                return _error(str(last_error))
+            storage.log_search({"query": query}, 0)
+            return _render("_results.html", {
+                "request": request,
+                "error": None,
+                "results": [],
+                "result_count": 0,
+                "interp_desc": None,
+            })
 
-    # Rank results by relevance (middle name is used here, not sent to API)
-    query = SearchQuery(
+        log_params: dict[str, str] = {"query": query}
+        if interp_desc:
+            log_params["_interp"] = interp_desc
+        storage.log_search(log_params, response.result_count)
+
+    else:
+        # Legacy structured-field path (history re-run, old form)
+        if not any([name, first, org, specialty, city, zip]):
+            return _error("Please fill in at least one search field.")
+        if (name or first) and org:
+            return _error(
+                "Cannot search by individual name and organization name at the same time."
+            )
+        try:
+            response = client.search(
+                last_name=name or None,
+                first_name=first or None,
+                organization_name=org or None,
+                taxonomy_description=specialty or None,
+                city=city or None,
+                state=state or None,
+                postal_code=zip or None,
+                enumeration_type=type or None,
+                limit=limit,
+            )
+        except NPPESError as e:
+            return _error(str(e))
+
+        params: dict[str, str] = {}
+        for k, v in [("name", name), ("first", first), ("org", org),
+                     ("specialty", specialty), ("state", state),
+                     ("city", city), ("zip", zip), ("type", type)]:
+            if v:
+                params[k] = v
+        storage.log_search(params, response.result_count)
+
+    query_obj = SearchQuery(
         last_name=name or None,
         first_name=first or None,
         middle_name=middle or None,
@@ -237,13 +276,14 @@ async def search(
         state=state or None,
         postal_code=zip or None,
     )
-    ranked = rank_results(response.results, query)
+    ranked = rank_results(response.results, query_obj)
 
     return _render("_results.html", {
         "request": request,
         "results": ranked,
         "result_count": response.result_count,
         "error": None,
+        "interp_desc": interp_desc,
     })
 
 
@@ -501,6 +541,42 @@ async def export_text(
         content=text,
         headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
     )
+
+
+@app.post("/provider/{npi}/appt-address", response_class=HTMLResponse)
+async def set_appt_address(
+    request: Request,
+    npi: str,
+    address: str = Form(""),
+    storage: Storage = Depends(get_storage),
+):
+    """Save appointment address for a provider — returns address chip partial."""
+    address = address.strip()
+    if address:
+        storage.set_appt_address(npi, address)
+    provider = storage.get_provider(npi)
+    return _render("_appt_address.html", {
+        "request": request,
+        "npi": npi,
+        "appt_address": provider.appt_address if provider else None,
+        "mapbox_token": MAPBOX_TOKEN,
+    })
+
+
+@app.delete("/provider/{npi}/appt-address", response_class=HTMLResponse)
+async def clear_appt_address(
+    request: Request,
+    npi: str,
+    storage: Storage = Depends(get_storage),
+):
+    """Clear appointment address for a provider — returns empty input partial."""
+    storage.clear_appt_address(npi)
+    return _render("_appt_address.html", {
+        "request": request,
+        "npi": npi,
+        "appt_address": None,
+        "mapbox_token": MAPBOX_TOKEN,
+    })
 
 
 @app.get("/history", response_class=HTMLResponse)
