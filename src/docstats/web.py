@@ -130,11 +130,15 @@ def get_client() -> NPPESClient:
     return _client
 
 
+def _saved_count(storage: Storage) -> int:
+    return len(storage.list_providers())
+
+
 # --- Routes ---
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+async def index(request: Request, storage: Storage = Depends(get_storage)):
     """Landing page with search form."""
     return _render("index.html", {
         "request": request,
@@ -143,6 +147,7 @@ async def index(request: Request):
         "q": {},
         "initial_results": False,
         "mapbox_token": MAPBOX_TOKEN,
+        "saved_count": _saved_count(storage),
     })
 
 
@@ -402,6 +407,7 @@ async def provider_detail(
                 "error": str(e),
                 "is_saved": False,
                 "saved_notes": None,
+                "saved_count": _saved_count(storage),
             })
         if result is None:
             return HTMLResponse(
@@ -417,6 +423,7 @@ async def provider_detail(
         "is_saved": saved is not None,
         "npi": npi,
         "saved_notes": saved_notes,
+        "saved_count": _saved_count(storage),
     })
 
 
@@ -486,6 +493,7 @@ async def saved_list(
         "request": request,
         "active_page": "saved",
         "providers": providers,
+        "saved_count": len(providers),
     })
 
 
@@ -557,6 +565,7 @@ async def export_view(
         "result": result,
         "export_text": export_text,
         "appt_address": appt_address,
+        "saved_count": _saved_count(storage),
     })
 
 
@@ -607,6 +616,7 @@ async def export_all(
         "request": request,
         "active_page": "saved",
         "referrals": referrals,
+        "saved_count": len(providers),
     })
 
 
@@ -622,4 +632,5 @@ async def history(
         "request": request,
         "active_page": "history",
         "entries": entries,
+        "saved_count": _saved_count(storage),
     })
