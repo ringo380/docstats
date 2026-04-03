@@ -489,6 +489,42 @@ async def saved_list(
     })
 
 
+@app.post("/provider/{npi}/appt-address", response_class=HTMLResponse)
+async def set_appt_address(
+    request: Request,
+    npi: str,
+    address: str = Form(""),
+    storage: Storage = Depends(get_storage),
+):
+    """Save appointment address for a provider — returns address chip partial."""
+    address = address.strip()
+    if address:
+        storage.set_appt_address(npi, address)
+    provider = storage.get_provider(npi)
+    return _render("_appt_address.html", {
+        "request": request,
+        "npi": npi,
+        "appt_address": provider.appt_address if provider else None,
+        "mapbox_token": MAPBOX_TOKEN,
+    })
+
+
+@app.delete("/provider/{npi}/appt-address", response_class=HTMLResponse)
+async def clear_appt_address(
+    request: Request,
+    npi: str,
+    storage: Storage = Depends(get_storage),
+):
+    """Clear appointment address for a provider — returns empty input partial."""
+    storage.clear_appt_address(npi)
+    return _render("_appt_address.html", {
+        "request": request,
+        "npi": npi,
+        "appt_address": None,
+        "mapbox_token": MAPBOX_TOKEN,
+    })
+
+
 @app.get("/provider/{npi}/export", response_class=HTMLResponse)
 async def export_view(
     request: Request,
@@ -541,42 +577,6 @@ async def export_text(
         content=text,
         headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
     )
-
-
-@app.post("/provider/{npi}/appt-address", response_class=HTMLResponse)
-async def set_appt_address(
-    request: Request,
-    npi: str,
-    address: str = Form(""),
-    storage: Storage = Depends(get_storage),
-):
-    """Save appointment address for a provider — returns address chip partial."""
-    address = address.strip()
-    if address:
-        storage.set_appt_address(npi, address)
-    provider = storage.get_provider(npi)
-    return _render("_appt_address.html", {
-        "request": request,
-        "npi": npi,
-        "appt_address": provider.appt_address if provider else None,
-        "mapbox_token": MAPBOX_TOKEN,
-    })
-
-
-@app.delete("/provider/{npi}/appt-address", response_class=HTMLResponse)
-async def clear_appt_address(
-    request: Request,
-    npi: str,
-    storage: Storage = Depends(get_storage),
-):
-    """Clear appointment address for a provider — returns empty input partial."""
-    storage.clear_appt_address(npi)
-    return _render("_appt_address.html", {
-        "request": request,
-        "npi": npi,
-        "appt_address": None,
-        "mapbox_token": MAPBOX_TOKEN,
-    })
 
 
 @app.get("/history", response_class=HTMLResponse)
