@@ -1,80 +1,86 @@
-{% if appt_address %}
-<div class="appt-chip" id="appt-addr-{{ npi }}">
-  📍 {{ appt_address }}
-  <button
-    hx-delete="/provider/{{ npi }}/appt-address"
-    hx-target="#appt-addr-{{ npi }}"
-    hx-swap="outerHTML"
-    class="appt-chip-remove"
-    aria-label="Remove appointment address"
-  >✕</button>
-</div>
-{% else %}
-<div id="appt-addr-{{ npi }}" class="appt-addr-wrap">
-  {% if mapbox_token %}
-  <div class="appt-input-row">
-    <span class="appt-pin">📍</span>
-    <input
-      id="appt-input-{{ npi }}"
-      class="mapbox-input"
-      type="text"
-      placeholder="Appointment address (if different)…"
-      autocomplete="off"
-    >
-  </div>
-  <ul id="appt-suggestions-{{ npi }}" class="appt-suggestions" hidden></ul>
-  <script>
-  (function() {
-    var MAPBOX_TOKEN = {{ mapbox_token | tojson }};
-    var npi = {{ npi | tojson }};
-    var input = document.getElementById('appt-input-' + npi);
-    var list = document.getElementById('appt-suggestions-' + npi);
-    var debounce;
-
-    input.addEventListener('input', function() {
-      clearTimeout(debounce);
-      var q = input.value.trim();
-      if (q.length < 3) { list.hidden = true; return; }
-      debounce = setTimeout(function() {
-        fetch('https://api.mapbox.com/geocoding/v5/mapbox.places/' + encodeURIComponent(q) + '.json?access_token=' + MAPBOX_TOKEN + '&types=address,poi&country=us&limit=5')
-          .then(function(r) { return r.json(); })
-          .then(function(data) {
-            list.innerHTML = '';
-            if (!data.features || !data.features.length) { list.hidden = true; return; }
-            data.features.forEach(function(f) {
-              var li = document.createElement('li');
-              li.textContent = f.place_name;
-              li.addEventListener('click', function() {
-                input.value = f.place_name;
-                list.hidden = true;
-                htmx.ajax('POST', '/provider/' + npi + '/appt-address', {
-                  target: '#appt-addr-' + npi,
-                  swap: 'outerHTML',
-                  values: { address: f.place_name }
-                });
-              });
-              list.appendChild(li);
-            });
-            list.hidden = false;
-          });
-      }, 300);
-    });
-
-    document.addEventListener('click', function(e) {
-      if (!list.contains(e.target) && e.target !== input) { list.hidden = true; }
-    });
-  })();
-  </script>
+<div class="appt-address-wrap" id="appt-{{ npi }}">
+  {% if appt_address %}
+    <div class="appt-chip">
+      📍 {{ appt_address }}
+      <button
+        hx-delete="/provider/{{ npi }}/appt-address"
+        hx-target="#appt-{{ npi }}"
+        hx-swap="outerHTML"
+        title="Remove appointment address">✕</button>
+    </div>
   {% else %}
-  <form
-    hx-post="/provider/{{ npi }}/appt-address"
-    hx-target="#appt-addr-{{ npi }}"
-    hx-swap="outerHTML"
-    class="appt-plain-form"
-  >
-    <input name="address" type="text" placeholder="Appointment address…" class="appt-plain-input">
-    <button type="submit" class="appt-plain-btn">Save</button>
-  </form>
+    {% if mapbox_token %}
+      <div class="appt-input-row">
+        <span style="color: var(--text-dim); font-size: 0.9rem;">📍</span>
+        <input
+          type="text"
+          id="mapbox-appt-{{ npi }}"
+          placeholder="Appointment address (if different)…"
+          autocomplete="off"
+          hx-post="/provider/{{ npi }}/appt-address"
+          hx-trigger="mapbox-select"
+          hx-target="#appt-{{ npi }}"
+          hx-swap="outerHTML"
+          hx-include="[name='address'][data-npi='{{ npi }}']"
+          style="font-size:0.8rem;"
+        >
+        <input type="hidden" name="address" data-npi="{{ npi }}" id="appt-val-{{ npi }}" value="">
+        <ul id="appt-sugg-{{ npi }}" class="suggestions-list" style="display:none; top:36px;"></ul>
+      </div>
+      <script>
+        (function() {
+          var MAPBOX_TOKEN = {{ mapbox_token | tojson }};
+          var input = document.getElementById('mapbox-appt-{{ npi }}');
+          var list = document.getElementById('appt-sugg-{{ npi }}');
+          var hidden = document.getElementById('appt-val-{{ npi }}');
+          if (!input || !MAPBOX_TOKEN) return;
+          var t;
+          input.addEventListener('input', function() {
+            clearTimeout(t);
+            var q = input.value.trim();
+            if (q.length < 3) { list.style.display='none'; return; }
+            t = setTimeout(function() {
+              fetch('https://api.mapbox.com/geocoding/v5/mapbox.places/' +
+                encodeURIComponent(q) + '.json?country=US&types=address,place,postcode&access_token=' + MAPBOX_TOKEN)
+              .then(function(r){return r.json();}).then(function(data){
+                list.innerHTML = '';
+                if (!data.features||!data.features.length){list.style.display='none';return;}
+                data.features.forEach(function(f){
+                  var li = document.createElement('li');
+                  li.textContent = f.place_name;
+                  li.addEventListener('click', function(){
+                    input.value = f.place_name;
+                    hidden.value = f.place_name;
+                    list.style.display = 'none';
+                    htmx.trigger(input, 'mapbox-select');
+                  });
+                  list.appendChild(li);
+                });
+                list.style.display = 'block';
+              });
+            }, 300);
+          });
+          document.addEventListener('click', function(e){
+            if(!input.contains(e.target)) list.style.display='none';
+          });
+        })();
+      </script>
+    {% else %}
+      <form
+        hx-post="/provider/{{ npi }}/appt-address"
+        hx-target="#appt-{{ npi }}"
+        hx-swap="outerHTML"
+        style="display:flex; gap:6px; margin-top:4px;"
+      >
+        <input
+          type="text"
+          name="address"
+          placeholder="Appointment address (if different)…"
+          style="font-size:0.8rem;"
+          autocomplete="off"
+        >
+        <button type="submit" class="btn btn-secondary btn-sm">Save</button>
+      </form>
+    {% endif %}
   {% endif %}
 </div>
-{% endif %}

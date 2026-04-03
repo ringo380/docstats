@@ -494,6 +494,7 @@ async def saved_list(
         "active_page": "saved",
         "providers": providers,
         "saved_count": len(providers),
+        "mapbox_token": MAPBOX_TOKEN,
     })
 
 
