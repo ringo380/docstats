@@ -1,7 +1,7 @@
-{% for item in suggestions %}
-<li role="option" data-value="{{ item.value }}"
-    {% if item.extra %}data-extra='{{ item.extra | tojson }}'{% endif %}>
-    <strong>{{ item.label }}</strong>
-    {% if item.sublabel %}<br><small>{{ item.sublabel }}</small>{% endif %}
+{% for s in suggestions %}
+<li data-value="{{ s.value }}"
+    {% if s.extra %}data-extra="{{ s.extra | tojson | forceescape }}"{% endif %}>
+  <strong>{{ s.label }}</strong>
+  {% if s.sublabel %}<div class="sub">{{ s.sublabel }}</div>{% endif %}
 </li>
 {% endfor %}
