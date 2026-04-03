@@ -27,6 +27,7 @@
 
 {% if not entries %}
 <div class="empty-state">
+    <span class="empty-state-icon" aria-hidden="true">&#128269;</span>
     <p>No search history yet.</p>
     <p><small>Searches from both the CLI and web UI appear here.</small></p>
 </div>
@@ -37,7 +38,7 @@
         <tr>
             <th>Date</th>
             <th>Search</th>
-            <th>Results</th>
+            <th style="text-align: right;">Results</th>
             <th></th>
         </tr>
     </thead>
@@ -46,9 +47,9 @@
         <tr>
             <td style="white-space: nowrap; color: var(--pico-muted-color); font-size: 0.85rem;">{{ entry.searched_at.strftime("%b %d, %H:%M") if entry.searched_at else "" }}</td>
             <td>{{ fmt_query(entry.query_params) }}</td>
-            <td>{{ entry.result_count }}</td>
+            <td style="text-align: right; font-variant-numeric: tabular-nums;">{{ entry.result_count }}</td>
             <td>
-                <a href="/search?{{ entry.query_params | urlencode }}" hx-get="/search?{{ entry.query_params | urlencode }}" hx-target="#results" hx-push-url="/" role="button" class="outline secondary" style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">Re-run</a>
+                <a href="/search?{{ entry.query_params | urlencode }}" hx-get="/search?{{ entry.query_params | urlencode }}" hx-target="#results" hx-push-url="/" role="button" class="outline secondary btn-table-action">Re-run</a>
             </td>
         </tr>
         {% endfor %}

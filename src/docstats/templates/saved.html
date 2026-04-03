@@ -5,6 +5,7 @@
 
 {% if not providers %}
 <div class="empty-state">
+    <span class="empty-state-icon" aria-hidden="true">&#128194;</span>
     <p>No saved providers yet.</p>
     <p><small>Search for providers and save them for quick reference.</small></p>
 </div>
@@ -26,7 +27,7 @@
     <tbody>
         {% for p in providers %}
         <tr id="saved-row-{{ p.npi }}">
-            <td><a href="/provider/{{ p.npi }}">{{ p.npi }}</a></td>
+            <td><a href="/provider/{{ p.npi }}"><code class="npi-code">{{ p.npi }}</code></a></td>
             <td>
                 {% if p.entity_type == "Individual" %}
                 <span class="badge-ind">Ind</span>
@@ -45,13 +46,12 @@
             <td>{{ p.notes or "" }}</td>
             <td>
                 <div style="display: flex; gap: 0.25rem;">
-                    <a href="/provider/{{ p.npi }}/export" role="button" class="outline secondary" style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">Export</a>
+                    <a href="/provider/{{ p.npi }}/export" role="button" class="outline secondary btn-table-action">Export</a>
                     <button
                         hx-delete="/provider/{{ p.npi }}/save"
                         hx-target="#saved-row-{{ p.npi }}"
                         hx-swap="outerHTML"
-                        class="outline secondary"
-                        style="padding: 0.25rem 0.5rem; font-size: 0.8rem;"
+                        class="outline secondary btn-table-action"
                     >Remove</button>
                 </div>
             </td>

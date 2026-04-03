@@ -4,7 +4,7 @@
     {% if results|length == 0 %}
     <p><em>No results found. Try broadening your search or check for typos.</em></p>
     {% else %}
-    <p><strong>{{ result_count }}</strong> result{{ "s" if result_count != 1 }} found{% if result_count > results|length %} (showing {{ results|length }}){% endif %}</p>
+    <small class="results-meta"><strong>{{ result_count }}</strong> result{{ "s" if result_count != 1 }} found{% if result_count > results|length %} &mdash; showing {{ results|length }}{% endif %}</small>
     <div style="overflow-x: auto;">
     <table class="results-table striped">
         <thead>
@@ -19,7 +19,7 @@
         </thead>
         <tbody>
             {% for r in results %}
-            <tr {% if r.status != "A" %}style="opacity: 0.55;"{% endif %}>
+            <tr {% if r.status != "A" %}class="row-inactive"{% endif %}>
                 <td>
                     {% if r.is_individual %}
                     <span class="badge-ind">Ind</span>
@@ -27,7 +27,7 @@
                     <span class="badge-org">Org</span>
                     {% endif %}
                 </td>
-                <td><a href="/provider/{{ r.number }}">{{ r.display_name }}</a></td>
+                <td><a href="/provider/{{ r.number }}" class="provider-name-link">{{ r.display_name }}</a></td>
                 <td>{{ r.primary_specialty }}</td>
                 <td>
                     {% if r.location_address %}

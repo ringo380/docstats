@@ -57,6 +57,8 @@
 - Mapbox Geocoding: for `postcode`-type features, the ZIP is in `f.text` not `f.context` — add `if (!zip && place_type is postcode) zip = f.text` alongside the `place`-type city fallback
 - Mapbox tokens: `pk.` = public (safe for client-side JS), `sk.` = secret (server-side only)
 - To safely inject a Python template variable into JS, use `{{ var | tojson }}` — handles escaping
+- CSS `:has()` requires `@supports selector(:has(*))` guard — without it, hiding inputs styled only via `:has(input:checked)` leaves no visual feedback on Firefox <121; wrap both the `display:none` and the `:has()` rule together inside the `@supports` block
+- CSS utility classes used in multiple templates must be defined standalone (e.g. `.back-link { ... }`) not only as descendant selectors (e.g. `.action-bar .back-link`) — descendants work only inside that specific parent; silently no-ops elsewhere
 
 ## Deployment (Railway)
 - Hosted at https://docstats-production.up.railway.app
