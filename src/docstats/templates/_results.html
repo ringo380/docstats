@@ -1,52 +1,45 @@
 {% if error %}
-<div class="flash flash-error">{{ error }}</div>
+  <div class="flash flash-error">{{ error }}</div>
 {% elif results is not none %}
-    {% if results|length == 0 %}
-    <p><em>No results found. Try broadening your search or check for typos.</em></p>
-    {% else %}
-    <small class="results-meta"><strong>{{ result_count }}</strong> result{{ "s" if result_count != 1 }} found{% if result_count > results|length %} &mdash; showing {{ results|length }}{% endif %}</small>
-    {% if interp_desc %}<small class="results-interp">Searched as: <strong>{{ interp_desc }}</strong></small>{% endif %}
-    <div style="overflow-x: auto;">
-    <table class="results-table striped">
-        <thead>
-            <tr>
-                <th>Type</th>
-                <th>Name</th>
-                <th>Specialty</th>
-                <th>Location</th>
-                <th>Phone</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for r in results %}
-            <tr {% if r.status != "A" %}class="row-inactive"{% endif %}>
-                <td>
-                    {% if r.is_individual %}
-                    <span class="badge-ind">Ind</span>
-                    {% else %}
-                    <span class="badge-org">Org</span>
-                    {% endif %}
-                </td>
-                <td><a href="/provider/{{ r.number }}" class="provider-name-link">{{ r.display_name }}</a></td>
-                <td>{{ r.primary_specialty }}</td>
-                <td>
-                    {% if r.location_address %}
-                    {{ r.location_address.city }}, {{ r.location_address.state }}
-                    {% endif %}
-                </td>
-                <td>{{ r.phone or "" }}</td>
-                <td>
-                    {% if r.status == "A" %}
-                    <span class="status-active">Active</span>
-                    {% else %}
-                    <span class="status-inactive">Inactive</span>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    </div>
+  <div class="results-meta">
+    {{ result_count }} result{% if result_count != 1 %}s{% endif %} found
+    {% if results | length < result_count %} — showing {{ results | length }}{% endif %}
+    {% if interp_desc %}
+      &nbsp;·&nbsp; <span class="interp">Searched as: <strong>{{ interp_desc }}</strong></span>
     {% endif %}
+  </div>
+
+  {% if results %}
+    {% for r in results %}
+      {% set addr = r.location_address %}
+      <div class="result-card {% if r.status != 'A' %}inactive{% endif %}">
+        <div>
+          <div class="name">
+            <a href="/provider/{{ r.number }}">{{ r.display_name }}</a>
+          </div>
+          <div class="meta">
+            {{ r.primary_specialty }}
+            {% if addr %} · {{ addr.city | title }}, {{ addr.state }}{% endif %}
+            {% if r.phone %} · {{ r.phone }}{% endif %}
+          </div>
+          <div class="npi">NPI {{ r.number }}</div>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:5px; flex-shrink:0;">
+          <span class="badge {% if r.is_individual %}badge-ind{% else %}badge-org{% endif %}">
+            {% if r.is_individual %}Ind{% else %}Org{% endif %}
+          </span>
+          <div id="save-btn-{{ r.number }}">
+            <button class="btn btn-primary btn-sm"
+                    hx-post="/provider/{{ r.number }}/save"
+                    hx-target="#save-btn-{{ r.number }}"
+                    hx-swap="outerHTML">+ Save</button>
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+  {% else %}
+    <div class="empty-state">
+      <p>No results found. Try broadening your search.</p>
+    </div>
+  {% endif %}
 {% endif %}

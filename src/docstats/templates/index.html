@@ -1,514 +1,279 @@
 {% extends "base.html" %}
-{% block title %}Search - docstats{% endblock %}
+
 {% block content %}
-<h2>Provider Search</h2>
+<div style="max-width: 580px; margin: 0 auto; padding-top: 2.5rem;">
+  <h1 style="text-align: center; font-size: 1.6rem; font-weight: 700; color: var(--text); margin-bottom: 6px; letter-spacing: -0.02em;">Find a provider</h1>
+  <p style="text-align: center; color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1.5rem;">Search by name, specialty, or both</p>
 
-<article>
-<form hx-get="/search" hx-target="#results" hx-indicator="#search-spinner">
+  <form id="search-form"
+        hx-get="/search"
+        hx-target="#results"
+        hx-indicator="#search-spinner"
+        hx-swap="innerHTML">
 
-    <!-- Entity type toggle -->
-    <fieldset class="entity-toggle">
-        <legend><strong>Search for:</strong></legend>
-        <div role="group">
-            <label>
-                <input type="radio" name="entity_mode" value="individual" checked>
-                Individual Provider
-            </label>
-            <label>
-                <input type="radio" name="entity_mode" value="organization">
-                Organization / Facility
-            </label>
-        </div>
-    </fieldset>
-    <input type="hidden" name="type" id="entity-type" value="NPI-1">
+    <input type="hidden" id="field-type" name="type" value="">
+    <input type="hidden" id="field-city" name="city" value="">
+    <input type="hidden" id="field-state" name="state" value="">
+    <input type="hidden" id="field-zip" name="zip" value="">
 
-    <!-- Individual name fields + optional filters -->
-    <div id="fields-individual">
-
-        <!-- Name mode: first / middle / last -->
-        <div id="ind-name-mode">
-            <div class="grid">
-                <label>
-                    First Name
-                    <div class="autocomplete-wrap">
-                        <input type="text" name="first" placeholder="John" value="{{ q.first or '' }}"
-                               hx-get="/api/suggest/names"
-                               hx-trigger="input changed delay:300ms[this.value.length >= 2]"
-                               hx-target="#suggest-first"
-                               hx-swap="innerHTML"
-                               hx-vals='js:{"q": this.value, "field": "first_name"}'
-                               hx-params="none"
-                               autocomplete="off"
-                               role="combobox" aria-expanded="false" aria-controls="suggest-first">
-                        <ul id="suggest-first" class="suggestion-list" role="listbox"></ul>
-                    </div>
-                </label>
-                <label style="max-width: 140px;">
-                    Middle
-                    <input type="text" name="middle" placeholder="A" value="{{ q.middle or '' }}" maxlength="20">
-                </label>
-                <label>
-                    Last Name
-                    <div class="autocomplete-wrap">
-                        <input type="text" name="name" placeholder="Smith" value="{{ q.name or '' }}"
-                               hx-get="/api/suggest/names"
-                               hx-trigger="input changed delay:300ms[this.value.length >= 2]"
-                               hx-target="#suggest-name"
-                               hx-swap="innerHTML"
-                               hx-vals='js:{"q": this.value, "field": "last_name"}'
-                               hx-params="none"
-                               autocomplete="off"
-                               role="combobox" aria-expanded="false" aria-controls="suggest-name">
-                        <ul id="suggest-name" class="suggestion-list" role="listbox"></ul>
-                    </div>
-                </label>
-            </div>
-            <div style="margin-top: 0.25rem;">
-                <small><a href="#" id="link-loc-mode" style="color: var(--pico-muted-color);">Search by location instead</a></small>
-            </div>
-        </div>
-
-        <!-- Location fields (optional filter in name mode, or primary in location mode) -->
-        <div id="ind-loc-fields" style="display: none; margin-top: 0.5rem;">
-            <!-- Remove button shown only when location is an optional filter (not in location-primary mode) -->
-            <div id="ind-loc-filter-header" style="display: none; justify-content: flex-end; margin-bottom: 0.25rem;">
-                <a href="#" id="btn-remove-location" style="font-size: 0.8rem; color: var(--pico-muted-color);">✕ Remove</a>
-            </div>
-            {% if mapbox_token %}
-            <label>
-                Location
-                <div class="autocomplete-wrap">
-                    <input type="text" id="location-input"
-                           placeholder="Start typing an address, city, or ZIP&hellip;"
-                           autocomplete="off"
-                           role="combobox" aria-expanded="false" aria-controls="suggest-location">
-                    <ul id="suggest-location" class="suggestion-list" role="listbox"></ul>
-                </div>
-                <small style="color: var(--pico-muted-color);">Fills city, state &amp; ZIP below</small>
-            </label>
-            {% endif %}
-            <div class="grid">
-                <label>
-                    ZIP Code
-                    <input type="text" name="zip" id="zip-input" placeholder="94110" value="{{ q.zip or '' }}" maxlength="5" inputmode="numeric">
-                    <small id="zip-hint" style="display: none; color: var(--pico-primary);"></small>
-                </label>
-                <label>
-                    City
-                    <input type="text" name="city" id="city-input" placeholder="San Francisco" value="{{ q.city or '' }}">
-                </label>
-                <label>
-                    State
-                    <select name="state" id="state-select">
-                        <option value="">Any State</option>
-                        {% for code, label in states %}
-                        <option value="{{ code }}" {% if q.state == code %}selected{% endif %}>{{ label }}</option>
-                        {% endfor %}
-                    </select>
-                </label>
-            </div>
-        </div>
-
-        <!-- "Search by name instead" link (only shown in location-primary mode) -->
-        <div id="ind-loc-mode-footer" style="display: none; margin-top: 0.25rem;">
-            <small><a href="#" id="link-name-mode" style="color: var(--pico-muted-color);">Search by name instead</a></small>
-        </div>
-
-        <!-- Filter add buttons (location only; specialty is shared below) -->
-        <div id="ind-filter-row" style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
-            <button type="button" id="btn-add-location" class="btn-filter-add"><span aria-hidden="true">+</span> Location</button>
-        </div>
-
+    <div class="search-bar-wrap">
+      <span class="search-icon">⌕</span>
+      <input
+        type="text"
+        id="query-input"
+        name="query"
+        placeholder="Dr. Sarah Chen, cardiology…"
+        autocomplete="off"
+        spellcheck="false"
+        autofocus
+        style="flex:1; background:transparent; border:none; padding:0; font-size:1rem; color:var(--text);"
+      >
+      <button type="submit" class="btn btn-primary btn-sm">Search</button>
+      <span id="search-spinner" class="htmx-indicator" style="color: var(--text-muted); font-size: 0.8rem;">searching…</span>
     </div>
 
-    <!-- Organization name field -->
-    <div id="fields-organization" style="display: none;">
-        <label>
-            Organization Name
-            <div class="autocomplete-wrap">
-                <input type="text" name="org" placeholder="Kaiser Permanente" value="{{ q.org or '' }}"
-                       hx-get="/api/suggest/names"
-                       hx-trigger="input changed delay:300ms[this.value.length >= 2]"
-                       hx-target="#suggest-org"
-                       hx-swap="innerHTML"
-                       hx-vals='js:{"q": this.value, "field": "organization_name"}'
-                       hx-params="none"
-                       autocomplete="off"
-                       role="combobox" aria-expanded="false" aria-controls="suggest-org">
-                <ul id="suggest-org" class="suggestion-list" role="listbox"></ul>
-            </div>
-        </label>
+    <div class="parse-chips" id="parse-chips"></div>
+
+    <div class="filter-pills" id="filter-pills">
+      <button type="button" class="filter-pill" id="pill-location" onclick="toggleLocation()">+ Location</button>
+      <button type="button" class="filter-pill" id="pill-org" onclick="toggleOrg()">Org search</button>
     </div>
 
-    <!-- Specialty filter (shared: available for both individual and org searches) -->
-    <div id="filter-specialty" style="display: none; margin-top: 0.75rem;">
-        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.25rem;">
-            <strong style="font-size: 0.9rem;">Specialty</strong>
-            <a href="#" id="btn-remove-specialty" style="font-size: 0.8rem; color: var(--pico-muted-color);">✕ Remove</a>
-        </div>
-        <div class="autocomplete-wrap">
-            <input type="text" name="specialty" id="specialty-input"
-                   placeholder="Orthopedic Surgery, Family Medicine, etc."
-                   value="{{ q.specialty or '' }}"
-                   autocomplete="off"
-                   role="combobox" aria-expanded="false" aria-controls="suggest-specialty">
-            <ul id="suggest-specialty" class="suggestion-list" role="listbox"></ul>
-        </div>
-    </div>
-    <div id="shared-filter-row" style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
-        <button type="button" id="btn-add-specialty" class="btn-filter-add"><span aria-hidden="true">+</span> Specialty</button>
-        <div style="margin-left: auto; display: flex; align-items: center; gap: 0.5rem;">
-            <label style="margin: 0; display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; white-space: nowrap; color: var(--pico-muted-color);">
-                Max results
-                <select name="limit" style="margin: 0; padding: 0.25rem 0.5rem; font-size: 0.85rem; width: auto;">
-                    <option value="10" {% if q.limit == "10" %}selected{% endif %}>10</option>
-                    <option value="25" {% if q.limit == "25" %}selected{% endif %}>25</option>
-                    <option value="50" {% if q.limit == "50" %}selected{% endif %}>50</option>
-                    <option value="100" {% if q.limit == "100" %}selected{% endif %}>100</option>
-                </select>
-            </label>
-        </div>
+    <div id="location-fields" style="display:none; margin-top: 10px;">
+      {% if mapbox_token %}
+      <div class="autocomplete-wrap" style="margin-bottom: 6px;">
+        <input
+          type="text"
+          id="location-input"
+          placeholder="City, ZIP, or address…"
+          autocomplete="off"
+          style="width:100%;"
+        >
+        <ul id="location-suggestions" class="suggestions-list" style="display:none;"></ul>
+      </div>
+      {% else %}
+      <div style="display:flex; gap:6px;">
+        <input type="text" id="city-input" placeholder="City" style="flex:1;" oninput="document.getElementById('field-city').value=this.value">
+        <input type="text" id="zip-input" placeholder="ZIP" style="width:90px;" oninput="document.getElementById('field-zip').value=this.value">
+      </div>
+      {% endif %}
     </div>
 
-    <div style="margin-top: 1.25rem;">
-        <button type="submit" style="width: 100%; padding: 0.75rem 1rem; font-size: 1rem; font-weight: 600;">
-            Search NPI Registry
-            <span id="search-spinner" class="htmx-indicator" aria-label="Searching&hellip;"></span>
-        </button>
-    </div>
-</form>
-</article>
+  </form>
 
-<div id="results">
+  <div id="results" style="margin-top: 1.5rem;">
     {% if initial_results %}
-    {% include "_results.html" %}
+      <!-- results injected here by HTMX -->
     {% endif %}
+  </div>
 </div>
 
 <script>
-// --- Autocomplete engine (reusable for all fields) ---
-function initAutocomplete(inputEl, listEl) {
-    var activeIdx = -1;
+  var MAPBOX_TOKEN = {{ mapbox_token | tojson }};
+  var parseDebounce;
+  var locationDebounce;
 
-    function getItems() { return listEl.querySelectorAll('li'); }
+  // ── Parsing ──────────────────────────────────────────────────────────────
+  var HONORIFICS = ['dr.', 'dr', 'doctor', 'doc', 'prof.', 'prof', 'professor'];
+  var CREDENTIALS = ['md', 'm.d.', 'do', 'd.o.', 'phd', 'ph.d.', 'dds', 'dvm',
+    'np', 'pa', 'pa-c', 'rn', 'aprn', 'cnp', 'facp', 'facs', 'facog', 'faad',
+    'mph', 'ms', 'dnp'];
+  // Tokens that are credentials but also common names — keep as name in chips
+  var AMBIGUOUS_CREDS = ['do', 'kim', 'may', 'lee'];
+  var SPECIALTIES = [
+    ['internal medicine','Internal Medicine'],['family medicine','Family Medicine'],
+    ['family practice','Family Medicine'],['orthopedic surgery','Orthopedic Surgery'],
+    ['general surgery','General Surgery'],['infectious disease','Infectious Disease'],
+    ['physical therapy','Physical Therapy'],['occupational therapy','Occupational Therapy'],
+    ['hematology oncology','Hematology & Oncology'],['allergy immunology','Allergy & Immunology'],
+    ['pulmonary disease','Pulmonary Disease'],['sports medicine','Sports Medicine'],
+    ['sleep medicine','Sleep Medicine'],['pain management','Pain Management'],
+    ['obstetrics gynecology','Obstetrics & Gynecology'],['ob gyn','Obstetrics & Gynecology'],
+    ['cardiology','Cardiology'],['cardiologist','Cardiology'],
+    ['neurology','Neurology'],['neurologist','Neurology'],
+    ['orthopedics','Orthopedic Surgery'],['orthopedic','Orthopedic Surgery'],['ortho','Orthopedic Surgery'],
+    ['pediatrics','Pediatrics'],['pediatrician','Pediatrics'],
+    ['dermatology','Dermatology'],['dermatologist','Dermatology'],
+    ['psychiatry','Psychiatry'],['psychiatrist','Psychiatry'],['psych','Psychiatry'],
+    ['oncology','Hematology & Oncology'],['oncologist','Hematology & Oncology'],
+    ['endocrinology','Endocrinology'],['gastroenterology','Gastroenterology'],
+    ['ophthalmology','Ophthalmology'],['urology','Urology'],['urologist','Urology'],
+    ['pulmonology','Pulmonology'],['rheumatology','Rheumatology'],
+    ['allergist','Allergy & Immunology'],['radiology','Radiology'],
+    ['anesthesiology','Anesthesiology'],['nephrology','Nephrology'],
+    ['podiatry','Podiatry'],['optometry','Optometry'],['chiropractic','Chiropractic'],
+    ['internist','Internal Medicine'],['obgyn','Obstetrics & Gynecology'],
+    ['gi','Gastroenterology'],
+  ];
+  var ORG_SIGNALS = ['hospital','clinic','medical center','health system','urgent care',
+    'institute','associates','group','llc','inc','corporation','foundation',
+    'kaiser','sutter','ucsf','stanford','cedars'];
 
-    function setActive(idx) {
-        var items = getItems();
-        items.forEach(function(li) { li.classList.remove('active'); });
-        activeIdx = idx;
-        if (idx >= 0 && idx < items.length) {
-            items[idx].classList.add('active');
-            items[idx].scrollIntoView({ block: 'nearest' });
-        }
+  function normalizeText(s) {
+    return s.toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=_`~()]/g,' ').replace(/\s+/g,' ').trim();
+  }
+
+  function parseQuery(raw) {
+    if (!raw.trim()) return {firstName:'',lastName:'',specialty:'',honorific:'',credentials:[],isOrg:false};
+    var text = normalizeText(raw);
+
+    for (var i = 0; i < ORG_SIGNALS.length; i++) {
+      if (text.includes(ORG_SIGNALS[i])) return {isOrg:true, orgName:raw.trim(), firstName:'',lastName:'',specialty:'',honorific:'',credentials:[]};
     }
 
-    function selectItem(li) {
-        inputEl.value = li.dataset.value;
-        listEl.innerHTML = '';
-        inputEl.setAttribute('aria-expanded', 'false');
-        if (li.dataset.extra) {
-            var extra = JSON.parse(li.dataset.extra);
-            Object.keys(extra).forEach(function(name) {
-                var field = document.querySelector('[name="' + name + '"]');
-                if (field) field.value = extra[name];
+    var tokens = text.split(' ');
+    var honorific = '';
+    if (tokens.length > 0 && HONORIFICS.indexOf(tokens[0]) !== -1) {
+      honorific = tokens[0].replace('.','');
+      tokens = tokens.slice(1);
+    }
+
+    var credentials = [];
+    var remaining = [];
+    for (var i = 0; i < tokens.length; i++) {
+      var tok = tokens[i].replace(/\./g,'');
+      if (CREDENTIALS.indexOf(tok) !== -1 && AMBIGUOUS_CREDS.indexOf(tok) === -1) {
+        credentials.push(tok.toUpperCase());
+      } else {
+        remaining.push(tokens[i]);
+      }
+    }
+    tokens = remaining;
+
+    var specialty = '';
+    var joined = tokens.join(' ');
+    for (var i = 0; i < SPECIALTIES.length; i++) {
+      var key = SPECIALTIES[i][0], label = SPECIALTIES[i][1];
+      if (key.indexOf(' ') !== -1 && joined.includes(key)) {
+        specialty = label;
+        joined = joined.replace(key,'').replace(/\s+/g,' ').trim();
+        tokens = joined.split(' ').filter(Boolean);
+        break;
+      }
+    }
+    if (!specialty) {
+      var nameTokens = [];
+      for (var i = 0; i < tokens.length; i++) {
+        var matched = false;
+        for (var j = 0; j < SPECIALTIES.length; j++) {
+          if (SPECIALTIES[j][0].indexOf(' ') === -1 && tokens[i] === SPECIALTIES[j][0]) {
+            specialty = SPECIALTIES[j][1]; matched = true; break;
+          }
+        }
+        if (!matched) nameTokens.push(tokens[i]);
+      }
+      tokens = nameTokens;
+    }
+
+    tokens = tokens.filter(Boolean);
+    var firstName = '', lastName = '';
+    if (tokens.length === 1) { lastName = tokens[0]; }
+    else if (tokens.length >= 2) { firstName = tokens[0]; lastName = tokens[tokens.length-1]; }
+
+    return {firstName:firstName, lastName:lastName, specialty:specialty, honorific:honorific, credentials:credentials, isOrg:false};
+  }
+
+  function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+
+  function renderChips(parsed) {
+    var el = document.getElementById('parse-chips');
+    if (!el) return;
+    el.innerHTML = '';
+    if (!parsed.firstName && !parsed.lastName && !parsed.specialty && !parsed.honorific && !parsed.credentials.length) return;
+    if (parsed.isOrg) {
+      el.innerHTML = '<span class="chip chip-cred"><span class="chip-label">org</span> ' + parsed.orgName + '</span>';
+      return;
+    }
+    if (parsed.honorific) el.innerHTML += '<span class="chip chip-cred"><span class="chip-label">title</span> ' + parsed.honorific.toUpperCase() + '</span>';
+    if (parsed.firstName) el.innerHTML += '<span class="chip chip-name"><span class="chip-label">first</span> ' + cap(parsed.firstName) + '</span>';
+    if (parsed.lastName) el.innerHTML += '<span class="chip chip-name"><span class="chip-label">last</span> ' + cap(parsed.lastName) + '</span>';
+    if (parsed.specialty) el.innerHTML += '<span class="chip chip-specialty"><span class="chip-label">specialty</span> ' + parsed.specialty + '</span>';
+    for (var i = 0; i < parsed.credentials.length; i++) {
+      el.innerHTML += '<span class="chip chip-cred"><span class="chip-label">credential</span> ' + parsed.credentials[i] + '</span>';
+    }
+  }
+
+  document.getElementById('query-input').addEventListener('input', function(e) {
+    clearTimeout(parseDebounce);
+    parseDebounce = setTimeout(function() {
+      var parsed = parseQuery(e.target.value);
+      renderChips(parsed);
+      if (parsed.isOrg) {
+        document.getElementById('field-type').value = 'NPI-2';
+      } else {
+        document.getElementById('field-type').value = '';
+      }
+    }, 80);
+  });
+
+  // ── Filter pills ──────────────────────────────────────────────────────────
+  function toggleLocation() {
+    var pill = document.getElementById('pill-location');
+    var fields = document.getElementById('location-fields');
+    var shown = fields.style.display !== 'none';
+    fields.style.display = shown ? 'none' : 'block';
+    pill.classList.toggle('active', !shown);
+    if (shown) {
+      document.getElementById('field-city').value = '';
+      document.getElementById('field-state').value = '';
+      document.getElementById('field-zip').value = '';
+    }
+  }
+
+  function toggleOrg() {
+    var pill = document.getElementById('pill-org');
+    var active = pill.classList.toggle('active');
+    document.getElementById('field-type').value = active ? 'NPI-2' : '';
+    var queryInput = document.getElementById('query-input');
+    queryInput.placeholder = active ? 'Hospital or clinic name…' : 'Dr. Sarah Chen, cardiology…';
+  }
+
+  {% if mapbox_token %}
+  // ── Mapbox location autocomplete ──────────────────────────────────────────
+  function setupLocationAutocomplete() {
+    var input = document.getElementById('location-input');
+    var list = document.getElementById('location-suggestions');
+    if (!input || !list) return;
+
+    input.addEventListener('input', function() {
+      clearTimeout(locationDebounce);
+      var q = input.value.trim();
+      if (q.length < 3) { list.style.display = 'none'; return; }
+      locationDebounce = setTimeout(function() {
+        var url = 'https://api.mapbox.com/geocoding/v5/mapbox.places/' +
+          encodeURIComponent(q) + '.json?country=US&types=place,postcode&access_token=' + MAPBOX_TOKEN;
+        fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+          list.innerHTML = '';
+          if (!data.features || !data.features.length) { list.style.display = 'none'; return; }
+          data.features.forEach(function(f) {
+            var li = document.createElement('li');
+            li.textContent = f.place_name;
+            li.addEventListener('click', function() {
+              input.value = f.place_name;
+              list.style.display = 'none';
+              var zip = '', city = '', state = '';
+              if (f.place_type && f.place_type[0] === 'postcode') { zip = f.text; }
+              (f.context || []).forEach(function(c) {
+                if (c.id.startsWith('place.')) city = c.text;
+                if (c.id.startsWith('region.')) state = c.short_code ? c.short_code.replace('US-','') : '';
+                if (c.id.startsWith('postcode.') && !zip) zip = c.text;
+              });
+              document.getElementById('field-city').value = city;
+              document.getElementById('field-state').value = state;
+              document.getElementById('field-zip').value = zip;
             });
-        }
-    }
-
-    function dismiss() {
-        listEl.innerHTML = '';
-        inputEl.setAttribute('aria-expanded', 'false');
-        activeIdx = -1;
-    }
-
-    inputEl.addEventListener('keydown', function(e) {
-        var items = getItems();
-        if (!items.length) return;
-        if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            setActive(Math.min(activeIdx + 1, items.length - 1));
-        } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            setActive(Math.max(activeIdx - 1, 0));
-        } else if (e.key === 'Enter' && activeIdx >= 0) {
-            e.preventDefault();
-            selectItem(items[activeIdx]);
-        } else if (e.key === 'Escape') {
-            dismiss();
-        }
+            list.appendChild(li);
+          });
+          list.style.display = 'block';
+        });
+      }, 300);
     });
 
-    listEl.addEventListener('click', function(e) {
-        var li = e.target.closest('li');
-        if (li) selectItem(li);
+    document.addEventListener('click', function(e) {
+      if (!input.contains(e.target)) list.style.display = 'none';
     });
-
-    // Reset active index when htmx swaps new suggestions
-    listEl.addEventListener('htmx:afterSwap', function() {
-        activeIdx = -1;
-        inputEl.setAttribute('aria-expanded', getItems().length > 0 ? 'true' : 'false');
-    });
-
-    // Clear suggestions when input drops below 2 chars
-    inputEl.addEventListener('input', function() {
-        if (inputEl.value.length < 2) dismiss();
-    });
-
-    // Dismiss on outside click (delay lets click-on-suggestion register)
-    document.addEventListener('mousedown', function(e) {
-        if (!inputEl.contains(e.target) && !listEl.contains(e.target)) {
-            dismiss();
-        }
-    });
-}
-
-// --- Init autocomplete on name/org fields ---
-initAutocomplete(document.querySelector('[name="first"]'), document.getElementById('suggest-first'));
-initAutocomplete(document.querySelector('[name="name"]'), document.getElementById('suggest-name'));
-initAutocomplete(document.querySelector('[name="org"]'), document.getElementById('suggest-org'));
-
-// --- Specialty: client-side filtering from static taxonomy list ---
-var taxonomies = [];
-var specialtyInput = document.getElementById('specialty-input');
-var specialtyList = document.getElementById('suggest-specialty');
-
-fetch('/api/taxonomies')
-    .then(function(r) { return r.json(); })
-    .then(function(data) { taxonomies = data; });
-
-function renderSpecialtySuggestions(q) {
-    if (q.length < 2) { specialtyList.innerHTML = ''; return; }
-    var lower = q.toLowerCase();
-    var matches = taxonomies.filter(function(t) { return t.toLowerCase().indexOf(lower) !== -1; }).slice(0, 10);
-    specialtyList.innerHTML = matches.map(function(m) {
-        return '<li role="option" data-value="' + m.replace(/"/g, '&quot;') + '"><strong>' + m + '</strong></li>';
-    }).join('');
-    specialtyInput.setAttribute('aria-expanded', matches.length > 0 ? 'true' : 'false');
-}
-
-specialtyInput.addEventListener('input', function() {
-    renderSpecialtySuggestions(this.value.trim());
-});
-
-initAutocomplete(specialtyInput, specialtyList);
-
-// --- Entity type toggle ---
-function clearSuggestions(id) { var el = document.getElementById(id); if (el) el.innerHTML = ''; }
-
-document.querySelectorAll('input[name="entity_mode"]').forEach(function(radio) {
-    radio.addEventListener('change', function(e) {
-        var isInd = e.target.value === 'individual';
-        document.getElementById('fields-individual').style.display = isInd ? '' : 'none';
-        document.getElementById('fields-organization').style.display = isInd ? 'none' : '';
-        document.getElementById('entity-type').value = isInd ? 'NPI-1' : 'NPI-2';
-        if (isInd) {
-            document.querySelector('#fields-organization input[name="org"]').value = '';
-            clearSuggestions('suggest-org');
-            setIndMode('name');
-            setSpecialtyVisible(false);
-        } else {
-            document.querySelectorAll('#fields-individual input').forEach(function(i) { i.value = ''; });
-            document.getElementById('state-select').value = '';
-            clearSuggestions('suggest-first');
-            clearSuggestions('suggest-name');
-        }
-    });
-});
-
-// --- Individual search: name/location mode + optional specialty filter ---
-function setIndMode(mode) {
-    var nameSection = document.getElementById('ind-name-mode');
-    var locFields = document.getElementById('ind-loc-fields');
-    var locFooter = document.getElementById('ind-loc-mode-footer');
-    var btnAddLoc = document.getElementById('btn-add-location');
-
-    if (mode === 'location') {
-        nameSection.style.display = 'none';
-        locFields.style.display = '';
-        locFooter.style.display = '';
-        btnAddLoc.style.display = 'none';
-        document.getElementById('ind-loc-filter-header').style.display = 'none';
-        document.querySelectorAll('#ind-name-mode input').forEach(function(i) { i.value = ''; });
-        clearSuggestions('suggest-first');
-        clearSuggestions('suggest-name');
-    } else {
-        nameSection.style.display = '';
-        locFields.style.display = 'none';
-        locFooter.style.display = 'none';
-        btnAddLoc.style.display = '';
-        var zipEl = document.getElementById('zip-input');
-        var cityEl = document.getElementById('city-input');
-        var stateEl = document.getElementById('state-select');
-        var hintEl = document.getElementById('zip-hint');
-        var locEl = document.getElementById('location-input');
-        if (zipEl) zipEl.value = '';
-        if (cityEl) cityEl.value = '';
-        if (stateEl) stateEl.value = '';
-        if (hintEl) hintEl.style.display = 'none';
-        if (locEl) { locEl.value = ''; clearSuggestions('suggest-location'); }
-    }
-}
-
-function setSpecialtyVisible(visible) {
-    var filterEl = document.getElementById('filter-specialty');
-    var btnAdd = document.getElementById('btn-add-specialty');
-    if (visible) {
-        filterEl.style.display = '';
-        btnAdd.style.display = 'none';
-    } else {
-        filterEl.style.display = 'none';
-        btnAdd.style.display = '';
-        var inp = document.getElementById('specialty-input');
-        if (inp) inp.value = '';
-        clearSuggestions('suggest-specialty');
-    }
-}
-
-document.getElementById('link-loc-mode').addEventListener('click', function(e) {
-    e.preventDefault();
-    setIndMode('location');
-});
-
-document.getElementById('link-name-mode').addEventListener('click', function(e) {
-    e.preventDefault();
-    setIndMode('name');
-});
-
-document.getElementById('btn-add-specialty').addEventListener('click', function() {
-    setSpecialtyVisible(true);
-    document.getElementById('specialty-input').focus();
-});
-
-document.getElementById('btn-remove-specialty').addEventListener('click', function(e) {
-    e.preventDefault();
-    setSpecialtyVisible(false);
-});
-
-document.getElementById('btn-add-location').addEventListener('click', function() {
-    document.getElementById('ind-loc-fields').style.display = '';
-    document.getElementById('btn-add-location').style.display = 'none';
-    document.getElementById('ind-loc-filter-header').style.display = 'flex';
-});
-
-document.getElementById('btn-remove-location').addEventListener('click', function(e) {
-    e.preventDefault();
-    setIndMode('name');
-});
-
-// Clear all suggestion dropdowns on form submit
-document.querySelector('form').addEventListener('htmx:beforeRequest', function(e) {
-    // Only clear for the main search submit, not for suggestion fetches
-    if (e.detail.target && e.detail.target.id === 'results') {
-        document.getElementById('results').innerHTML =
-            '<div style="text-align: center; padding: 2rem;"><span aria-busy="true">Searching the NPI Registry\u2026</span></div>';
-        ['suggest-first', 'suggest-name', 'suggest-org', 'suggest-specialty', 'suggest-location'].forEach(clearSuggestions);
-    }
-});
-
-// --- Location autocomplete (Mapbox Geocoding) ---
-{% if mapbox_token %}
-(function() {
-    var token = {{ mapbox_token | tojson }};
-    var locationInput = document.getElementById('location-input');
-    var locationList = document.getElementById('suggest-location');
-    var geoCoords = null;
-    var geoRequested = false;
-    var debounceTimer = null;
-
-    initAutocomplete(locationInput, locationList);
-
-    locationInput.addEventListener('focus', function() {
-        if (!geoRequested && navigator.geolocation) {
-            geoRequested = true;
-            navigator.geolocation.getCurrentPosition(
-                function(pos) { geoCoords = pos.coords.longitude + ',' + pos.coords.latitude; },
-                function() {}
-            );
-        }
-    });
-
-    locationInput.addEventListener('input', function() {
-        var q = this.value.trim();
-        clearTimeout(debounceTimer);
-        if (q.length < 2) return;
-        debounceTimer = setTimeout(function() {
-            var url = 'https://api.mapbox.com/geocoding/v5/mapbox.places/'
-                + encodeURIComponent(q) + '.json'
-                + '?access_token=' + encodeURIComponent(token)
-                + '&country=us&types=address,place,postcode&limit=6';
-            if (geoCoords) url += '&proximity=' + encodeURIComponent(geoCoords);
-            fetch(url)
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    clearSuggestions('suggest-location');
-                    if (data.features && data.features.length) {
-                        data.features.forEach(function(f) {
-                            var city = '', state = '', zip = '';
-                            (f.context || []).forEach(function(c) {
-                                if (c.id.indexOf('place.') === 0) city = c.text;
-                                if (c.id.indexOf('region.') === 0) state = (c.short_code || '').replace('US-', '');
-                                if (c.id.indexOf('postcode.') === 0) zip = c.text;
-                            });
-                            if (!city && f.place_type && f.place_type.indexOf('place') !== -1) city = f.text;
-                            if (!zip && f.place_type && f.place_type.indexOf('postcode') !== -1) zip = f.text;
-                            var li = document.createElement('li');
-                            li.setAttribute('role', 'option');
-                            li.dataset.value = f.place_name;
-                            li.dataset.extra = JSON.stringify({city: city, state: state, zip: zip});
-                            var strong = document.createElement('strong');
-                            strong.textContent = f.place_name;
-                            li.appendChild(strong);
-                            locationList.appendChild(li);
-                        });
-                    }
-                    locationList.dispatchEvent(new Event('htmx:afterSwap'));
-                })
-                .catch(function() {});
-        }, 300);
-    });
-})();
-{% endif %}
-
-// --- Page-load: auto-expand individual filters when values are pre-populated ---
-(function() {
-    var hasSpecialty = {{ (q.specialty or '') | tojson }} !== '';
-    var hasCity = {{ (q.city or '') | tojson }} !== '';
-    var hasZip = {{ (q.zip or '') | tojson }} !== '';
-    var hasName = {{ ((q.first or '') + (q.name or '')) | tojson }} !== '';
-    var hasState = {{ (q.state or '') | tojson }} !== '';
-    if (hasSpecialty) setSpecialtyVisible(true);
-    if (hasCity || hasZip || hasState) {
-        if (!hasName) {
-            setIndMode('location');
-        } else {
-            document.getElementById('ind-loc-fields').style.display = '';
-            document.getElementById('btn-add-location').style.display = 'none';
-            document.getElementById('ind-loc-filter-header').style.display = 'flex';
-        }
-    }
-})();
-
-// --- ZIP code autofill ---
-document.getElementById('zip-input').addEventListener('input', function(e) {
-    var zip = e.target.value.replace(/\D/g, '');
-    var hint = document.getElementById('zip-hint');
-    if (zip.length === 5) {
-        fetch('/api/zip/' + zip)
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (data.city) {
-                    document.getElementById('city-input').value = data.city;
-                    document.getElementById('state-select').value = data.state;
-                    hint.textContent = data.city + ', ' + data.state;
-                    hint.style.display = '';
-                } else {
-                    hint.style.display = 'none';
-                }
-            })
-            .catch(function() { hint.style.display = 'none'; });
-    } else {
-        hint.style.display = 'none';
-    }
-});
+  }
+  setupLocationAutocomplete();
+  {% endif %}
 </script>
 {% endblock %}
