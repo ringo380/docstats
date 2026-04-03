@@ -499,7 +499,11 @@ async def set_appt_address(
     """Save appointment address for a provider — returns address chip partial."""
     address = address.strip()
     if address:
-        storage.set_appt_address(npi, address)
+        found = storage.set_appt_address(npi, address)
+        if not found:
+            return HTMLResponse(
+                '<span class="appt-error">Provider must be saved before adding an appointment address.</span>'
+            )
     provider = storage.get_provider(npi)
     return _render("_appt_address.html", {
         "request": request,

@@ -73,6 +73,18 @@ def test_appt_address_post(client):
     assert provider.appt_address == "1 Shrader St, San Francisco, CA 94117"
 
 
+def test_appt_address_post_unsaved_provider(client):
+    """POST for an unsaved provider returns an error message, does not silently drop."""
+    test_client, storage, mock_client = client
+    resp = test_client.post(
+        "/provider/9999999999/appt-address",
+        data={"address": "1 Shrader St, San Francisco, CA 94117"},
+    )
+    assert resp.status_code == 200
+    assert "saved" in resp.text.lower()
+    assert storage.get_provider("9999999999") is None
+
+
 def test_appt_address_delete(client):
     """DELETE /provider/{npi}/appt-address clears address."""
     test_client, storage, mock_client = client
