@@ -1,17 +1,29 @@
 {% extends "base.html" %}
 
-{% block title %}Export All Referrals{% endblock %}
-
 {% block content %}
-<div class="export-all-page">
-  {% for r in referrals %}
-  <div class="referral-doc-wrap{% if not loop.last %} page-break{% endif %}">
-    <h2>{{ r.result.display_name }}</h2>
-    <pre class="referral-doc">{{ r.export_text }}</pre>
+  <div class="action-bar">
+    <a href="/saved" class="back-link">← My Referrals</a>
+    <button class="btn btn-primary" onclick="window.print()">⬇ Save All as PDF</button>
+    <button class="btn btn-secondary" onclick="window.print()">🖨 Print All</button>
   </div>
+
+  {% for r in referrals %}
+    <div {% if not loop.last %}class="page-break"{% endif %} style="margin-bottom: 2rem;">
+      <div class="provider-hgroup {% if not r.result.is_individual %}org{% endif %}" style="margin-bottom: 1rem;">
+        <h2 style="font-size: 1.1rem;">{{ r.result.display_name }}</h2>
+        <div class="sub">{{ r.result.primary_specialty }}</div>
+      </div>
+      <div class="referral-doc">{{ r.export_text }}</div>
+      {% if r.appt_address %}
+        <div class="appt-address-section" style="margin-top: 0.75rem;">
+          <div class="label">My Appointment Location</div>
+          <div>{{ r.appt_address }}</div>
+        </div>
+      {% endif %}
+    </div>
+  {% else %}
+    <div class="empty-state">
+      <p>No providers saved.</p>
+    </div>
   {% endfor %}
-  {% if not referrals %}
-  <p>No saved providers to export.</p>
-  {% endif %}
-</div>
 {% endblock %}
