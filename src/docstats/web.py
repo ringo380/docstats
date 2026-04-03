@@ -570,6 +570,7 @@ async def export_text(
     saved = storage.get_provider(npi)
     if saved:
         result = saved.to_npi_result()
+        appt_address = saved.appt_address
     else:
         try:
             result = client.lookup(npi)
@@ -577,8 +578,9 @@ async def export_text(
             return PlainTextResponse(content=f"Error: {e}", status_code=500)
         if result is None:
             return PlainTextResponse(content=f"No provider found for NPI {npi}.", status_code=404)
+        appt_address = None
 
-    text = referral_export(result)
+    text = referral_export(result, appt_address=appt_address)
     return PlainTextResponse(
         content=text,
         headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},

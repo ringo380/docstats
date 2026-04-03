@@ -8,12 +8,6 @@
   <div class="referral-doc-wrap{% if not loop.last %} page-break{% endif %}">
     <h2>{{ r.result.display_name }}</h2>
     <pre class="referral-doc">{{ r.export_text }}</pre>
-    {% if r.appt_address %}
-    <div class="doc-appt-section">
-      <div class="doc-appt-label">MY APPOINTMENT LOCATION</div>
-      <div>{{ r.appt_address }}</div>
-    </div>
-    {% endif %}
   </div>
   {% endfor %}
   {% if not referrals %}
