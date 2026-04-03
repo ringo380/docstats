@@ -5,7 +5,7 @@
 <div class="flash flash-error">{{ error }}</div>
 <a href="/" role="button" class="outline secondary">Back to Search</a>
 {% else %}
-<hgroup>
+<hgroup class="provider-hgroup {% if result.is_individual %}provider-hgroup--ind{% else %}provider-hgroup--org{% endif %}">
     <h2>{{ result.display_name }}</h2>
     <p>
         {% if result.is_individual %}
@@ -13,8 +13,13 @@
         {% else %}
         <span class="badge-org">Organization</span>
         {% endif %}
-        &mdash; NPI: <strong>{{ result.number }}</strong>
-        &mdash; Status: {{ result.status }}
+        NPI: <code class="npi-code">{{ result.number }}</code>
+        &mdash;
+        {% if result.status == "A" %}
+        <span class="status-active">Active</span>
+        {% else %}
+        <span class="status-inactive">Inactive</span>
+        {% endif %}
         {% if result.enumeration_date %}
         &mdash; Enumerated: {{ result.enumeration_date }}
         {% endif %}

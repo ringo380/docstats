@@ -116,7 +116,7 @@
 
         <!-- Filter add buttons (location only; specialty is shared below) -->
         <div id="ind-filter-row" style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
-            <button type="button" id="btn-add-location" class="secondary outline" style="padding: 0.25rem 0.75rem; font-size: 0.82rem;">+ Location</button>
+            <button type="button" id="btn-add-location" class="btn-filter-add"><span aria-hidden="true">+</span> Location</button>
         </div>
 
     </div>
@@ -156,7 +156,7 @@
         </div>
     </div>
     <div id="shared-filter-row" style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
-        <button type="button" id="btn-add-specialty" class="secondary outline" style="padding: 0.25rem 0.75rem; font-size: 0.82rem;">+ Specialty</button>
+        <button type="button" id="btn-add-specialty" class="btn-filter-add"><span aria-hidden="true">+</span> Specialty</button>
         <div style="margin-left: auto; display: flex; align-items: center; gap: 0.5rem;">
             <label style="margin: 0; display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; white-space: nowrap; color: var(--pico-muted-color);">
                 Max results
@@ -170,10 +170,11 @@
         </div>
     </div>
 
-    <div style="margin-top: 1rem;">
-        <button type="submit" style="width: 100%;">
-            Search
-            <span id="search-spinner" class="htmx-indicator" aria-busy="true"></span>
+    <div style="margin-top: 1.25rem;">
+        <button type="submit" style="width: 100%; padding: 0.75rem 1rem; font-size: 1rem; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+            Search NPI Registry
+            <span id="search-spinner" class="htmx-indicator" aria-label="Searching&hellip;"></span>
+            <span aria-hidden="true" style="margin-left: auto; opacity: 0.7;">&#8594;</span>
         </button>
     </div>
 </form>
