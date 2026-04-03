@@ -548,13 +548,15 @@ async def export_view(
         if result is None:
             return HTMLResponse(content=f"<p>No provider found for NPI {npi}.</p>", status_code=404)
 
-    export_text = referral_export(result)
+    appt_address = saved.appt_address if saved else None
+    export_text = referral_export(result, appt_address=appt_address)
 
     return _render("export.html", {
         "request": request,
-        "active_page": "search",
+        "active_page": "saved",
         "result": result,
         "export_text": export_text,
+        "appt_address": appt_address,
     })
 
 
@@ -581,6 +583,29 @@ async def export_text(
         content=text,
         headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
     )
+
+
+@app.get("/saved/export", response_class=HTMLResponse)
+async def export_all(
+    request: Request,
+    storage: Storage = Depends(get_storage),
+):
+    """Print-optimized page with all saved referrals stacked."""
+    providers = storage.list_providers()
+    referrals = []
+    for p in providers:
+        result = p.to_npi_result()
+        text = referral_export(result, appt_address=p.appt_address)
+        referrals.append({
+            "result": result,
+            "export_text": text,
+            "appt_address": p.appt_address,
+        })
+    return _render("export_all.html", {
+        "request": request,
+        "active_page": "saved",
+        "referrals": referrals,
+    })
 
 
 @app.get("/history", response_class=HTMLResponse)
