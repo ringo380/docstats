@@ -48,6 +48,7 @@ class Storage:
                 address_zip TEXT,
                 raw_json TEXT NOT NULL,
                 notes TEXT,
+                appt_address TEXT,
                 saved_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -63,17 +64,35 @@ class Storage:
             ON search_history(searched_at);
         """)
         self._conn.commit()
+        try:
+            self._conn.execute("ALTER TABLE saved_providers ADD COLUMN appt_address TEXT")
+            self._conn.commit()
+        except Exception:
+            pass  # Column already exists
 
     def save_provider(self, result: NPIResult, notes: str | None = None) -> SavedProvider:
         """Save or update a provider from an API result."""
         provider = SavedProvider.from_npi_result(result, notes=notes)
         self._conn.execute(
             """
-            INSERT OR REPLACE INTO saved_providers
+            INSERT INTO saved_providers
                 (npi, display_name, entity_type, specialty, phone, fax,
                  address_line1, address_city, address_state, address_zip,
-                 raw_json, notes, saved_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 raw_json, notes, appt_address, saved_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(npi) DO UPDATE SET
+                display_name=excluded.display_name,
+                entity_type=excluded.entity_type,
+                specialty=excluded.specialty,
+                phone=excluded.phone,
+                fax=excluded.fax,
+                address_line1=excluded.address_line1,
+                address_city=excluded.address_city,
+                address_state=excluded.address_state,
+                address_zip=excluded.address_zip,
+                raw_json=excluded.raw_json,
+                notes=COALESCE(excluded.notes, saved_providers.notes),
+                updated_at=excluded.updated_at
             """,
             (
                 provider.npi,
@@ -88,6 +107,7 @@ class Storage:
                 provider.address_zip,
                 provider.raw_json,
                 provider.notes,
+                None,  # appt_address: always NULL on initial save; preserved via ON CONFLICT
                 provider.saved_at.isoformat() if provider.saved_at else datetime.now().isoformat(),
                 provider.updated_at.isoformat() if provider.updated_at else datetime.now().isoformat(),
             ),
@@ -116,6 +136,24 @@ class Storage:
         """Delete a saved provider. Returns True if it existed."""
         cursor = self._conn.execute(
             "DELETE FROM saved_providers WHERE npi = ?", (npi,)
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def set_appt_address(self, npi: str, address: str) -> bool:
+        """Set the appointment address for a saved provider. Returns True if the NPI was found."""
+        cursor = self._conn.execute(
+            "UPDATE saved_providers SET appt_address = ? WHERE npi = ?",
+            (address.strip(), npi),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def clear_appt_address(self, npi: str) -> bool:
+        """Clear the appointment address for a saved provider. Returns True if the NPI was found."""
+        cursor = self._conn.execute(
+            "UPDATE saved_providers SET appt_address = NULL WHERE npi = ?",
+            (npi,),
         )
         self._conn.commit()
         return cursor.rowcount > 0
@@ -205,6 +243,7 @@ class Storage:
             address_zip=row["address_zip"],
             raw_json=row["raw_json"],
             notes=row["notes"],
+            appt_address=row["appt_address"],
             saved_at=datetime.fromisoformat(row["saved_at"]) if row["saved_at"] else None,
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
         )

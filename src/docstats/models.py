@@ -270,6 +270,7 @@ class SavedProvider(BaseModel):
     address_zip: str | None = None
     raw_json: str  # full API result for rehydration
     notes: str | None = None
+    appt_address: str | None = None
     saved_at: datetime | None = None
     updated_at: datetime | None = None
 

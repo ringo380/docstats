@@ -17,3 +17,8 @@ venv/
 .claude/
 CLAUDE.md
 .worktrees/
+.junie/
+.mcp.json
+.superpowers/
+MEMORY.md
+docs/superpowers/

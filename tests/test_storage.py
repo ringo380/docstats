@@ -76,3 +76,36 @@ def test_rehydrate_saved_provider(storage: Storage):
     assert rehydrated.number == "1234567890"
     assert len(rehydrated.addresses) == 2
     assert len(rehydrated.taxonomies) == 2
+
+
+def test_appt_address_column_exists(storage: Storage):
+    """appt_address column should exist after init."""
+    cols = [r[1] for r in storage._conn.execute("PRAGMA table_info(saved_providers)")]
+    assert "appt_address" in cols
+
+
+def test_set_appt_address(storage: Storage):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result)
+    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117")
+    provider = storage.get_provider("1234567890")
+    assert provider.appt_address == "1 Shrader St, San Francisco, CA 94117"
+
+
+def test_clear_appt_address(storage: Storage):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result)
+    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117")
+    storage.clear_appt_address("1234567890")
+    provider = storage.get_provider("1234567890")
+    assert provider.appt_address is None
+
+
+def test_save_provider_preserves_appt_address(storage: Storage):
+    """Re-saving a provider must not reset its appt_address."""
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result)
+    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117")
+    storage.save_provider(result)
+    provider = storage.get_provider("1234567890")
+    assert provider.appt_address == "1 Shrader St, San Francisco, CA 94117"

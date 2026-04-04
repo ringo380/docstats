@@ -6,9 +6,8 @@ import logging
 import os
 import secrets
 from pathlib import Path
-from typing import Annotated
 
-from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi import Depends, FastAPI, Form, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -16,6 +15,7 @@ from starlette.responses import Response as StarletteResponse
 
 from docstats.cache import ResponseCache
 from docstats.client import NPPESClient, NPPESError
+from docstats.parse import build_interpretations, parse_query
 from docstats.formatting import referral_export
 from docstats.normalize import format_name
 from docstats.scoring import SearchQuery, rank_results
@@ -130,11 +130,15 @@ def get_client() -> NPPESClient:
     return _client
 
 
+def _saved_count(storage: Storage) -> int:
+    return len(storage.list_providers())
+
+
 # --- Routes ---
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+async def index(request: Request, storage: Storage = Depends(get_storage)):
     """Landing page with search form."""
     return _render("index.html", {
         "request": request,
@@ -143,12 +147,14 @@ async def index(request: Request):
         "q": {},
         "initial_results": False,
         "mapbox_token": MAPBOX_TOKEN,
+        "saved_count": _saved_count(storage),
     })
 
 
 @app.get("/search", response_class=HTMLResponse)
 async def search(
     request: Request,
+    query: str = Query("", alias="query"),
     name: str = Query("", alias="name"),
     first: str = Query("", alias="first"),
     middle: str = Query("", alias="middle"),
@@ -163,6 +169,7 @@ async def search(
     client: NPPESClient = Depends(get_client),
 ):
     """Search providers -- returns partial HTML for htmx."""
+    query = query.strip()
     name = name.strip()
     first = first.strip()
     middle = middle.strip()
@@ -178,72 +185,119 @@ async def search(
             "error": msg,
             "results": None,
             "result_count": 0,
+            "interp_desc": None,
         })
 
-    # Validate: need at least one real search field
-    if not any([name, first, org, specialty, city, zip]):
-        return _error("Please fill in at least one search field.")
+    response = None
+    interp_desc: str | None = None
 
-    # Validate: can't mix individual and org fields
-    if (name or first) and org:
-        return _error(
-            "Cannot search by individual name and organization name at the same time. "
-            "Use the Individual or Organization toggle to switch modes."
+    if query:
+        # Smart search bar path: try interpretations in sequence
+        parsed = parse_query(query)
+        interpretations = build_interpretations(parsed)
+        if not interpretations:
+            return _error("Please enter a provider name or specialty to search.")
+
+        last_error: Exception | None = None
+        interp: dict = {}
+        for interp in interpretations:
+            try:
+                result = client.search(**interp, limit=limit)
+                if result.result_count > 0:
+                    response = result
+                    # Build human-readable "Searched as:" description
+                    parts = []
+                    fn = interp.get("first_name", "")
+                    ln = interp.get("last_name", "")
+                    org_name = interp.get("organization_name", "")
+                    tax = interp.get("taxonomy_description", "")
+                    if fn and ln:
+                        parts.append(f"{fn} {ln}")
+                    elif ln:
+                        parts.append(ln)
+                    elif org_name:
+                        parts.append(org_name)
+                    if tax:
+                        parts.append(tax)
+                    interp_desc = " · ".join(parts)
+                    break
+            except NPPESError as e:
+                last_error = e
+
+        if response is None:
+            if last_error:
+                return _error(str(last_error))
+            storage.log_search({"query": query}, 0)
+            return _render("_results.html", {
+                "request": request,
+                "error": None,
+                "results": [],
+                "result_count": 0,
+                "interp_desc": None,
+            })
+
+        log_params: dict[str, str] = {"query": query}
+        if interp_desc:
+            log_params["_interp"] = interp_desc
+        storage.log_search(log_params, response.result_count)
+
+    else:
+        # Legacy structured-field path (history re-run, old form)
+        if not any([name, first, org, specialty, city, zip]):
+            return _error("Please fill in at least one search field.")
+        if (name or first) and org:
+            return _error(
+                "Cannot search by individual name and organization name at the same time."
+            )
+        try:
+            response = client.search(
+                last_name=name or None,
+                first_name=first or None,
+                organization_name=org or None,
+                taxonomy_description=specialty or None,
+                city=city or None,
+                state=state or None,
+                postal_code=zip or None,
+                enumeration_type=type or None,
+                limit=limit,
+            )
+        except NPPESError as e:
+            return _error(str(e))
+
+        params: dict[str, str] = {}
+        for k, v in [("name", name), ("first", first), ("org", org),
+                     ("specialty", specialty), ("state", state),
+                     ("city", city), ("zip", zip), ("type", type)]:
+            if v:
+                params[k] = v
+        storage.log_search(params, response.result_count)
+
+    if query:
+        query_obj = SearchQuery(
+            last_name=interp.get("last_name") or None,
+            first_name=interp.get("first_name") or None,
+            organization_name=interp.get("organization_name") or None,
+            specialty=interp.get("taxonomy_description") or None,
         )
-
-    try:
-        response = client.search(
+    else:
+        query_obj = SearchQuery(
             last_name=name or None,
             first_name=first or None,
+            middle_name=middle or None,
             organization_name=org or None,
-            taxonomy_description=specialty or None,
+            specialty=specialty or None,
             city=city or None,
             state=state or None,
             postal_code=zip or None,
-            enumeration_type=type or None,
-            limit=limit,
         )
-    except NPPESError as e:
-        return _error(str(e))
-
-    # Log search to history using form field names so re-run links work
-    params: dict[str, str] = {}
-    if name:
-        params["name"] = name
-    if first:
-        params["first"] = first
-    if org:
-        params["org"] = org
-    if specialty:
-        params["specialty"] = specialty
-    if state:
-        params["state"] = state
-    if city:
-        params["city"] = city
-    if zip:
-        params["zip"] = zip
-    if type:
-        params["type"] = type
-    storage.log_search(params, response.result_count)
-
-    # Rank results by relevance (middle name is used here, not sent to API)
-    query = SearchQuery(
-        last_name=name or None,
-        first_name=first or None,
-        middle_name=middle or None,
-        organization_name=org or None,
-        specialty=specialty or None,
-        city=city or None,
-        state=state or None,
-        postal_code=zip or None,
-    )
-    ranked = rank_results(response.results, query)
+    ranked = rank_results(response.results, query_obj)
 
     return _render("_results.html", {
         "request": request,
         "results": ranked,
         "result_count": response.result_count,
         "error": None,
+        "interp_desc": interp_desc,
     })
 
 
@@ -362,6 +416,7 @@ async def provider_detail(
                 "error": str(e),
                 "is_saved": False,
                 "saved_notes": None,
+                "saved_count": _saved_count(storage),
             })
         if result is None:
             return HTMLResponse(
@@ -377,6 +432,7 @@ async def provider_detail(
         "is_saved": saved is not None,
         "npi": npi,
         "saved_notes": saved_notes,
+        "saved_count": _saved_count(storage),
     })
 
 
@@ -388,12 +444,14 @@ async def save_provider(
     client: NPPESClient = Depends(get_client),
 ):
     """Save a provider -- returns button partial for htmx swap."""
+    btn_target = request.headers.get("hx-target", "#save-btn").lstrip("#")
     saved = storage.get_provider(npi)
     if saved:
         return _render("_save_button.html", {
             "request": request,
             "is_saved": True,
             "npi": npi,
+            "btn_target": btn_target,
         })
 
     try:
@@ -407,6 +465,7 @@ async def save_provider(
             "request": request,
             "is_saved": True,
             "npi": npi,
+            "btn_target": btn_target,
         })
 
     # Lookup failed -- don't claim it was saved
@@ -428,10 +487,12 @@ async def remove_provider(
     if hx_target.startswith("#saved-row-"):
         return HTMLResponse(content="")
 
+    btn_target = hx_target.lstrip("#") if hx_target else "save-btn"
     return _render("_save_button.html", {
         "request": request,
         "is_saved": False,
         "npi": npi,
+        "btn_target": btn_target,
     })
 
 
@@ -446,6 +507,48 @@ async def saved_list(
         "request": request,
         "active_page": "saved",
         "providers": providers,
+        "saved_count": len(providers),
+        "mapbox_token": MAPBOX_TOKEN,
+    })
+
+
+@app.post("/provider/{npi}/appt-address", response_class=HTMLResponse)
+async def set_appt_address(
+    request: Request,
+    npi: str,
+    address: str = Form(""),
+    storage: Storage = Depends(get_storage),
+):
+    """Save appointment address for a provider — returns address chip partial."""
+    address = address.strip()
+    if address:
+        found = storage.set_appt_address(npi, address)
+        if not found:
+            return HTMLResponse(
+                '<span class="appt-error">Provider must be saved before adding an appointment address.</span>'
+            )
+    provider = storage.get_provider(npi)
+    return _render("_appt_address.html", {
+        "request": request,
+        "npi": npi,
+        "appt_address": provider.appt_address if provider else None,
+        "mapbox_token": MAPBOX_TOKEN,
+    })
+
+
+@app.delete("/provider/{npi}/appt-address", response_class=HTMLResponse)
+async def clear_appt_address(
+    request: Request,
+    npi: str,
+    storage: Storage = Depends(get_storage),
+):
+    """Clear appointment address for a provider — returns empty input partial."""
+    storage.clear_appt_address(npi)
+    return _render("_appt_address.html", {
+        "request": request,
+        "npi": npi,
+        "appt_address": None,
+        "mapbox_token": MAPBOX_TOKEN,
     })
 
 
@@ -468,13 +571,16 @@ async def export_view(
         if result is None:
             return HTMLResponse(content=f"<p>No provider found for NPI {npi}.</p>", status_code=404)
 
-    export_text = referral_export(result)
+    appt_address = saved.appt_address if saved else None
+    export_text = referral_export(result, appt_address=appt_address)
 
     return _render("export.html", {
         "request": request,
-        "active_page": "search",
+        "active_page": "saved",
         "result": result,
         "export_text": export_text,
+        "appt_address": appt_address,
+        "saved_count": _saved_count(storage),
     })
 
 
@@ -488,6 +594,7 @@ async def export_text(
     saved = storage.get_provider(npi)
     if saved:
         result = saved.to_npi_result()
+        appt_address = saved.appt_address
     else:
         try:
             result = client.lookup(npi)
@@ -495,12 +602,37 @@ async def export_text(
             return PlainTextResponse(content=f"Error: {e}", status_code=500)
         if result is None:
             return PlainTextResponse(content=f"No provider found for NPI {npi}.", status_code=404)
+        appt_address = None
 
-    text = referral_export(result)
+    text = referral_export(result, appt_address=appt_address)
     return PlainTextResponse(
         content=text,
         headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
     )
+
+
+@app.get("/saved/export", response_class=HTMLResponse)
+async def export_all(
+    request: Request,
+    storage: Storage = Depends(get_storage),
+):
+    """Print-optimized page with all saved referrals stacked."""
+    providers = storage.list_providers()
+    referrals = []
+    for p in providers:
+        result = p.to_npi_result()
+        text = referral_export(result, appt_address=p.appt_address)
+        referrals.append({
+            "result": result,
+            "export_text": text,
+            "appt_address": p.appt_address,
+        })
+    return _render("export_all.html", {
+        "request": request,
+        "active_page": "saved",
+        "referrals": referrals,
+        "saved_count": len(providers),
+    })
 
 
 @app.get("/history", response_class=HTMLResponse)
@@ -515,4 +647,5 @@ async def history(
         "request": request,
         "active_page": "history",
         "entries": entries,
+        "saved_count": _saved_count(storage),
     })

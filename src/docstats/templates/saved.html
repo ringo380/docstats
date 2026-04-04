@@ -1,64 +1,52 @@
 {% extends "base.html" %}
-{% block title %}Saved Providers - docstats{% endblock %}
-{% block content %}
-<h2>Saved Providers</h2>
 
-{% if not providers %}
-<div class="empty-state">
-    <span class="empty-state-icon" aria-hidden="true">&#128194;</span>
-    <p>No saved providers yet.</p>
-    <p><small>Search for providers and save them for quick reference.</small></p>
-</div>
-{% else %}
-<div style="overflow-x: auto;">
-<table class="results-table striped">
-    <thead>
-        <tr>
-            <th>NPI</th>
-            <th>Type</th>
-            <th>Name</th>
-            <th>Specialty</th>
-            <th>Location</th>
-            <th>Phone</th>
-            <th>Notes</th>
-            <th></th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for p in providers %}
-        <tr id="saved-row-{{ p.npi }}">
-            <td><a href="/provider/{{ p.npi }}"><code class="npi-code">{{ p.npi }}</code></a></td>
-            <td>
-                {% if p.entity_type == "Individual" %}
-                <span class="badge-ind">Ind</span>
-                {% else %}
-                <span class="badge-org">Org</span>
-                {% endif %}
-            </td>
-            <td><a href="/provider/{{ p.npi }}">{{ p.display_name }}</a></td>
-            <td>{{ p.specialty or "" }}</td>
-            <td>
-                {% if p.address_city and p.address_state %}
-                {{ p.address_city }}, {{ p.address_state }}
-                {% endif %}
-            </td>
-            <td>{{ p.phone or "" }}</td>
-            <td>{{ p.notes or "" }}</td>
-            <td>
-                <div style="display: flex; gap: 0.25rem;">
-                    <a href="/provider/{{ p.npi }}/export" role="button" class="outline secondary btn-table-action">Export</a>
-                    <button
-                        hx-delete="/provider/{{ p.npi }}/save"
-                        hx-target="#saved-row-{{ p.npi }}"
-                        hx-swap="outerHTML"
-                        class="outline secondary btn-table-action"
-                    >Remove</button>
-                </div>
-            </td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-</div>
-{% endif %}
+{% block content %}
+  <div class="saved-header">
+    <div>
+      <h1>My Referrals</h1>
+      <div class="sub">{{ providers | length }} provider{% if providers | length != 1 %}s{% endif %} saved</div>
+    </div>
+    {% if providers %}
+      <a href="/saved/export" class="btn btn-blue">⬇ Export All (PDF)</a>
+    {% endif %}
+  </div>
+
+  {% if providers %}
+    {% for p in providers %}
+      <div class="provider-row" id="saved-row-{{ p.npi }}">
+        <div class="type-bar {% if p.entity_type == 'Organization' %}org{% endif %}"></div>
+        <div class="info">
+          <div class="name">
+            <a href="/provider/{{ p.npi }}">{{ p.display_name }}</a>
+          </div>
+          <div class="meta">
+            {% if p.specialty %}{{ p.specialty }}{% endif %}
+            {% if p.address_city and p.address_state %} · {{ p.address_city | title }}, {{ p.address_state }}{% endif %}
+            · NPI {{ p.npi }}
+          </div>
+          {% set npi = p.npi %}{% set appt_address = p.appt_address %}{% include "_appt_address.html" %}
+        </div>
+        <div class="row-actions">
+          <a href="/provider/{{ p.npi }}/export" class="btn btn-blue btn-sm">Export</a>
+          <button class="btn btn-danger btn-sm"
+                  hx-delete="/provider/{{ p.npi }}/save"
+                  hx-target="#saved-row-{{ p.npi }}"
+                  hx-swap="outerHTML swap:300ms"
+                  hx-confirm="Remove {{ p.display_name }}?">✕</button>
+        </div>
+      </div>
+    {% endfor %}
+
+    <a href="/" class="add-provider-row">+ Add another provider</a>
+  {% else %}
+    <div class="empty-state">
+      <div style="font-size: 2.5rem;">📋</div>
+      <p>No providers saved yet.</p>
+      <p><a href="/">Search for a provider</a> to get started.</p>
+    </div>
+  {% endif %}
+
+<script>
+  var MAPBOX_TOKEN = {{ mapbox_token | tojson }};
+</script>
 {% endblock %}

@@ -1,117 +1,90 @@
 {% extends "base.html" %}
-{% block title %}{% if result %}{{ result.display_name }} - {% endif %}docstats{% endblock %}
+
 {% block content %}
-{% if error %}
-<div class="flash flash-error">{{ error }}</div>
-<a href="/" role="button" class="outline secondary">Back to Search</a>
-{% else %}
-<hgroup class="provider-hgroup {% if result.is_individual %}provider-hgroup--ind{% else %}provider-hgroup--org{% endif %}">
-    <h2>{{ result.display_name }}</h2>
-    <p>
-        {% if result.is_individual %}
-        <span class="badge-ind">Individual</span>
-        {% else %}
-        <span class="badge-org">Organization</span>
-        {% endif %}
-        NPI: <code class="npi-code">{{ result.number }}</code>
-        &mdash;
-        {% if result.status == "A" %}
-        <span class="status-active">Active</span>
-        {% else %}
-        <span class="status-inactive">Inactive</span>
-        {% endif %}
-        {% if result.enumeration_date %}
-        &mdash; Enumerated: {{ result.enumeration_date }}
-        {% endif %}
-    </p>
-</hgroup>
-
-<div class="action-bar">
-    <span id="save-btn">
+  {% if error %}
+    <div class="flash flash-error">{{ error }}</div>
+    <a href="/" class="back-link">← Back to Search</a>
+  {% elif result %}
+    <div class="action-bar">
+      <a href="/" class="back-link">← Back to Search</a>
+      <div id="save-btn">
         {% include "_save_button.html" %}
-    </span>
-    <a href="/provider/{{ result.number }}/export" role="button" class="outline">Export Referral</a>
-    <a href="/" class="back-link">&larr; Back to Search</a>
-</div>
-
-{% if saved_notes %}
-<div class="flash flash-success">
-    <strong>Saved</strong> &mdash; Notes: {{ saved_notes }}
-</div>
-{% endif %}
-
-{% if result.taxonomies %}
-<div class="detail-section">
-    <h3>Specialties</h3>
-    <table class="results-table">
-        <thead>
-            <tr><th>Specialty</th><th>Code</th><th>License</th><th>State</th><th></th></tr>
-        </thead>
-        <tbody>
-            {% for t in result.taxonomies %}
-            <tr>
-                <td {% if t.primary %}class="taxonomy-primary"{% endif %}>{{ t.desc }}</td>
-                <td><code>{{ t.code }}</code></td>
-                <td>{{ t.license or "" }}</td>
-                <td>{{ t.state or "" }}</td>
-                <td>{% if t.primary %}Primary{% endif %}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% endif %}
-
-{% if result.addresses %}
-<div class="detail-section">
-    <h3>Addresses</h3>
-    {% for addr in result.addresses %}
-    <div class="address-block">
-        <div class="address-label">{{ addr.address_purpose }}</div>
-        <div>{{ addr.address_1 }}</div>
-        {% if addr.address_2 %}<div>{{ addr.address_2 }}</div>{% endif %}
-        <div>{{ addr.city }}, {{ addr.state }} {{ addr.formatted_postal }}</div>
-        {% if addr.formatted_phone %}<div>Phone: {{ addr.formatted_phone }}</div>{% endif %}
-        {% if addr.formatted_fax %}<div>Fax: {{ addr.formatted_fax }}</div>{% endif %}
+      </div>
+      <a href="/provider/{{ npi }}/export" class="btn btn-blue btn-sm">Export Referral</a>
     </div>
-    {% endfor %}
-</div>
-{% endif %}
 
-{% if result.other_names %}
-<div class="detail-section">
-    <h3>Other Names</h3>
-    <ul>
-        {% for name in result.other_names %}
-        <li>
-            {% if name.organization_name %}
-            {{ name.organization_name }}
-            {% elif name.first_name or name.last_name %}
-            {{ name.first_name or "" }} {{ name.last_name or "" }}
-            {% endif %}
-            {% if name.type %}<small>({{ name.type }})</small>{% endif %}
-        </li>
+    <div class="provider-hgroup {% if not result.is_individual %}org{% endif %}">
+      <h1>{{ result.display_name }}</h1>
+      <div class="sub">
+        <span class="badge {% if result.is_individual %}badge-ind{% else %}badge-org{% endif %}">
+          {{ result.entity_label }}
+        </span>
+        &nbsp; NPI {{ result.number }}
+        &nbsp;·&nbsp;
+        <span class="badge {% if result.status == 'A' %}badge-active{% else %}badge-inactive{% endif %}">
+          {% if result.status == 'A' %}Active{% else %}Inactive{% endif %}
+        </span>
+        {% if result.enumeration_date %}&nbsp;·&nbsp; Since {{ result.enumeration_date }}{% endif %}
+      </div>
+    </div>
+
+    {% if result.taxonomies %}
+    <div class="detail-section">
+      <h3>Specialties</h3>
+      <table class="detail-table">
+        {% for t in result.taxonomies %}
+        <tr>
+          <td>{{ t.desc }}</td>
+          <td style="color: var(--text-muted); font-size: 0.8rem;">
+            {{ t.code }}
+            {% if t.primary %} · <span style="color: var(--green);">Primary</span>{% endif %}
+            {% if t.license %} · License {{ t.license }}{% if t.state %} ({{ t.state }}){% endif %}{% endif %}
+          </td>
+        </tr>
         {% endfor %}
-    </ul>
-</div>
-{% endif %}
+      </table>
+    </div>
+    {% endif %}
 
-{% if result.identifiers %}
-<div class="detail-section">
-    <h3>Identifiers</h3>
-    <table class="results-table">
-        <thead><tr><th>Type</th><th>Identifier</th><th>State</th></tr></thead>
-        <tbody>
-            {% for ident in result.identifiers %}
-            <tr>
-                <td>{{ ident.get("desc", ident.get("code", "")) }}</td>
-                <td><code>{{ ident.get("identifier", "") }}</code></td>
-                <td>{{ ident.get("state", "") }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% endif %}
-{% endif %}
+    {% if result.addresses %}
+    <div class="detail-section">
+      <h3>Addresses</h3>
+      {% for addr in result.addresses %}
+        <div style="margin-bottom: 12px; font-size: 0.85rem;">
+          <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 4px;">{{ addr.address_purpose }}</div>
+          <div>{{ addr.address_1 }}{% if addr.address_2 %}, {{ addr.address_2 }}{% endif %}</div>
+          <div>{{ addr.city | title }}, {{ addr.state }} {{ addr.formatted_postal }}</div>
+          {% if addr.formatted_phone %}<div style="color: var(--text-muted);">{{ addr.formatted_phone }}</div>{% endif %}
+          {% if addr.formatted_fax %}<div style="color: var(--text-muted);">Fax: {{ addr.formatted_fax }}</div>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if result.other_names %}
+    <div class="detail-section">
+      <h3>Other Names</h3>
+      {% for name in result.other_names %}
+        <div style="font-size: 0.85rem; margin-bottom: 4px; color: var(--text-muted);">
+          {% if name.organization_name %}{{ name.organization_name }}{% else %}{{ name.first_name }} {{ name.last_name }}{% endif %}
+          {% if name.type %}<span style="font-size:0.72rem; color:var(--text-dim);"> ({{ name.type }})</span>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if result.identifiers %}
+    <div class="detail-section">
+      <h3>Identifiers</h3>
+      {% for ident in result.identifiers %}
+        <div style="font-size: 0.82rem; margin-bottom: 4px;">
+          <span style="color: var(--text-muted);">{{ ident.desc or ident.code }}:</span>
+          {{ ident.identifier }}
+          {% if ident.state %}<span style="color:var(--text-dim);">({{ ident.state }})</span>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+  {% endif %}
 {% endblock %}

@@ -21,11 +21,11 @@
 - Location autocomplete uses Mapbox Geocoding API (client-side fetch, 300ms debounce) — reads `MAPBOX_PUBLIC_TOKEN` env var; gracefully absent if unset
 - `initAutocomplete(inputEl, listEl)` in `index.html` is reusable for any field; `data-value=""` + `data-extra='{"field":"val"}'` pattern populates sibling fields on selection without htmx
 - Web errors return HTTP 200 with error HTML partial (not 4xx/5xx) — htmx swaps normally; `htmx:responseError` in `base.html` handles true network/server failures
-- Individual search form uses progressive disclosure: name fields shown by default; specialty and location are optional filters revealed via pill buttons; both filters are available in NPI-1 and NPI-2 modes
-- Status indicators in results table use text labels (`.status-active` / `.status-inactive` CSS classes) — not color-only dots
-- Entity type toggle uses a segmented pill control styled with CSS `:has(input:checked)` inside `@supports selector(:has(*))` — older browsers fall back to visible radio buttons
-- Typography: IBM Plex Sans (body) and IBM Plex Mono (brand, code, export block) loaded from Google Fonts; apply `font-family: 'IBM Plex Mono', monospace` to new code/identifier elements
-- CSS utility classes in `base.html`: `.action-bar` (flex row for primary actions), `.back-link` (muted nav link, auto-margin inside `.action-bar`), `.empty-state` (centered muted placeholder), `.status-active`, `.status-inactive`
+- Individual search form uses progressive disclosure: smart search bar shown by default; specialty and location are optional filters revealed via pill buttons
+- Smart search: `parse.py` module (`parse_query()`, `build_interpretations()`) parses free-text query into ranked NPPES API fallback interpretations; winning `interp` dict populates `SearchQuery` for `rank_results()`
+- `appt_address` stored per `SavedProvider` in SQLite; rendered as an editable chip in the saved list; appended to referral export
+- Dark theme CSS in `base.html`: CSS custom properties (`--bg`, `--bg-card`, `--green`, `--blue`, `--text`, `--text-muted`, `--text-dim`, `--border`); no external CSS framework
+- CSS utility classes in `base.html`: `.action-bar` (flex row for primary actions), `.back-link` (muted nav link), `.empty-state` (centered muted placeholder), `.badge`, `.badge-ind`, `.badge-org`, `.badge-active`, `.badge-inactive`, `.btn`, `.btn-primary`, `.btn-secondary`, `.btn-blue`, `.btn-sm`, `.result-card`, `.detail-section`, `.detail-table`
 
 ## NPPES API
 - Endpoint: `https://npiregistry.cms.hhs.gov/api/?version=2.1`

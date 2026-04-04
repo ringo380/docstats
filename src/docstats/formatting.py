@@ -5,7 +5,6 @@ from __future__ import annotations
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 from docstats.models import NPIResult, NPIResponse, SavedProvider, SearchHistoryEntry
 
@@ -156,10 +155,11 @@ def history_table(entries: list[SearchHistoryEntry]) -> Table:
     return table
 
 
-def referral_export(result: NPIResult) -> str:
+def referral_export(result: NPIResult, appt_address: str | None = None) -> str:
     """Generate a plain-text referral-ready summary.
 
     Suitable for pasting into referral forms or faxing.
+    If appt_address is provided, it is appended as a separate section.
     """
     lines: list[str] = []
     lines.append("=" * 50)
@@ -200,6 +200,14 @@ def referral_export(result: NPIResult) -> str:
         if mail.address_2:
             lines.append(f"  {mail.address_2}")
         lines.append(f"  {mail.city}, {mail.state} {mail.formatted_postal}")
+
+    if appt_address:
+        lines.append("")
+        lines.append("-" * 50)
+        lines.append("MY APPOINTMENT LOCATION")
+        lines.append("-" * 50)
+        lines.append(f"  {appt_address}")
+        lines.append("  (This location may differ from the NPI registry address above)")
 
     lines.append("")
     lines.append(f"Enumeration Date: {result.enumeration_date or 'N/A'}")

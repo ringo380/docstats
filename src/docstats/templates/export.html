@@ -1,29 +1,46 @@
 {% extends "base.html" %}
-{% block title %}Export - {{ result.display_name }} - docstats{% endblock %}
+
 {% block content %}
-<hgroup>
-    <h2>Referral Export</h2>
-    <p>
-        {{ result.display_name }}
-        {% if result.taxonomies %}
-        &mdash; {{ result.taxonomies[0].desc }}
-        {% endif %}
-        {% if result.addresses %}
-        &mdash; {{ result.addresses[0].city }}, {{ result.addresses[0].state }}
-        {% endif %}
-    </p>
-</hgroup>
+  <div class="action-bar">
+    <a href="/saved" class="back-link">← My Referrals</a>
+  </div>
 
-<div class="export-container">
-    <div class="export-header">
-        <span class="export-label">Referral Text</span>
+  {% if result %}
+  <div class="provider-hgroup {% if not result.is_individual %}org{% endif %}">
+    <h1>{{ result.display_name }}</h1>
+    <div class="sub">
+      {{ result.primary_specialty }}
+      {% set addr = result.location_address %}
+      {% if addr %} · {{ addr.city | title }}, {{ addr.state }}{% endif %}
     </div>
-    <div class="export-block" id="export-text">{{ export_text }}</div>
-</div>
+  </div>
 
-<div style="margin-top: 1rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
-    <button style="min-width: 12rem; padding: 0.65rem 1.25rem; font-weight: 600;" onclick="navigator.clipboard.writeText(document.getElementById('export-text').textContent).then(() => { this.textContent = '\u2713 Copied!'; setTimeout(() => this.textContent = 'Copy to Clipboard', 2000); })">Copy to Clipboard</button>
-    <a href="/provider/{{ result.number }}/export/text" role="button" class="outline secondary">Download as Text</a>
-    <a href="/provider/{{ result.number }}" class="back-link">&larr; Back to Detail</a>
-</div>
+  <div class="export-actions">
+    <button class="btn btn-primary" onclick="window.print()">⬇ Save as PDF</button>
+    <button class="btn btn-secondary" onclick="window.print()">🖨 Print</button>
+    <button class="btn btn-secondary" id="copy-btn" onclick="copyText()">⎘ Copy Text</button>
+  </div>
+
+  <div class="referral-doc" id="referral-text">{{ export_text }}</div>
+
+  {% if appt_address %}
+    <div class="appt-address-section" style="margin-top: 1rem;">
+      <div class="label">My Appointment Location</div>
+      <div>{{ appt_address }}</div>
+    </div>
+  {% endif %}
+  {% else %}
+  <div class="flash flash-error">{{ error }}</div>
+  {% endif %}
+
+<script>
+  function copyText() {
+    var text = document.getElementById('referral-text').textContent;
+    navigator.clipboard.writeText(text).then(function() {
+      var btn = document.getElementById('copy-btn');
+      btn.textContent = '✓ Copied!';
+      setTimeout(function() { btn.textContent = '⎘ Copy Text'; }, 2000);
+    });
+  }
+</script>
 {% endblock %}

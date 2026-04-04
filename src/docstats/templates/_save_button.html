@@ -1,14 +1,12 @@
+{% set _target = btn_target if btn_target is defined else "save-btn" %}
 {% if is_saved %}
-<button
-    hx-delete="/provider/{{ npi }}/save"
-    hx-target="#save-btn"
-    hx-swap="innerHTML"
-    class="secondary"
->Saved (Remove)</button>
+  <button class="btn btn-secondary btn-sm"
+          hx-delete="/provider/{{ npi }}/save"
+          hx-target="#{{ _target }}"
+          hx-swap="innerHTML">✓ Saved (Remove)</button>
 {% else %}
-<button
-    hx-post="/provider/{{ npi }}/save"
-    hx-target="#save-btn"
-    hx-swap="innerHTML"
->Save Provider</button>
+  <button class="btn btn-primary btn-sm"
+          hx-post="/provider/{{ npi }}/save"
+          hx-target="#{{ _target }}"
+          hx-swap="innerHTML">+ Save Provider</button>
 {% endif %}

@@ -1,60 +1,56 @@
 {% extends "base.html" %}
-{% block title %}Search History - docstats{% endblock %}
+
 {% block content %}
-<h2>Search History</h2>
+  <h1 style="font-size:1.2rem; font-weight:700; margin-bottom:1.25rem;">Search History</h1>
 
-{% macro fmt_query(params) %}
-{%- set parts = [] -%}
-{%- if params.get("first") or params.get("name") -%}
-    {%- set name_parts = [] -%}
-    {%- if params.get("first") %}{% set _ = name_parts.append(params["first"]) %}{% endif -%}
-    {%- if params.get("name") %}{% set _ = name_parts.append(params["name"]) %}{% endif -%}
-    {%- set _ = parts.append(name_parts | join(" ")) -%}
-{%- endif -%}
-{%- if params.get("org") %}{% set _ = parts.append(params["org"]) %}{% endif -%}
-{%- if params.get("specialty") %}{% set _ = parts.append("\u2022 " + params["specialty"]) %}{% endif -%}
-{%- if params.get("city") and params.get("state") %}
-    {%- set loc = params["city"] + ", " + params["state"] -%}
-    {%- if params.get("zip") %}{%- set loc = loc + " " + params["zip"] -%}{% endif -%}
-    {%- set _ = parts.append("\u2022 " + loc) -%}
-{%- elif params.get("state") %}
-    {%- set _ = parts.append("\u2022 " + params["state"]) -%}
-{%- elif params.get("zip") %}
-    {%- set _ = parts.append("\u2022 ZIP " + params["zip"]) -%}
-{%- endif -%}
-{{ parts | join("  ") if parts else "—" }}
-{%- endmacro %}
+  {% macro fmt_query(params) %}
+    {%- set parts = [] -%}
+    {%- if params.query %}{{ params.query }}
+    {%- else -%}
+      {%- if params.first %}{%- set _ = parts.append(params.first ~ ' ' ~ (params.name or '')) -%}{% endif -%}
+      {%- if params.name and not params.first %}{%- set _ = parts.append(params.name) -%}{% endif -%}
+      {%- if params.org %}{%- set _ = parts.append(params.org) -%}{% endif -%}
+      {%- if params.specialty %}{%- set _ = parts.append(params.specialty) -%}{% endif -%}
+      {%- if params.city %}{%- set _ = parts.append(params.city) -%}{% endif -%}
+      {%- if params.state %}{%- set _ = parts.append(params.state) -%}{% endif -%}
+      {{ parts | join(' · ') }}
+    {%- endif -%}
+  {% endmacro %}
 
-{% if not entries %}
-<div class="empty-state">
-    <span class="empty-state-icon" aria-hidden="true">&#128269;</span>
-    <p>No search history yet.</p>
-    <p><small>Searches from both the CLI and web UI appear here.</small></p>
-</div>
-{% else %}
-<div style="overflow-x: auto;">
-<table class="results-table striped">
-    <thead>
+  {% if entries %}
+    <table class="history-table">
+      <thead>
         <tr>
-            <th>Date</th>
-            <th>Search</th>
-            <th style="text-align: right;">Results</th>
-            <th></th>
+          <th>Date</th>
+          <th>Search</th>
+          <th style="text-align:right;">Results</th>
+          <th></th>
         </tr>
-    </thead>
-    <tbody>
+      </thead>
+      <tbody>
         {% for entry in entries %}
         <tr>
-            <td style="white-space: nowrap; color: var(--pico-muted-color); font-size: 0.85rem;">{{ entry.searched_at.strftime("%b %d, %H:%M") if entry.searched_at else "" }}</td>
-            <td>{{ fmt_query(entry.query_params) }}</td>
-            <td style="text-align: right; font-variant-numeric: tabular-nums;">{{ entry.result_count }}</td>
-            <td>
-                <a href="/search?{{ entry.query_params | urlencode }}" hx-get="/search?{{ entry.query_params | urlencode }}" hx-target="#results" hx-push-url="/" role="button" class="outline secondary btn-table-action">Re-run</a>
-            </td>
+          <td style="color:var(--text-muted); white-space:nowrap;">
+            {{ entry.searched_at.strftime('%b %d, %H:%M') if entry.searched_at }}
+          </td>
+          <td>{{ fmt_query(entry.query_params) }}</td>
+          <td style="text-align:right; color:var(--text-muted);">{{ entry.result_count }}</td>
+          <td>
+            {% if entry.query_params.query %}
+              <a href="/?query={{ entry.query_params.query | urlencode }}" class="btn btn-secondary btn-sm">Re-run</a>
+            {% else %}
+              <a href="/?{% for k,v in entry.query_params.items() %}{{ k }}={{ v | urlencode }}{% if not loop.last %}&{% endif %}{% endfor %}" class="btn btn-secondary btn-sm">Re-run</a>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
-    </tbody>
-</table>
-</div>
-{% endif %}
+      </tbody>
+    </table>
+    <div id="results-placeholder"></div>
+  {% else %}
+    <div class="empty-state">
+      <div style="font-size:2.5rem;">🔍</div>
+      <p>No searches yet.</p>
+    </div>
+  {% endif %}
 {% endblock %}
