@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import secrets
@@ -26,6 +27,7 @@ from docstats.auth import (
 from docstats.cache import ResponseCache
 from docstats.client import NPPESClient, NPPESError
 from docstats.formatting import referral_export
+from docstats.models import NPIResult
 from docstats.normalize import format_name
 from docstats.oauth import (
     GITHUB_ENABLED,
@@ -233,7 +235,7 @@ async def signup_post(
     user_id = storage.create_user(email, hash_password(password))
     request.session["user_id"] = user_id
     request.session.pop("anon_searches", None)
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/onboarding", status_code=303)
 
 
 @app.get("/auth/logout")
@@ -285,7 +287,123 @@ async def github_callback(
     )
     request.session["user_id"] = user_id
     request.session.pop("anon_searches", None)
+    user = storage.get_user_by_id(user_id)
+    if user and user.get("pcp_npi"):
+        return RedirectResponse("/", status_code=303)
+    # New GitHub users go to onboarding; returning users who previously
+    # skipped land here too but the onboarding route checks the session flag.
+    return RedirectResponse("/onboarding", status_code=303)
+
+
+# --- Onboarding routes ---
+
+@app.get("/onboarding", response_class=HTMLResponse)
+async def onboarding(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+):
+    if current_user.get("pcp_npi") or request.session.get("onboarding_done"):
+        return RedirectResponse("/", status_code=303)
+    user_id = current_user["id"]
+    return _render("onboarding.html", {
+        "request": request,
+        "active_page": None,
+        "saved_count": _saved_count(storage, user_id),
+        "user": current_user,
+    })
+
+
+@app.post("/onboarding/select-pcp/{npi}", response_class=HTMLResponse)
+async def onboarding_select_pcp(
+    npi: str,
+    request: Request,
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+    client: NPPESClient = Depends(get_client),
+):
+    user_id = current_user["id"]
+    try:
+        result = client.lookup(npi)
+    except NPPESError:
+        result = None
+    if result:
+        storage.save_provider(result, user_id)
+    storage.set_user_pcp(user_id, npi)
+    resp = Response(status_code=200)
+    resp.headers["HX-Redirect"] = "/"
+    return resp
+
+
+@app.get("/onboarding/skip")
+async def onboarding_skip(
+    request: Request,
+    current_user: dict = Depends(require_user),
+):
+    request.session["onboarding_done"] = True
     return RedirectResponse("/", status_code=303)
+
+
+# --- Profile routes ---
+
+@app.get("/profile", response_class=HTMLResponse)
+async def profile(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+    client: NPPESClient = Depends(get_client),
+):
+    user_id = current_user["id"]
+    pcp_provider = None
+    pcp_npi = current_user.get("pcp_npi")
+    if pcp_npi:
+        try:
+            pcp_provider = client.lookup(pcp_npi)
+        except NPPESError:
+            saved = storage.get_provider(pcp_npi, user_id)
+            if saved:
+                pcp_provider = NPIResult(**json.loads(saved.raw_json))
+    return _render("profile.html", {
+        "request": request,
+        "active_page": "profile",
+        "saved_count": _saved_count(storage, user_id),
+        "user": current_user,
+        "pcp_provider": pcp_provider,
+    })
+
+
+@app.post("/profile/pcp/{npi}", response_class=HTMLResponse)
+async def profile_set_pcp(
+    npi: str,
+    request: Request,
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+    client: NPPESClient = Depends(get_client),
+):
+    user_id = current_user["id"]
+    try:
+        result = client.lookup(npi)
+    except NPPESError:
+        result = None
+    if result:
+        storage.save_provider(result, user_id)
+    storage.set_user_pcp(user_id, npi)
+    resp = Response(status_code=200)
+    resp.headers["HX-Redirect"] = "/profile"
+    return resp
+
+
+@app.delete("/profile/pcp", response_class=HTMLResponse)
+async def profile_clear_pcp(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+):
+    storage.clear_user_pcp(current_user["id"])
+    return _render("_pcp_section.html", {
+        "request": request,
+        "pcp_provider": None,
+    })
 
 
 # --- Main routes ---
@@ -329,6 +447,7 @@ async def search(
     type: str = Query("", alias="type"),
     geo_state: str = Query("", alias="geo_state"),
     limit: int = Query(10, alias="limit"),
+    context: str = Query("", alias="context"),
     current_user: dict | None = Depends(get_current_user),
     storage: Storage = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
@@ -361,6 +480,15 @@ async def search(
             })
 
     def _error(msg: str):
+        if context in ("onboarding", "profile"):
+            return _render("_pcp_results.html", {
+                "request": request,
+                "error": msg,
+                "results": None,
+                "result_count": 0,
+                "interp_desc": None,
+                "pcp_action_url": "/onboarding/select-pcp" if context == "onboarding" else "/profile/pcp",
+            })
         return _render("_results.html", {
             "request": request,
             "error": msg,
@@ -483,6 +611,17 @@ async def search(
             geo_state=geo_state or None,
         )
     ranked = rank_results(response.results, query_obj)
+
+    if context in ("onboarding", "profile"):
+        pcp_action_url = "/onboarding/select-pcp" if context == "onboarding" else "/profile/pcp"
+        return _render("_pcp_results.html", {
+            "request": request,
+            "results": ranked,
+            "result_count": response.result_count,
+            "error": None,
+            "interp_desc": interp_desc,
+            "pcp_action_url": pcp_action_url,
+        })
 
     return _render("_results.html", {
         "request": request,

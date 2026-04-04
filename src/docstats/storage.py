@@ -72,6 +72,7 @@ class Storage:
         self._conn.commit()
         self._migrate_saved_providers()
         self._migrate_search_history_user_id()
+        self._migrate_users_pcp_npi()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -119,6 +120,14 @@ class Storage:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_history_user ON search_history(user_id)"
             )
+            self._conn.commit()
+        except Exception:
+            pass  # Column already exists
+
+    def _migrate_users_pcp_npi(self) -> None:
+        """Add pcp_npi column to users if not present."""
+        try:
+            self._conn.execute("ALTER TABLE users ADD COLUMN pcp_npi TEXT")
             self._conn.commit()
         except Exception:
             pass  # Column already exists
@@ -190,6 +199,18 @@ class Storage:
     def update_last_login(self, user_id: int) -> None:
         self._conn.execute(
             "UPDATE users SET last_login_at=datetime('now') WHERE id=?", (user_id,)
+        )
+        self._conn.commit()
+
+    def set_user_pcp(self, user_id: int, pcp_npi: str) -> None:
+        self._conn.execute(
+            "UPDATE users SET pcp_npi=? WHERE id=?", (pcp_npi, user_id)
+        )
+        self._conn.commit()
+
+    def clear_user_pcp(self, user_id: int) -> None:
+        self._conn.execute(
+            "UPDATE users SET pcp_npi=NULL WHERE id=?", (user_id,)
         )
         self._conn.commit()
 

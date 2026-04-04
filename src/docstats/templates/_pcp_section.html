@@ -1,0 +1,29 @@
+{% if pcp_provider %}
+  <div class="result-card" style="margin-bottom:1rem;">
+    <div>
+      <div class="name">{{ pcp_provider.display_name }}</div>
+      <div class="meta">
+        {{ pcp_provider.primary_specialty }}
+        {% set addr = pcp_provider.location_address %}
+        {% if addr %} &middot; {{ addr.city | title }}, {{ addr.state }}{% endif %}
+        {% if pcp_provider.phone %} &middot; {{ pcp_provider.phone }}{% endif %}
+      </div>
+      <div class="npi">NPI {{ pcp_provider.number }}</div>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:5px; flex-shrink:0;">
+      <button class="btn btn-secondary btn-sm"
+              hx-delete="/profile/pcp"
+              hx-target="#pcp-section"
+              hx-swap="innerHTML">Remove</button>
+    </div>
+  </div>
+  <details style="margin-top:0.5rem;">
+    <summary style="cursor:pointer; font-size:0.83rem; color:var(--text-muted);">Change PCP</summary>
+    <div style="margin-top:0.75rem;">
+      {% include "_pcp_search_inline.html" %}
+    </div>
+  </details>
+{% else %}
+  <p style="color:var(--text-muted); font-size:0.88rem; margin-bottom:1rem;">No primary care provider selected.</p>
+  {% include "_pcp_search_inline.html" %}
+{% endif %}

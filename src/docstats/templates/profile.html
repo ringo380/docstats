@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Profile — referme.help{% endblock %}
+{% block content %}
+<div style="max-width: 580px; margin: 0 auto; padding-top: 2.5rem;">
+  <h1 style="font-size:1.5rem; font-weight:700; margin-bottom:1.5rem; letter-spacing:-0.02em;">Profile</h1>
+
+  <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
+    <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.75rem; color:var(--text-dim);">Account</h2>
+    <div style="display:flex; flex-direction:column; gap:0.4rem; font-size:0.88rem;">
+      <div><span style="color:var(--text-dim); min-width:80px; display:inline-block;">Email</span> {{ user.email }}</div>
+      {% if user.display_name %}
+      <div><span style="color:var(--text-dim); min-width:80px; display:inline-block;">Name</span> {{ user.display_name }}</div>
+      {% endif %}
+      {% if user.github_login %}
+      <div><span style="color:var(--text-dim); min-width:80px; display:inline-block;">GitHub</span> {{ user.github_login }}</div>
+      {% endif %}
+      <div><span style="color:var(--text-dim); min-width:80px; display:inline-block;">Joined</span> {{ user.created_at[:10] }}</div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:1.25rem;">
+    <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.75rem; color:var(--text-dim);">Primary Care Provider</h2>
+    <div id="pcp-section">
+      {% include "_pcp_section.html" %}
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% if error %}
+  <div class="flash flash-error">{{ error }}</div>
+{% elif results is not none %}
+  {% set individuals = results | selectattr("is_individual") | list %}
+  <div class="results-meta">
+    {{ individuals | length }} result{% if individuals | length != 1 %}s{% endif %} found
+    {% if interp_desc %}
+      &nbsp;&middot;&nbsp; <span class="interp">Searched as: <strong>{{ interp_desc }}</strong></span>
+    {% endif %}
+  </div>
+
+  {% if individuals %}
+    {% for r in individuals %}
+      {% set addr = r.location_address %}
+      <div class="result-card {% if r.status != 'A' %}inactive{% endif %}">
+        <div>
+          <div class="name">{{ r.display_name }}</div>
+          <div class="meta">
+            {{ r.primary_specialty }}
+            {% if addr %} &middot; {{ addr.city | title }}, {{ addr.state }}{% endif %}
+            {% if r.phone %} &middot; {{ r.phone }}{% endif %}
+          </div>
+          <div class="npi">NPI {{ r.number }}</div>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:5px; flex-shrink:0;">
+          <span class="badge badge-ind">Ind</span>
+          <button class="btn btn-primary btn-sm"
+                  hx-post="{{ pcp_action_url }}/{{ r.number }}"
+                  hx-swap="none">Select as PCP</button>
+        </div>
+      </div>
+    {% endfor %}
+  {% else %}
+    <div class="empty-state">
+      <p>No results found. Try broadening your search.</p>
+    </div>
+  {% endif %}
+{% endif %}
