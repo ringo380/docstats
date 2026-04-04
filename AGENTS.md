@@ -59,6 +59,10 @@
 - To safely inject a Python template variable into JS, use `{{ var | tojson }}` — handles escaping
 - CSS `:has()` requires `@supports selector(:has(*))` guard — without it, hiding inputs styled only via `:has(input:checked)` leaves no visual feedback on Firefox <121; wrap both the `display:none` and the `:has()` rule together inside the `@supports` block
 - CSS utility classes used in multiple templates must be defined standalone (e.g. `.back-link { ... }`) not only as descendant selectors (e.g. `.action-bar .back-link`) — descendants work only inside that specific parent; silently no-ops elsewhere
+- `hx-swap="outerHTML"` on a button inside a named `<div id="...">` destroys that container ID — subsequent htmx clicks target a missing element; use `hx-swap="innerHTML"` on the container instead
+- `_save_button.html` uses `btn_target` variable (container ID without `#`) so it works from multiple call sites; routes pass it via `request.headers.get("hx-target", "#save-btn").lstrip("#")`
+- History re-run links navigate to `/?query=...`; `index.html` has a `DOMContentLoaded` handler that reads `?query=` from the URL and auto-triggers `htmx.trigger(form, 'submit')` — required for re-run to land on results
+- In the smart-search path (`query` param), `rank_results()` must receive a `SearchQuery` built from the winning `interp` dict (`first_name`, `last_name`, `organization_name`, `taxonomy_description`), not the empty structured-form fields
 
 ## Deployment (Railway)
 - Hosted at https://docstats-production.up.railway.app
