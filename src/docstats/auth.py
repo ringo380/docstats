@@ -7,7 +7,7 @@ from passlib.context import CryptContext
 
 from docstats.storage import Storage, get_storage
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__ident="2b")
 
 ANON_SEARCH_LIMIT = 3
 
