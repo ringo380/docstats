@@ -118,6 +118,7 @@ _SPECIALTY_MAP: list[tuple[str, str]] = [
 class ParseResult:
     first_name: str = ""
     last_name: str = ""
+    middle_name: str = ""  # not sent to API; used for post-retrieval ranking only
     specialty: str = ""
     honorific: str = ""
     credentials: list[str] = field(default_factory=list)
@@ -194,15 +195,21 @@ def parse_query(text: str) -> ParseResult:
     tokens = [t for t in tokens if t]  # remove empties
     first_name = ""
     last_name = ""
+    middle_name = ""
     if len(tokens) == 1:
         last_name = tokens[0]
-    elif len(tokens) >= 2:
+    elif len(tokens) == 2:
+        first_name = tokens[0]
+        last_name = tokens[1]
+    elif len(tokens) >= 3:
         first_name = tokens[0]
         last_name = tokens[-1]
+        middle_name = " ".join(tokens[1:-1])  # middle token(s); not sent to API
 
     return ParseResult(
         first_name=first_name,
         last_name=last_name,
+        middle_name=middle_name,
         specialty=specialty,
         honorific=honorific,
         credentials=credentials,
