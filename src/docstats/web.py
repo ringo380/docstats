@@ -290,6 +290,8 @@ async def github_callback(
     user = storage.get_user_by_id(user_id)
     if user and user.get("pcp_npi"):
         return RedirectResponse("/", status_code=303)
+    # New GitHub users go to onboarding; returning users who previously
+    # skipped land here too but the onboarding route checks the session flag.
     return RedirectResponse("/onboarding", status_code=303)
 
 
@@ -301,7 +303,7 @@ async def onboarding(
     current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
 ):
-    if current_user.get("pcp_npi"):
+    if current_user.get("pcp_npi") or request.session.get("onboarding_done"):
         return RedirectResponse("/", status_code=303)
     user_id = current_user["id"]
     return _render("onboarding.html", {
@@ -478,6 +480,15 @@ async def search(
             })
 
     def _error(msg: str):
+        if context in ("onboarding", "profile"):
+            return _render("_pcp_results.html", {
+                "request": request,
+                "error": msg,
+                "results": None,
+                "result_count": 0,
+                "interp_desc": None,
+                "pcp_action_url": "/onboarding/select-pcp" if context == "onboarding" else "/profile/pcp",
+            })
         return _render("_results.html", {
             "request": request,
             "error": msg,

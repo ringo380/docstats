@@ -1,17 +1,16 @@
 {% if error %}
   <div class="flash flash-error">{{ error }}</div>
 {% elif results is not none %}
+  {% set individuals = results | selectattr("is_individual") | list %}
   <div class="results-meta">
-    {{ result_count }} result{% if result_count != 1 %}s{% endif %} found
-    {% if results | length < result_count %} &mdash; showing {{ results | length }}{% endif %}
+    {{ individuals | length }} result{% if individuals | length != 1 %}s{% endif %} found
     {% if interp_desc %}
       &nbsp;&middot;&nbsp; <span class="interp">Searched as: <strong>{{ interp_desc }}</strong></span>
     {% endif %}
   </div>
 
-  {% if results %}
-    {% for r in results %}
-      {% if r.is_individual %}
+  {% if individuals %}
+    {% for r in individuals %}
       {% set addr = r.location_address %}
       <div class="result-card {% if r.status != 'A' %}inactive{% endif %}">
         <div>
@@ -30,7 +29,6 @@
                   hx-swap="none">Select as PCP</button>
         </div>
       </div>
-      {% endif %}
     {% endfor %}
   {% else %}
     <div class="empty-state">
