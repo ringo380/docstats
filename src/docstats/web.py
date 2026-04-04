@@ -383,7 +383,12 @@ async def search(
         interp: dict = {}
         for interp in interpretations:
             try:
-                result = client.search(**interp, limit=limit)
+                search_kwargs = dict(interp)
+                if geo_state and not state and not zip:
+                    search_kwargs["state"] = geo_state
+                result = client.search(**search_kwargs, limit=limit)
+                if result.result_count == 0 and geo_state and not state and not zip:
+                    result = client.search(**interp, limit=limit)
                 if result.result_count > 0:
                     response = result
                     parts = []
