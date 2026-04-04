@@ -73,6 +73,10 @@
 - `saved_providers` migration: `_migrate_saved_providers()` checks `PRAGMA table_info` for `user_id`; if absent, drops and recreates with composite PK — existing data is lost (acceptable on Railway due to ephemeral filesystem)
 - All full-page routes must pass `user=current_user` in template context for `base.html` nav to render correctly
 - Test auth override: `app.dependency_overrides[get_current_user] = lambda: fake_user_dict` — `require_user` inherits this automatically since it depends on `get_current_user`
+- `passlib[bcrypt]` is incompatible with `bcrypt>=4.0.0` — pin `bcrypt>=3.2.0,<4.0.0` in both `requirements.txt` and `pyproject.toml` web extras; bcrypt 4.x raises `ValueError` on passwords >72 bytes instead of silently truncating
+- `python-multipart` must be explicit in `requirements.txt` — FastAPI requires it for any form POST route; Railpack won't install it as a transitive dep
+- CSS input styles in `base.html` must enumerate `input[type="email"]` and `input[type="password"]` explicitly — they don't inherit from `input[type="text"]` rules
+- Railway build environment uses Python 3.13 — passlib prints a `crypt` deprecation warning on startup; harmless but expected
 
 ## Deployment (Railway)
 - Hosted at https://docstats-production.up.railway.app
