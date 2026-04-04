@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Welcome — referme.help{% endblock %}
+{% block content %}
+<div style="max-width: 540px; margin: 0 auto; padding-top: 2.5rem;">
+  <div style="text-align:center; margin-bottom:1.75rem;">
+    <h1 style="font-size:1.5rem; font-weight:700; margin-bottom:0.3rem; letter-spacing:-0.02em;">Welcome to referme.help</h1>
+    <p style="color:var(--text-muted); font-size:0.88rem;">Who is your primary care provider? Search by name below.</p>
+  </div>
+
+  <form id="pcp-search-form"
+        hx-get="/search"
+        hx-target="#pcp-results"
+        hx-indicator="#pcp-spinner"
+        hx-swap="innerHTML">
+    <input type="hidden" name="type" value="NPI-1">
+    <input type="hidden" name="context" value="onboarding">
+    <div class="search-bar-wrap">
+      <span class="search-icon">&#x2315;</span>
+      <input
+        type="text"
+        name="query"
+        placeholder="Dr. Sarah Chen, family medicine..."
+        autocomplete="off"
+        spellcheck="false"
+        autofocus
+        style="flex:1; background:transparent; border:none; padding:0; font-size:1rem; color:var(--text);"
+      >
+      <button type="submit" class="btn btn-primary btn-sm">Search</button>
+      <span id="pcp-spinner" class="htmx-indicator" style="color:var(--text-muted); font-size:0.8rem;">searching...</span>
+    </div>
+  </form>
+
+  <div id="pcp-results" style="margin-top:1rem;"></div>
+
+  <p style="text-align:center; margin-top:2rem; font-size:0.83rem; color:var(--text-dim);">
+    <a href="/onboarding/skip" style="color:var(--text-muted);">Skip for now</a>
+    &mdash; you can set your PCP later from your profile.
+  </p>
+</div>
+{% endblock %}

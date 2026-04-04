@@ -1,0 +1,21 @@
+<form hx-get="/search"
+      hx-target="#pcp-search-results"
+      hx-indicator="#pcp-profile-spinner"
+      hx-swap="innerHTML">
+  <input type="hidden" name="type" value="NPI-1">
+  <input type="hidden" name="context" value="profile">
+  <div class="search-bar-wrap">
+    <span class="search-icon">&#x2315;</span>
+    <input
+      type="text"
+      name="query"
+      placeholder="Search by provider name..."
+      autocomplete="off"
+      spellcheck="false"
+      style="flex:1; background:transparent; border:none; padding:0; font-size:0.95rem; color:var(--text);"
+    >
+    <button type="submit" class="btn btn-primary btn-sm">Search</button>
+    <span id="pcp-profile-spinner" class="htmx-indicator" style="color:var(--text-muted); font-size:0.8rem;">searching...</span>
+  </div>
+</form>
+<div id="pcp-search-results" style="margin-top:0.75rem;"></div>
