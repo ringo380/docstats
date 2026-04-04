@@ -175,23 +175,48 @@
 
   function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
 
+  function makeChip(cssClass, labelText, valueText) {
+    var span = document.createElement('span');
+    span.className = 'chip ' + cssClass;
+    var labelEl = document.createElement('span');
+    labelEl.className = 'chip-label';
+    labelEl.textContent = labelText;
+    span.appendChild(labelEl);
+    span.appendChild(document.createTextNode(' ' + valueText));
+    return span;
+  }
+
   function renderChips(parsed) {
     var el = document.getElementById('parse-chips');
     if (!el) return;
     el.innerHTML = '';
     if (!parsed.firstName && !parsed.lastName && !parsed.specialty && !parsed.honorific && !parsed.credentials.length) return;
     if (parsed.isOrg) {
-      el.innerHTML = '<span class="chip chip-cred"><span class="chip-label">org</span> ' + parsed.orgName + '</span>';
+      el.appendChild(makeChip('chip-cred', 'org', parsed.orgName));
       return;
     }
-    if (parsed.honorific) el.innerHTML += '<span class="chip chip-cred"><span class="chip-label">title</span> ' + parsed.honorific.toUpperCase() + '</span>';
-    if (parsed.firstName) el.innerHTML += '<span class="chip chip-name"><span class="chip-label">first</span> ' + cap(parsed.firstName) + '</span>';
-    if (parsed.lastName) el.innerHTML += '<span class="chip chip-name"><span class="chip-label">last</span> ' + cap(parsed.lastName) + '</span>';
-    if (parsed.specialty) el.innerHTML += '<span class="chip chip-specialty"><span class="chip-label">specialty</span> ' + parsed.specialty + '</span>';
+    if (parsed.honorific) el.appendChild(makeChip('chip-cred', 'title', parsed.honorific.toUpperCase()));
+    if (parsed.firstName) el.appendChild(makeChip('chip-name', 'first', cap(parsed.firstName)));
+    if (parsed.lastName) el.appendChild(makeChip('chip-name', 'last', cap(parsed.lastName)));
+    if (parsed.specialty) el.appendChild(makeChip('chip-specialty', 'specialty', parsed.specialty));
     for (var i = 0; i < parsed.credentials.length; i++) {
-      el.innerHTML += '<span class="chip chip-cred"><span class="chip-label">credential</span> ' + parsed.credentials[i] + '</span>';
+      el.appendChild(makeChip('chip-cred', 'credential', parsed.credentials[i]));
     }
   }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    var params = new URLSearchParams(window.location.search);
+    var q = params.get('query');
+    if (q) {
+      document.getElementById('query-input').value = q;
+      var parsed = parseQuery(q);
+      renderChips(parsed);
+      if (parsed.isOrg) {
+        document.getElementById('field-type').value = 'NPI-2';
+      }
+      htmx.trigger(document.getElementById('search-form'), 'submit');
+    }
+  });
 
   document.getElementById('query-input').addEventListener('input', function(e) {
     clearTimeout(parseDebounce);

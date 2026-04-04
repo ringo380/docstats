@@ -199,6 +199,7 @@ async def search(
             return _error("Please enter a provider name or specialty to search.")
 
         last_error: Exception | None = None
+        interp: dict = {}
         for interp in interpretations:
             try:
                 result = client.search(**interp, limit=limit)
@@ -271,16 +272,24 @@ async def search(
                 params[k] = v
         storage.log_search(params, response.result_count)
 
-    query_obj = SearchQuery(
-        last_name=name or None,
-        first_name=first or None,
-        middle_name=middle or None,
-        organization_name=org or None,
-        specialty=specialty or None,
-        city=city or None,
-        state=state or None,
-        postal_code=zip or None,
-    )
+    if query:
+        query_obj = SearchQuery(
+            last_name=interp.get("last_name") or None,
+            first_name=interp.get("first_name") or None,
+            organization_name=interp.get("organization_name") or None,
+            specialty=interp.get("taxonomy_description") or None,
+        )
+    else:
+        query_obj = SearchQuery(
+            last_name=name or None,
+            first_name=first or None,
+            middle_name=middle or None,
+            organization_name=org or None,
+            specialty=specialty or None,
+            city=city or None,
+            state=state or None,
+            postal_code=zip or None,
+        )
     ranked = rank_results(response.results, query_obj)
 
     return _render("_results.html", {
@@ -435,12 +444,14 @@ async def save_provider(
     client: NPPESClient = Depends(get_client),
 ):
     """Save a provider -- returns button partial for htmx swap."""
+    btn_target = request.headers.get("hx-target", "#save-btn").lstrip("#")
     saved = storage.get_provider(npi)
     if saved:
         return _render("_save_button.html", {
             "request": request,
             "is_saved": True,
             "npi": npi,
+            "btn_target": btn_target,
         })
 
     try:
@@ -454,6 +465,7 @@ async def save_provider(
             "request": request,
             "is_saved": True,
             "npi": npi,
+            "btn_target": btn_target,
         })
 
     # Lookup failed -- don't claim it was saved
@@ -475,10 +487,12 @@ async def remove_provider(
     if hx_target.startswith("#saved-row-"):
         return HTMLResponse(content="")
 
+    btn_target = hx_target.lstrip("#") if hx_target else "save-btn"
     return _render("_save_button.html", {
         "request": request,
         "is_saved": False,
         "npi": npi,
+        "btn_target": btn_target,
     })
 
 
