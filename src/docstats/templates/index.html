@@ -22,6 +22,7 @@
     <input type="hidden" id="field-city" name="city" value="">
     <input type="hidden" id="field-state" name="state" value="">
     <input type="hidden" id="field-zip" name="zip" value="">
+    <input type="hidden" id="field-geo-state" name="geo_state" value="">
 
     <div class="search-bar-wrap">
       <span class="search-icon">⌕</span>
@@ -317,5 +318,26 @@
   }
   setupLocationAutocomplete();
   {% endif %}
+
+  // ── Browser geolocation → auto state boost ────────────────────────────────
+  (function() {
+    if (!navigator.geolocation || !MAPBOX_TOKEN) return;
+    navigator.geolocation.getCurrentPosition(function(pos) {
+      var lat = pos.coords.latitude, lon = pos.coords.longitude;
+      var url = 'https://api.mapbox.com/geocoding/v5/mapbox.places/' +
+        lon + ',' + lat + '.json?types=region&access_token=' + MAPBOX_TOKEN;
+      fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+        var feat = data.features && data.features[0];
+        if (!feat) return;
+        var stateCode = feat.properties && feat.properties.short_code
+          ? feat.properties.short_code.replace('US-', '')
+          : '';
+        if (stateCode) {
+          var geoField = document.getElementById('field-geo-state');
+          if (geoField && !geoField.value) geoField.value = stateCode;
+        }
+      }).catch(function() {});
+    }, function() {}, { timeout: 5000 });
+  })();
 </script>
 {% endblock %}

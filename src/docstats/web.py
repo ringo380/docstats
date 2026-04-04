@@ -327,6 +327,7 @@ async def search(
     state: str = Query("", alias="state"),
     zip: str = Query("", alias="zip"),
     type: str = Query("", alias="type"),
+    geo_state: str = Query("", alias="geo_state"),
     limit: int = Query(10, alias="limit"),
     current_user: dict | None = Depends(get_current_user),
     storage: Storage = Depends(get_storage),
@@ -342,6 +343,7 @@ async def search(
     city = city.strip()
     state = state.strip()
     zip = zip.strip()
+    geo_state = geo_state.strip()
 
     user_id = current_user["id"] if current_user else None
 
@@ -458,8 +460,10 @@ async def search(
         query_obj = SearchQuery(
             last_name=interp.get("last_name") or None,
             first_name=interp.get("first_name") or None,
+            middle_name=parsed.middle_name or None,
             organization_name=interp.get("organization_name") or None,
             specialty=interp.get("taxonomy_description") or None,
+            geo_state=geo_state or None,
         )
     else:
         query_obj = SearchQuery(
@@ -471,6 +475,7 @@ async def search(
             city=city or None,
             state=state or None,
             postal_code=zip or None,
+            geo_state=geo_state or None,
         )
     ranked = rank_results(response.results, query_obj)
 

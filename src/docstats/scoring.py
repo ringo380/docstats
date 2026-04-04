@@ -7,6 +7,7 @@ and ranks results based on how well they match the user's search criteria.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from docstats.models import NPIResult
 
@@ -23,6 +24,7 @@ class SearchQuery:
     city: str | None = None
     state: str | None = None
     postal_code: str | None = None
+    geo_state: str | None = None  # browser-detected user state for proximity boost
 
 
 def score_result(result: NPIResult, query: SearchQuery) -> int:
@@ -62,6 +64,10 @@ def score_result(result: NPIResult, query: SearchQuery) -> int:
                 score += 10
             elif raw_mid and len(query_mid) > 1 and raw_mid.startswith(query_mid):
                 score += 12
+            elif raw_mid and len(query_mid) > 1:
+                similarity = SequenceMatcher(None, query_mid, raw_mid).ratio()
+                if similarity >= 0.75:
+                    score += 8
 
     # Org name matching
     if result.is_organization and query.organization_name:
@@ -91,6 +97,12 @@ def score_result(result: NPIResult, query: SearchQuery) -> int:
                 score += 10
             if query.city and addr.city.upper() == query.city.upper():
                 score += 10
+
+    # Geolocation proximity boost (only when user didn't manually filter by location)
+    if query.geo_state and not query.state and not query.postal_code:
+        addr = result.location_address
+        if addr and addr.state.upper() == query.geo_state.upper():
+            score += 8
 
     # Taxonomy/specialty matching
     if query.specialty:
