@@ -22,6 +22,10 @@
 - `initAutocomplete(inputEl, listEl)` in `index.html` is reusable for any field; `data-value=""` + `data-extra='{"field":"val"}'` pattern populates sibling fields on selection without htmx
 - Web errors return HTTP 200 with error HTML partial (not 4xx/5xx) — htmx swaps normally; `htmx:responseError` in `base.html` handles true network/server failures
 - Individual search form uses progressive disclosure: smart search bar shown by default; specialty and location are optional filters revealed via pill buttons
+- Auth: `auth.py` (bcrypt password hashing, `get_current_user`/`require_user` FastAPI deps, anon search counter), `oauth.py` (GitHub OAuth helpers); sessions via Starlette `SessionMiddleware` with signed cookie
+- All provider/history data is per-user: `saved_providers` PK is `(user_id, npi)`, `search_history` has nullable `user_id`; `get_provider(npi, None)` always returns None (anonymous)
+- `get_storage()` is defined in `storage.py` (not `web.py`); web.py imports and re-exports it for backward compatibility
+- Anonymous users get 3 free searches (tracked in session cookie); save attempts return `_auth_gate.html` inline partial instead of a redirect
 - Smart search: `parse.py` module (`parse_query()`, `build_interpretations()`) parses free-text query into ranked NPPES API fallback interpretations; winning `interp` dict populates `SearchQuery` for `rank_results()`
 - `appt_address` stored per `SavedProvider` in SQLite; rendered as an editable chip in the saved list; appended to referral export
 - Dark theme CSS in `base.html`: CSS custom properties (`--bg`, `--bg-card`, `--green`, `--blue`, `--text`, `--text-muted`, `--text-dim`, `--border`); no external CSS framework
@@ -63,14 +67,21 @@
 - `_save_button.html` uses `btn_target` variable (container ID without `#`) so it works from multiple call sites; routes pass it via `request.headers.get("hx-target", "#save-btn").lstrip("#")`
 - History re-run links navigate to `/?query=...`; `index.html` has a `DOMContentLoaded` handler that reads `?query=` from the URL and auto-triggers `htmx.trigger(form, 'submit')` — required for re-run to land on results
 - In the smart-search path (`query` param), `rank_results()` must receive a `SearchQuery` built from the winning `interp` dict (`first_name`, `last_name`, `organization_name`, `taxonomy_description`), not the empty structured-form fields
+- `require_user` dependency raises `AuthRequiredException`; the exception handler in `web.py` returns `HX-Redirect` header (200) for HTMX requests, and `303` redirect for normal requests — HTMX doesn't follow 3xx redirects correctly
+- Anonymous saves hit `POST /provider/{npi}/save` which returns `_auth_gate.html` (not a redirect) so HTMX can swap it inline; never use `require_user` on this route
+- `SESSION_SECRET_KEY` not set → random key generated at startup (dev-only fallback); sessions won't survive server restarts without it set in env
+- `saved_providers` migration: `_migrate_saved_providers()` checks `PRAGMA table_info` for `user_id`; if absent, drops and recreates with composite PK — existing data is lost (acceptable on Railway due to ephemeral filesystem)
+- All full-page routes must pass `user=current_user` in template context for `base.html` nav to render correctly
+- Test auth override: `app.dependency_overrides[get_current_user] = lambda: fake_user_dict` — `require_user` inherits this automatically since it depends on `get_current_user`
 
 ## Deployment (Railway)
 - Hosted at https://docstats-production.up.railway.app
 - Railway uses **Railpack** (not Nixpacks) — `nixpacks.toml` is ignored
 - Config: `railway.toml` for build/start commands, `requirements.txt` for deps
 - Railpack doesn't install pyproject.toml optional extras — `requirements.txt` must include all web deps explicitly
-- Pre-launch protections active (issue #57 tracks removal): basic auth, robots.txt, X-Robots-Tag header, meta noindex
-- Auth creds set as Railway env vars: `DOCSTATS_AUTH_USER`, `DOCSTATS_AUTH_PASS`
+- Pre-launch protections: HTTP Basic Auth removed; robots.txt and X-Robots-Tag header remain
+- Required Railway env vars: `SESSION_SECRET_KEY` (generate with `python -c "import secrets; print(secrets.token_hex(32))"`)
+- Optional Railway env vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` (GitHub OAuth App; callback URL: `https://referme.help/auth/github/callback`)
 - `MAPBOX_PUBLIC_TOKEN` — Railway env var for address autocomplete (use `pk.` public token, not `sk.` secret)
 - SQLite data doesn't persist across redeploys (ephemeral filesystem)
 - Deploy: `railway up --detach --service docstats`

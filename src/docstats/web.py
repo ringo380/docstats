@@ -7,19 +7,37 @@ import os
 import secrets
 from pathlib import Path
 
+import httpx
 from fastapi import Depends, FastAPI, Form, Query, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response as StarletteResponse
+from starlette.middleware.sessions import SessionMiddleware
 
+from docstats.auth import (
+    ANON_SEARCH_LIMIT,
+    AuthRequiredException,
+    get_anon_search_count,
+    get_current_user,
+    hash_password,
+    increment_anon_search_count,
+    require_user,
+    verify_password,
+)
 from docstats.cache import ResponseCache
 from docstats.client import NPPESClient, NPPESError
-from docstats.parse import build_interpretations, parse_query
 from docstats.formatting import referral_export
 from docstats.normalize import format_name
+from docstats.oauth import (
+    GITHUB_ENABLED,
+    github_authorize_url,
+    github_exchange_code,
+    github_get_emails,
+    github_get_user,
+    primary_github_email,
+)
+from docstats.parse import build_interpretations, parse_query
 from docstats.scoring import SearchQuery, rank_results
-from docstats.storage import Storage, get_db_path
+from docstats.storage import Storage, get_db_path, get_storage
 from docstats.taxonomies import TAXONOMY_DESCRIPTIONS
 
 logger = logging.getLogger(__name__)
@@ -28,55 +46,33 @@ app = FastAPI(title="docstats", description="NPI Registry lookup for HMO referra
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
-
-
-def _render(name: str, context: dict) -> Response:
-    """Render a template, compatible with Starlette 0.50+."""
-    request = context["request"]
-    return templates.TemplateResponse(request, name, context)
-
-# --- Pre-launch protections ---
-
-BASIC_AUTH_USER = os.environ.get("DOCSTATS_AUTH_USER", "")
-BASIC_AUTH_PASS = os.environ.get("DOCSTATS_AUTH_PASS", "")
 MAPBOX_TOKEN = os.environ.get("MAPBOX_PUBLIC_TOKEN", "")
 
-
-class PreLaunchMiddleware(BaseHTTPMiddleware):
-    """Block search engines and optionally require basic auth."""
-
-    async def dispatch(self, request: Request, call_next):
-        # Basic auth gate (only when credentials are configured)
-        if BASIC_AUTH_USER and BASIC_AUTH_PASS:
-            import base64
-
-            auth = request.headers.get("authorization", "")
-            if not auth.startswith("Basic "):
-                return StarletteResponse(
-                    status_code=401,
-                    headers={"WWW-Authenticate": 'Basic realm="docstats"'},
-                )
-            try:
-                decoded = base64.b64decode(auth.split(" ", 1)[1]).decode()
-                user, passwd = decoded.split(":", 1)
-            except Exception:
-                return StarletteResponse(
-                    status_code=401,
-                    headers={"WWW-Authenticate": 'Basic realm="docstats"'},
-                )
-            if not (secrets.compare_digest(user, BASIC_AUTH_USER)
-                    and secrets.compare_digest(passwd, BASIC_AUTH_PASS)):
-                return StarletteResponse(
-                    status_code=401,
-                    headers={"WWW-Authenticate": 'Basic realm="docstats"'},
-                )
-
-        response = await call_next(request)
-        response.headers["X-Robots-Tag"] = "noindex, nofollow"
-        return response
+# --- Session middleware (must be added before @app.middleware decorators) ---
+_SESSION_SECRET = os.environ.get("SESSION_SECRET_KEY") or secrets.token_hex(32)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_SESSION_SECRET,
+    max_age=604800,  # 7 days
+    https_only=os.environ.get("RAILWAY_ENVIRONMENT") == "production",
+)
 
 
-app.add_middleware(PreLaunchMiddleware)
+# --- X-Robots-Tag (keep crawlers out) ---
+@app.middleware("http")
+async def add_robots_header(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
+
+
+# --- Exception handlers ---
+
+@app.exception_handler(AuthRequiredException)
+async def auth_exception_handler(request: Request, exc: AuthRequiredException):
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": "/auth/login"})
+    return RedirectResponse("/auth/login", status_code=303)
 
 
 @app.exception_handler(Exception)
@@ -87,7 +83,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
 async def robots_txt():
-    """Block all crawlers while in development."""
+    """Block all crawlers."""
     return "User-agent: *\nDisallow: /\n"
 
 
@@ -110,15 +106,7 @@ US_STATES = [
 
 # --- Dependency injection ---
 
-_storage: Storage | None = None
 _client: NPPESClient | None = None
-
-
-def get_storage() -> Storage:
-    global _storage
-    if _storage is None:
-        _storage = Storage()
-    return _storage
 
 
 def get_client() -> NPPESClient:
@@ -130,16 +118,189 @@ def get_client() -> NPPESClient:
     return _client
 
 
-def _saved_count(storage: Storage) -> int:
-    return len(storage.list_providers())
+def _render(name: str, context: dict) -> Response:
+    """Render a template, compatible with Starlette 0.50+."""
+    request = context["request"]
+    return templates.TemplateResponse(request, name, context)
 
 
-# --- Routes ---
+def _saved_count(storage: Storage, user_id: int | None) -> int:
+    if user_id is None:
+        return 0
+    return len(storage.list_providers(user_id))
 
+
+# --- Auth routes ---
+
+@app.get("/auth/login", response_class=HTMLResponse)
+async def login_page(
+    request: Request,
+    current_user: dict | None = Depends(get_current_user),
+):
+    if current_user:
+        return RedirectResponse("/", status_code=303)
+    return _render("login.html", {
+        "request": request,
+        "active_page": None,
+        "saved_count": 0,
+        "user": None,
+        "error": request.session.pop("flash_error", None),
+        "github_enabled": GITHUB_ENABLED,
+    })
+
+
+@app.post("/auth/login", response_class=HTMLResponse)
+async def login_post(
+    request: Request,
+    email: str = Form(""),
+    password: str = Form(""),
+    storage: Storage = Depends(get_storage),
+):
+    email = email.strip().lower()
+    if not email or not password:
+        return _render("login.html", {
+            "request": request,
+            "active_page": None,
+            "saved_count": 0,
+            "user": None,
+            "error": "Email and password are required.",
+            "github_enabled": GITHUB_ENABLED,
+        })
+
+    user = storage.get_user_by_email(email)
+    if not user or not user.get("password_hash") or not verify_password(password, user["password_hash"]):
+        return _render("login.html", {
+            "request": request,
+            "active_page": None,
+            "saved_count": 0,
+            "user": None,
+            "error": "Invalid email or password.",
+            "github_enabled": GITHUB_ENABLED,
+        })
+
+    request.session["user_id"] = user["id"]
+    request.session.pop("anon_searches", None)
+    storage.update_last_login(user["id"])
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/auth/signup", response_class=HTMLResponse)
+async def signup_page(
+    request: Request,
+    current_user: dict | None = Depends(get_current_user),
+):
+    if current_user:
+        return RedirectResponse("/", status_code=303)
+    return _render("signup.html", {
+        "request": request,
+        "active_page": None,
+        "saved_count": 0,
+        "user": None,
+        "error": None,
+        "github_enabled": GITHUB_ENABLED,
+    })
+
+
+@app.post("/auth/signup", response_class=HTMLResponse)
+async def signup_post(
+    request: Request,
+    email: str = Form(""),
+    password: str = Form(""),
+    confirm_password: str = Form(""),
+    storage: Storage = Depends(get_storage),
+):
+    email = email.strip().lower()
+
+    def _err(msg: str):
+        return _render("signup.html", {
+            "request": request,
+            "active_page": None,
+            "saved_count": 0,
+            "user": None,
+            "error": msg,
+            "github_enabled": GITHUB_ENABLED,
+        })
+
+    if not email or not password:
+        return _err("Email and password are required.")
+    if len(password) < 8:
+        return _err("Password must be at least 8 characters.")
+    if password != confirm_password:
+        return _err("Passwords do not match.")
+    if storage.get_user_by_email(email):
+        return _err("An account with that email already exists.")
+
+    user_id = storage.create_user(email, hash_password(password))
+    request.session["user_id"] = user_id
+    request.session.pop("anon_searches", None)
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/auth/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/auth/github")
+async def github_login(request: Request):
+    if not GITHUB_ENABLED:
+        return RedirectResponse("/auth/login", status_code=303)
+    state = secrets.token_urlsafe(16)
+    request.session["github_state"] = state
+    return RedirectResponse(github_authorize_url(state), status_code=303)
+
+
+@app.get("/auth/github/callback")
+async def github_callback(
+    request: Request,
+    code: str = Query(""),
+    state: str = Query(""),
+    storage: Storage = Depends(get_storage),
+):
+    expected_state = request.session.pop("github_state", None)
+    if not code or not state or state != expected_state:
+        return RedirectResponse("/auth/login?error=oauth", status_code=303)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            token_data = await github_exchange_code(code, client)
+            access_token = token_data.get("access_token")
+            if not access_token:
+                return RedirectResponse("/auth/login?error=oauth", status_code=303)
+
+            gh_user = await github_get_user(access_token, client)
+            gh_emails = await github_get_emails(access_token, client)
+    except Exception:
+        logger.exception("GitHub OAuth error")
+        return RedirectResponse("/auth/login?error=oauth", status_code=303)
+
+    email = primary_github_email(gh_emails) or gh_user.get("email")
+    display_name = gh_user.get("name") or gh_user.get("login")
+    user_id = storage.upsert_github_user(
+        github_id=str(gh_user["id"]),
+        github_login=gh_user["login"],
+        email=email,
+        display_name=display_name,
+    )
+    request.session["user_id"] = user_id
+    request.session.pop("anon_searches", None)
+    return RedirectResponse("/", status_code=303)
+
+
+# --- Main routes ---
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request, storage: Storage = Depends(get_storage)):
-    """Landing page with search form."""
+async def index(
+    request: Request,
+    current_user: dict | None = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+):
+    user_id = current_user["id"] if current_user else None
+    anon_remaining = (
+        None if current_user
+        else max(0, ANON_SEARCH_LIMIT - get_anon_search_count(request))
+    )
     return _render("index.html", {
         "request": request,
         "active_page": "search",
@@ -147,7 +308,9 @@ async def index(request: Request, storage: Storage = Depends(get_storage)):
         "q": {},
         "initial_results": False,
         "mapbox_token": MAPBOX_TOKEN,
-        "saved_count": _saved_count(storage),
+        "saved_count": _saved_count(storage, user_id),
+        "user": current_user,
+        "anon_searches_remaining": anon_remaining,
     })
 
 
@@ -165,10 +328,11 @@ async def search(
     zip: str = Query("", alias="zip"),
     type: str = Query("", alias="type"),
     limit: int = Query(10, alias="limit"),
+    current_user: dict | None = Depends(get_current_user),
     storage: Storage = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
 ):
-    """Search providers -- returns partial HTML for htmx."""
+    """Search providers — returns partial HTML for htmx."""
     query = query.strip()
     name = name.strip()
     first = first.strip()
@@ -179,6 +343,21 @@ async def search(
     state = state.strip()
     zip = zip.strip()
 
+    user_id = current_user["id"] if current_user else None
+
+    # Anonymous search limit
+    if current_user is None:
+        count = get_anon_search_count(request)
+        if count >= ANON_SEARCH_LIMIT:
+            return _render("_results.html", {
+                "request": request,
+                "error": None,
+                "results": None,
+                "result_count": 0,
+                "interp_desc": None,
+                "anon_limit_reached": True,
+            })
+
     def _error(msg: str):
         return _render("_results.html", {
             "request": request,
@@ -186,13 +365,13 @@ async def search(
             "results": None,
             "result_count": 0,
             "interp_desc": None,
+            "anon_limit_reached": False,
         })
 
     response = None
     interp_desc: str | None = None
 
     if query:
-        # Smart search bar path: try interpretations in sequence
         parsed = parse_query(query)
         interpretations = build_interpretations(parsed)
         if not interpretations:
@@ -205,7 +384,6 @@ async def search(
                 result = client.search(**interp, limit=limit)
                 if result.result_count > 0:
                     response = result
-                    # Build human-readable "Searched as:" description
                     parts = []
                     fn = interp.get("first_name", "")
                     ln = interp.get("last_name", "")
@@ -227,22 +405,22 @@ async def search(
         if response is None:
             if last_error:
                 return _error(str(last_error))
-            storage.log_search({"query": query}, 0)
+            storage.log_search({"query": query}, 0, user_id=user_id)
             return _render("_results.html", {
                 "request": request,
                 "error": None,
                 "results": [],
                 "result_count": 0,
                 "interp_desc": None,
+                "anon_limit_reached": False,
             })
 
         log_params: dict[str, str] = {"query": query}
         if interp_desc:
             log_params["_interp"] = interp_desc
-        storage.log_search(log_params, response.result_count)
+        storage.log_search(log_params, response.result_count, user_id=user_id)
 
     else:
-        # Legacy structured-field path (history re-run, old form)
         if not any([name, first, org, specialty, city, zip]):
             return _error("Please fill in at least one search field.")
         if (name or first) and org:
@@ -270,7 +448,11 @@ async def search(
                      ("city", city), ("zip", zip), ("type", type)]:
             if v:
                 params[k] = v
-        storage.log_search(params, response.result_count)
+        storage.log_search(params, response.result_count, user_id=user_id)
+
+    # Increment anonymous search counter after a successful search
+    if current_user is None:
+        increment_anon_search_count(request)
 
     if query:
         query_obj = SearchQuery(
@@ -298,15 +480,12 @@ async def search(
         "result_count": response.result_count,
         "error": None,
         "interp_desc": interp_desc,
+        "anon_limit_reached": False,
     })
 
 
 @app.get("/api/zip/{code}")
-async def zip_lookup(
-    code: str,
-    storage: Storage = Depends(get_storage),
-):
-    """Return city/state for a ZIP code (used by frontend autofill)."""
+async def zip_lookup(code: str, storage: Storage = Depends(get_storage)):
     result = storage.lookup_zip(code)
     if result:
         return JSONResponse({"city": result["city"], "state": result["state"]})
@@ -323,7 +502,6 @@ async def suggest_names(
     field: str = Query("last_name"),
     client: NPPESClient = Depends(get_client),
 ):
-    """Return name suggestions as HTML partial for typeahead."""
     q = q.strip()
     if len(q) < 2 or field not in _SUGGEST_FIELDS:
         return HTMLResponse("")
@@ -343,7 +521,6 @@ async def suggest_names(
             extra = {}
         elif field in ("last_name", "first_name") and r.is_individual:
             value = format_name(getattr(basic, field))
-            # Pre-fill both name fields when user selects a person
             extra = {
                 "name": format_name(basic.last_name),
                 "first": format_name(basic.first_name),
@@ -351,12 +528,9 @@ async def suggest_names(
         else:
             continue
 
-        # NPPES matches against former/other names too — only show
-        # suggestions where the current name matches the typed prefix
         if not value.lower().startswith(q_lower):
             continue
 
-        # Deduplicate by full display name (not just the field value)
         display = r.display_name
         if display in seen:
             continue
@@ -376,15 +550,11 @@ async def suggest_names(
         if len(suggestions) >= 8:
             break
 
-    return _render("_suggestions.html", {
-        "request": request,
-        "suggestions": suggestions,
-    })
+    return _render("_suggestions.html", {"request": request, "suggestions": suggestions})
 
 
 @app.get("/api/taxonomies")
 async def taxonomy_list():
-    """Return full taxonomy description list for client-side specialty autocomplete."""
     return JSONResponse(
         content=TAXONOMY_DESCRIPTIONS,
         headers={"Cache-Control": "max-age=86400"},
@@ -395,11 +565,12 @@ async def taxonomy_list():
 async def provider_detail(
     request: Request,
     npi: str,
+    current_user: dict | None = Depends(get_current_user),
     storage: Storage = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
 ):
-    """Show full provider detail."""
-    saved = storage.get_provider(npi)
+    user_id = current_user["id"] if current_user else None
+    saved = storage.get_provider(npi, user_id)
     saved_notes = None
 
     if saved:
@@ -416,7 +587,8 @@ async def provider_detail(
                 "error": str(e),
                 "is_saved": False,
                 "saved_notes": None,
-                "saved_count": _saved_count(storage),
+                "saved_count": _saved_count(storage, user_id),
+                "user": current_user,
             })
         if result is None:
             return HTMLResponse(
@@ -432,7 +604,8 @@ async def provider_detail(
         "is_saved": saved is not None,
         "npi": npi,
         "saved_notes": saved_notes,
-        "saved_count": _saved_count(storage),
+        "saved_count": _saved_count(storage, user_id),
+        "user": current_user,
     })
 
 
@@ -440,12 +613,19 @@ async def provider_detail(
 async def save_provider(
     request: Request,
     npi: str,
+    current_user: dict | None = Depends(get_current_user),
     storage: Storage = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
 ):
-    """Save a provider -- returns button partial for htmx swap."""
+    """Save a provider — returns button partial for htmx swap."""
     btn_target = request.headers.get("hx-target", "#save-btn").lstrip("#")
-    saved = storage.get_provider(npi)
+
+    # Anonymous users get an inline auth prompt instead of a redirect
+    if current_user is None:
+        return _render("_auth_gate.html", {"request": request, "btn_target": btn_target})
+
+    user_id = current_user["id"]
+    saved = storage.get_provider(npi, user_id)
     if saved:
         return _render("_save_button.html", {
             "request": request,
@@ -460,7 +640,7 @@ async def save_provider(
         result = None
 
     if result:
-        storage.save_provider(result)
+        storage.save_provider(result, user_id)
         return _render("_save_button.html", {
             "request": request,
             "is_saved": True,
@@ -468,7 +648,6 @@ async def save_provider(
             "btn_target": btn_target,
         })
 
-    # Lookup failed -- don't claim it was saved
     return HTMLResponse(
         content='<span style="color: #c62828;">Could not look up this provider. Try again.</span>'
     )
@@ -478,10 +657,11 @@ async def save_provider(
 async def remove_provider(
     request: Request,
     npi: str,
+    current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
 ):
-    """Remove a saved provider -- returns button partial for htmx swap."""
-    storage.delete_provider(npi)
+    user_id = current_user["id"]
+    storage.delete_provider(npi, user_id)
 
     hx_target = request.headers.get("hx-target", "")
     if hx_target.startswith("#saved-row-"):
@@ -499,16 +679,18 @@ async def remove_provider(
 @app.get("/saved", response_class=HTMLResponse)
 async def saved_list(
     request: Request,
+    current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
 ):
-    """List saved providers."""
-    providers = storage.list_providers()
+    user_id = current_user["id"]
+    providers = storage.list_providers(user_id)
     return _render("saved.html", {
         "request": request,
         "active_page": "saved",
         "providers": providers,
         "saved_count": len(providers),
         "mapbox_token": MAPBOX_TOKEN,
+        "user": current_user,
     })
 
 
@@ -517,17 +699,18 @@ async def set_appt_address(
     request: Request,
     npi: str,
     address: str = Form(""),
+    current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
 ):
-    """Save appointment address for a provider — returns address chip partial."""
+    user_id = current_user["id"]
     address = address.strip()
     if address:
-        found = storage.set_appt_address(npi, address)
+        found = storage.set_appt_address(npi, address, user_id)
         if not found:
             return HTMLResponse(
                 '<span class="appt-error">Provider must be saved before adding an appointment address.</span>'
             )
-    provider = storage.get_provider(npi)
+    provider = storage.get_provider(npi, user_id)
     return _render("_appt_address.html", {
         "request": request,
         "npi": npi,
@@ -540,10 +723,11 @@ async def set_appt_address(
 async def clear_appt_address(
     request: Request,
     npi: str,
+    current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
 ):
-    """Clear appointment address for a provider — returns empty input partial."""
-    storage.clear_appt_address(npi)
+    user_id = current_user["id"]
+    storage.clear_appt_address(npi, user_id)
     return _render("_appt_address.html", {
         "request": request,
         "npi": npi,
@@ -556,11 +740,12 @@ async def clear_appt_address(
 async def export_view(
     request: Request,
     npi: str,
+    current_user: dict | None = Depends(get_current_user),
     storage: Storage = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
 ):
-    """Show referral export page."""
-    saved = storage.get_provider(npi)
+    user_id = current_user["id"] if current_user else None
+    saved = storage.get_provider(npi, user_id)
     if saved:
         result = saved.to_npi_result()
     else:
@@ -580,18 +765,20 @@ async def export_view(
         "result": result,
         "export_text": export_text,
         "appt_address": appt_address,
-        "saved_count": _saved_count(storage),
+        "saved_count": _saved_count(storage, user_id),
+        "user": current_user,
     })
 
 
 @app.get("/provider/{npi}/export/text")
 async def export_text(
     npi: str,
+    current_user: dict | None = Depends(get_current_user),
     storage: Storage = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
 ):
-    """Download referral summary as plain text."""
-    saved = storage.get_provider(npi)
+    user_id = current_user["id"] if current_user else None
+    saved = storage.get_provider(npi, user_id)
     if saved:
         result = saved.to_npi_result()
         appt_address = saved.appt_address
@@ -614,10 +801,11 @@ async def export_text(
 @app.get("/saved/export", response_class=HTMLResponse)
 async def export_all(
     request: Request,
+    current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
 ):
-    """Print-optimized page with all saved referrals stacked."""
-    providers = storage.list_providers()
+    user_id = current_user["id"]
+    providers = storage.list_providers(user_id)
     referrals = []
     for p in providers:
         result = p.to_npi_result()
@@ -632,6 +820,7 @@ async def export_all(
         "active_page": "saved",
         "referrals": referrals,
         "saved_count": len(providers),
+        "user": current_user,
     })
 
 
@@ -639,13 +828,15 @@ async def export_all(
 async def history(
     request: Request,
     limit: int = Query(50),
+    current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
 ):
-    """Show search history."""
-    entries = storage.get_history(limit=limit)
+    user_id = current_user["id"]
+    entries = storage.get_history(limit=limit, user_id=user_id)
     return _render("history.html", {
         "request": request,
         "active_page": "history",
         "entries": entries,
-        "saved_count": _saved_count(storage),
+        "saved_count": _saved_count(storage, user_id),
+        "user": current_user,
     })

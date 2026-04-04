@@ -1,4 +1,13 @@
-{% if error %}
+{% if anon_limit_reached %}
+  <div class="card" style="text-align:center; padding:2rem 1rem; margin-top:1rem;">
+    <p style="font-weight:600; margin-bottom:0.5rem;">Free search limit reached</p>
+    <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:1.25rem;">Sign up for free to get unlimited searches and save providers.</p>
+    <div style="display:flex; gap:10px; justify-content:center;">
+      <a href="/auth/signup" class="btn btn-primary">Create free account</a>
+      <a href="/auth/login" class="btn btn-secondary">Log in</a>
+    </div>
+  </div>
+{% elif error %}
   <div class="flash flash-error">{{ error }}</div>
 {% elif results is not none %}
   <div class="results-meta">
