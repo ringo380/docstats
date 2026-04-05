@@ -314,6 +314,15 @@ class Storage:
         self._conn.commit()
         return cursor.rowcount > 0
 
+    def update_notes(self, npi: str, notes: str | None, user_id: int) -> bool:
+        """Update notes for a saved provider. Returns True if it existed."""
+        cursor = self._conn.execute(
+            "UPDATE saved_providers SET notes = ?, updated_at = ? WHERE npi = ? AND user_id = ?",
+            (notes, datetime.now().isoformat(), npi, user_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
     def set_appt_address(self, npi: str, address: str, user_id: int) -> bool:
         """Set the appointment address for a saved provider."""
         cursor = self._conn.execute(

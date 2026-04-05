@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+from datetime import date
 import logging
 import os
 import secrets
@@ -10,7 +13,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, Form, Query, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -27,7 +30,7 @@ from docstats.auth import (
 from docstats.cache import ResponseCache
 from docstats.client import NPPESClient, NPPESError
 from docstats.formatting import referral_export
-from docstats.models import NPIResult
+from docstats.models import NPIResult, SavedProvider
 from docstats.normalize import format_name
 from docstats.oauth import (
     GITHUB_ENABLED,
@@ -885,6 +888,25 @@ async def clear_appt_address(
     })
 
 
+@app.put("/provider/{npi}/notes", response_class=HTMLResponse)
+async def update_notes(
+    request: Request,
+    npi: str,
+    notes: str = Form(""),
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+):
+    user_id = current_user["id"]
+    text = notes.strip() or None
+    storage.update_notes(npi, text, user_id)
+    return _render("_notes.html", {
+        "request": request,
+        "npi": npi,
+        "saved_notes": text,
+        "is_saved": True,
+    })
+
+
 @app.get("/provider/{npi}/export", response_class=HTMLResponse)
 async def export_view(
     request: Request,
@@ -944,6 +966,62 @@ async def export_text(
     return PlainTextResponse(
         content=text,
         headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
+    )
+
+
+def _export_fields(p: SavedProvider) -> dict:
+    """Build a flat dict of export fields from a SavedProvider."""
+    return {
+        "NPI": p.npi,
+        "Name": p.display_name,
+        "Entity Type": p.entity_type,
+        "Specialty": p.specialty or "",
+        "Phone": p.phone or "",
+        "Fax": p.fax or "",
+        "Address": p.address_line1 or "",
+        "City": p.address_city or "",
+        "State": p.address_state or "",
+        "ZIP": p.address_zip or "",
+        "Notes": p.notes or "",
+        "Appointment Address": p.appt_address or "",
+        "Saved At": p.saved_at.isoformat() if p.saved_at else "",
+    }
+
+
+@app.get("/saved/export/csv")
+async def export_all_csv(
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+):
+    user_id = current_user["id"]
+    providers = storage.list_providers(user_id)
+    buf = io.StringIO()
+    fieldnames = list(_export_fields(providers[0]).keys()) if providers else []
+    writer = csv.DictWriter(buf, fieldnames=fieldnames)
+    writer.writeheader()
+    for p in providers:
+        writer.writerow(_export_fields(p))
+    filename = f"referrals_{date.today().isoformat()}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.get("/saved/export/json")
+async def export_all_json(
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+):
+    user_id = current_user["id"]
+    providers = storage.list_providers(user_id)
+    data = [_export_fields(p) for p in providers]
+    filename = f"referrals_{date.today().isoformat()}.json"
+    return Response(
+        content=json.dumps(data, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 

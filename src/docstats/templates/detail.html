@@ -13,6 +13,10 @@
       <a href="/provider/{{ npi }}/export" class="btn btn-blue btn-sm">Export Referral</a>
     </div>
 
+    {% if is_saved %}
+      {% include "_notes.html" %}
+    {% endif %}
+
     <div class="provider-hgroup {% if not result.is_individual %}org{% endif %}">
       <h1>{{ result.display_name }}</h1>
       <div class="sub">

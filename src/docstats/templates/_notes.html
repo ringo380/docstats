@@ -1,0 +1,24 @@
+<div class="notes-wrap" id="notes-{{ npi }}">
+  {% if is_saved %}
+    <div class="notes-display" id="notes-display-{{ npi }}"
+         onclick="toggleNoteEdit('{{ npi }}')"
+         title="Click to edit">
+      {% if saved_notes %}
+        <span class="notes-icon">📝</span> {{ saved_notes }}
+      {% else %}
+        <span class="notes-placeholder">+ Add a note…</span>
+      {% endif %}
+    </div>
+    <form class="notes-edit" id="notes-edit-{{ npi }}" style="display:none;"
+          hx-put="/provider/{{ npi }}/notes"
+          hx-target="#notes-{{ npi }}"
+          hx-swap="outerHTML">
+      <textarea name="notes" rows="2" placeholder="Notes about this provider…">{{ saved_notes or '' }}</textarea>
+      <div class="notes-actions">
+        <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        <button type="button" class="btn btn-secondary btn-sm"
+                onclick="toggleNoteEdit('{{ npi }}')">Cancel</button>
+      </div>
+    </form>
+  {% endif %}
+</div>

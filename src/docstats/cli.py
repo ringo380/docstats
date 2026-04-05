@@ -264,6 +264,23 @@ def history(
 
 
 @app.command()
+def note(
+    npi: Annotated[str, typer.Argument(help="10-digit NPI number")],
+    text: Annotated[str, typer.Argument(help="Note text (use empty string to clear)")],
+) -> None:
+    """Add or update a note on a saved provider."""
+    storage = _get_storage()
+    notes = text.strip() or None
+    if storage.update_notes(npi, notes):
+        if notes:
+            console.print(f"[green]Note updated for NPI {npi}.[/green]")
+        else:
+            console.print(f"[green]Note cleared for NPI {npi}.[/green]")
+    else:
+        console.print(f"[yellow]No saved provider found with NPI {npi}.[/yellow]")
+
+
+@app.command()
 def remove(
     npi: Annotated[str, typer.Argument(help="NPI of provider to remove")],
 ) -> None:
@@ -273,6 +290,60 @@ def remove(
         console.print(f"[green]Removed provider {npi} from saved list.[/green]")
     else:
         console.print(f"[yellow]No saved provider found with NPI {npi}.[/yellow]")
+
+
+@app.command(name="export-all")
+def export_all(
+    fmt: Annotated[str, typer.Option("--format", "-f", help="Output format: csv or json")] = "csv",
+    output: Annotated[Optional[str], typer.Option("--output", "-o", help="Output file (default: stdout)")] = None,
+) -> None:
+    """Export all saved providers as CSV or JSON."""
+    import csv
+    import io
+
+    storage = _get_storage()
+    providers = storage.list_providers()
+
+    if not providers:
+        console.print("[yellow]No saved providers to export.[/yellow]")
+        raise typer.Exit(0)
+
+    def _fields(p):
+        return {
+            "NPI": p.npi,
+            "Name": p.display_name,
+            "Entity Type": p.entity_type,
+            "Specialty": p.specialty or "",
+            "Phone": p.phone or "",
+            "Fax": p.fax or "",
+            "Address": p.address_line1 or "",
+            "City": p.address_city or "",
+            "State": p.address_state or "",
+            "ZIP": p.address_zip or "",
+            "Notes": p.notes or "",
+            "Appointment Address": p.appt_address or "",
+            "Saved At": p.saved_at.isoformat() if p.saved_at else "",
+        }
+
+    if fmt == "json":
+        data = [_fields(p) for p in providers]
+        text = json.dumps(data, indent=2)
+    elif fmt == "csv":
+        buf = io.StringIO()
+        rows = [_fields(p) for p in providers]
+        writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+        text = buf.getvalue()
+    else:
+        console.print(f"[red]Unknown format: {fmt}. Use csv or json.[/red]")
+        raise typer.Exit(1)
+
+    if output:
+        Path(output).write_text(text)
+        console.print(f"[green]Exported {len(providers)} providers to {output}[/green]")
+    else:
+        print(text)
 
 
 @app.command()
