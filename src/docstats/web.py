@@ -313,6 +313,7 @@ async def onboarding(
         "request": request,
         "active_page": None,
         "saved_count": _saved_count(storage, user_id),
+        "mapbox_token": MAPBOX_TOKEN,
         "user": current_user,
     })
 
