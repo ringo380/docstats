@@ -29,7 +29,7 @@
             · NPI {{ p.npi }}
           </div>
           {% if p.notes %}
-            <div class="notes-preview">📝 {{ p.notes }}</div>
+            <div class="notes-preview">Note: {{ p.notes }}</div>
           {% endif %}
           {% set npi = p.npi %}{% set appt_address = p.appt_address %}{% include "_appt_address.html" %}
         </div>

@@ -30,7 +30,7 @@ from docstats.auth import (
 from docstats.cache import ResponseCache
 from docstats.client import NPPESClient, NPPESError
 from docstats.formatting import referral_export
-from docstats.models import NPIResult, SavedProvider
+from docstats.models import NPIResult
 from docstats.normalize import format_name
 from docstats.oauth import (
     GITHUB_ENABLED,
@@ -969,23 +969,10 @@ async def export_text(
     )
 
 
-def _export_fields(p: SavedProvider) -> dict:
-    """Build a flat dict of export fields from a SavedProvider."""
-    return {
-        "NPI": p.npi,
-        "Name": p.display_name,
-        "Entity Type": p.entity_type,
-        "Specialty": p.specialty or "",
-        "Phone": p.phone or "",
-        "Fax": p.fax or "",
-        "Address": p.address_line1 or "",
-        "City": p.address_city or "",
-        "State": p.address_state or "",
-        "ZIP": p.address_zip or "",
-        "Notes": p.notes or "",
-        "Appointment Address": p.appt_address or "",
-        "Saved At": p.saved_at.isoformat() if p.saved_at else "",
-    }
+_CSV_FIELDNAMES = [
+    "NPI", "Name", "Entity Type", "Specialty", "Phone", "Fax",
+    "Address", "City", "State", "ZIP", "Notes", "Appointment Address", "Saved At",
+]
 
 
 @app.get("/saved/export/csv")
@@ -996,11 +983,10 @@ async def export_all_csv(
     user_id = current_user["id"]
     providers = storage.list_providers(user_id)
     buf = io.StringIO()
-    fieldnames = list(_export_fields(providers[0]).keys()) if providers else []
-    writer = csv.DictWriter(buf, fieldnames=fieldnames)
+    writer = csv.DictWriter(buf, fieldnames=_CSV_FIELDNAMES)
     writer.writeheader()
     for p in providers:
-        writer.writerow(_export_fields(p))
+        writer.writerow(p.export_fields())
     filename = f"referrals_{date.today().isoformat()}.csv"
     return StreamingResponse(
         iter([buf.getvalue()]),
@@ -1016,7 +1002,7 @@ async def export_all_json(
 ):
     user_id = current_user["id"]
     providers = storage.list_providers(user_id)
-    data = [_export_fields(p) for p in providers]
+    data = [p.export_fields() for p in providers]
     filename = f"referrals_{date.today().isoformat()}.json"
     return Response(
         content=json.dumps(data, indent=2),

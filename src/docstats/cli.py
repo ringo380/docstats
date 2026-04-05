@@ -36,11 +36,23 @@ _cache: ResponseCache | None = None
 _client: NPPESClient | None = None
 
 
+_CLI_USER_EMAIL = "cli@localhost"
+
+
 def _get_storage() -> Storage:
     global _storage
     if _storage is None:
         _storage = Storage()
     return _storage
+
+
+def _get_cli_user_id() -> int:
+    """Get or create the local CLI user for single-user SQLite mode."""
+    storage = _get_storage()
+    user = storage.get_user_by_email(_CLI_USER_EMAIL)
+    if user:
+        return user["id"]
+    return storage.create_user(_CLI_USER_EMAIL, "")
 
 
 def _get_cache() -> ResponseCache:
@@ -155,7 +167,7 @@ def show(
     """Show full details for a provider (checks saved providers first, then API)."""
     # Check saved providers first
     storage = _get_storage()
-    saved = storage.get_provider(npi)
+    saved = storage.get_provider(npi, _get_cli_user_id())
     if saved:
         result = saved.to_npi_result()
         console.print(provider_detail(result))
@@ -198,7 +210,7 @@ def save(
         raise typer.Exit(1)
 
     storage = _get_storage()
-    provider = storage.save_provider(result, notes=notes)
+    provider = storage.save_provider(result, _get_cli_user_id(), notes=notes)
     console.print(f"[green]Saved:[/green] {provider.display_name} (NPI: {provider.npi})")
 
 
@@ -208,7 +220,7 @@ def saved(
 ) -> None:
     """List all saved providers."""
     storage = _get_storage()
-    providers = storage.list_providers()
+    providers = storage.list_providers(_get_cli_user_id())
 
     if not providers:
         console.print("[yellow]No saved providers. Use [cyan]docstats save <NPI>[/cyan] to save one.[/yellow]")
@@ -226,7 +238,7 @@ def export(
     """Export a referral-ready summary for a provider."""
     # Check saved providers first, then API
     storage = _get_storage()
-    saved_prov = storage.get_provider(npi)
+    saved_prov = storage.get_provider(npi, _get_cli_user_id())
 
     if saved_prov:
         result = saved_prov.to_npi_result()
@@ -254,7 +266,7 @@ def history(
 ) -> None:
     """View recent search history."""
     storage = _get_storage()
-    entries = storage.get_history(limit=limit)
+    entries = storage.get_history(limit=limit, user_id=_get_cli_user_id())
 
     if not entries:
         console.print("[yellow]No search history yet.[/yellow]")
@@ -271,7 +283,7 @@ def note(
     """Add or update a note on a saved provider."""
     storage = _get_storage()
     notes = text.strip() or None
-    if storage.update_notes(npi, notes):
+    if storage.update_notes(npi, notes, _get_cli_user_id()):
         if notes:
             console.print(f"[green]Note updated for NPI {npi}.[/green]")
         else:
@@ -286,7 +298,7 @@ def remove(
 ) -> None:
     """Remove a saved provider from the local database."""
     storage = _get_storage()
-    if storage.delete_provider(npi):
+    if storage.delete_provider(npi, _get_cli_user_id()):
         console.print(f"[green]Removed provider {npi} from saved list.[/green]")
     else:
         console.print(f"[yellow]No saved provider found with NPI {npi}.[/yellow]")
@@ -302,35 +314,18 @@ def export_all(
     import io
 
     storage = _get_storage()
-    providers = storage.list_providers()
+    providers = storage.list_providers(_get_cli_user_id())
 
     if not providers:
         console.print("[yellow]No saved providers to export.[/yellow]")
         raise typer.Exit(0)
 
-    def _fields(p):
-        return {
-            "NPI": p.npi,
-            "Name": p.display_name,
-            "Entity Type": p.entity_type,
-            "Specialty": p.specialty or "",
-            "Phone": p.phone or "",
-            "Fax": p.fax or "",
-            "Address": p.address_line1 or "",
-            "City": p.address_city or "",
-            "State": p.address_state or "",
-            "ZIP": p.address_zip or "",
-            "Notes": p.notes or "",
-            "Appointment Address": p.appt_address or "",
-            "Saved At": p.saved_at.isoformat() if p.saved_at else "",
-        }
-
     if fmt == "json":
-        data = [_fields(p) for p in providers]
+        data = [p.export_fields() for p in providers]
         text = json.dumps(data, indent=2)
     elif fmt == "csv":
         buf = io.StringIO()
-        rows = [_fields(p) for p in providers]
+        rows = [p.export_fields() for p in providers]
         writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
