@@ -300,6 +300,24 @@ class SavedProvider(BaseModel):
         """Rehydrate the full NPIResult from stored JSON."""
         return NPIResult.model_validate_json(self.raw_json)
 
+    def export_fields(self) -> dict[str, str]:
+        """Flat dict of human-readable fields for CSV/JSON export."""
+        return {
+            "NPI": self.npi,
+            "Name": self.display_name,
+            "Entity Type": self.entity_type,
+            "Specialty": self.specialty or "",
+            "Phone": self.phone or "",
+            "Fax": self.fax or "",
+            "Address": self.address_line1 or "",
+            "City": self.address_city or "",
+            "State": self.address_state or "",
+            "ZIP": self.address_zip or "",
+            "Notes": self.notes or "",
+            "Appointment Address": self.appt_address or "",
+            "Saved At": self.saved_at.isoformat() if self.saved_at else "",
+        }
+
 
 class SearchHistoryEntry(BaseModel):
     """Record of a past search."""

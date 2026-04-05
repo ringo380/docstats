@@ -7,7 +7,11 @@
       <div class="sub">{{ providers | length }} provider{% if providers | length != 1 %}s{% endif %} saved</div>
     </div>
     {% if providers %}
-      <a href="/saved/export" class="btn btn-blue">⬇ Export All (PDF)</a>
+      <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+        <a href="/saved/export" class="btn btn-blue">⬇ Export All (PDF)</a>
+        <a href="/saved/export/csv" class="btn btn-blue" download>⬇ CSV</a>
+        <a href="/saved/export/json" class="btn btn-blue" download>⬇ JSON</a>
+      </div>
     {% endif %}
   </div>
 
@@ -24,6 +28,9 @@
             {% if p.address_city and p.address_state %} · {{ p.address_city | title }}, {{ p.address_state }}{% endif %}
             · NPI {{ p.npi }}
           </div>
+          {% if p.notes %}
+            <div class="notes-preview">Note: {{ p.notes }}</div>
+          {% endif %}
           {% set npi = p.npi %}{% set appt_address = p.appt_address %}{% include "_appt_address.html" %}
         </div>
         <div class="row-actions">

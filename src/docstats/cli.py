@@ -36,11 +36,23 @@ _cache: ResponseCache | None = None
 _client: NPPESClient | None = None
 
 
+_CLI_USER_EMAIL = "cli@localhost"
+
+
 def _get_storage() -> Storage:
     global _storage
     if _storage is None:
         _storage = Storage()
     return _storage
+
+
+def _get_cli_user_id() -> int:
+    """Get or create the local CLI user for single-user SQLite mode."""
+    storage = _get_storage()
+    user = storage.get_user_by_email(_CLI_USER_EMAIL)
+    if user:
+        return user["id"]
+    return storage.create_user(_CLI_USER_EMAIL, "")
 
 
 def _get_cache() -> ResponseCache:
@@ -155,7 +167,7 @@ def show(
     """Show full details for a provider (checks saved providers first, then API)."""
     # Check saved providers first
     storage = _get_storage()
-    saved = storage.get_provider(npi)
+    saved = storage.get_provider(npi, _get_cli_user_id())
     if saved:
         result = saved.to_npi_result()
         console.print(provider_detail(result))
@@ -198,7 +210,7 @@ def save(
         raise typer.Exit(1)
 
     storage = _get_storage()
-    provider = storage.save_provider(result, notes=notes)
+    provider = storage.save_provider(result, _get_cli_user_id(), notes=notes)
     console.print(f"[green]Saved:[/green] {provider.display_name} (NPI: {provider.npi})")
 
 
@@ -208,7 +220,7 @@ def saved(
 ) -> None:
     """List all saved providers."""
     storage = _get_storage()
-    providers = storage.list_providers()
+    providers = storage.list_providers(_get_cli_user_id())
 
     if not providers:
         console.print("[yellow]No saved providers. Use [cyan]docstats save <NPI>[/cyan] to save one.[/yellow]")
@@ -226,7 +238,7 @@ def export(
     """Export a referral-ready summary for a provider."""
     # Check saved providers first, then API
     storage = _get_storage()
-    saved_prov = storage.get_provider(npi)
+    saved_prov = storage.get_provider(npi, _get_cli_user_id())
 
     if saved_prov:
         result = saved_prov.to_npi_result()
@@ -254,7 +266,7 @@ def history(
 ) -> None:
     """View recent search history."""
     storage = _get_storage()
-    entries = storage.get_history(limit=limit)
+    entries = storage.get_history(limit=limit, user_id=_get_cli_user_id())
 
     if not entries:
         console.print("[yellow]No search history yet.[/yellow]")
@@ -264,15 +276,69 @@ def history(
 
 
 @app.command()
+def note(
+    npi: Annotated[str, typer.Argument(help="10-digit NPI number")],
+    text: Annotated[str, typer.Argument(help="Note text (use empty string to clear)")],
+) -> None:
+    """Add or update a note on a saved provider."""
+    storage = _get_storage()
+    notes = text.strip() or None
+    if storage.update_notes(npi, notes, _get_cli_user_id()):
+        if notes:
+            console.print(f"[green]Note updated for NPI {npi}.[/green]")
+        else:
+            console.print(f"[green]Note cleared for NPI {npi}.[/green]")
+    else:
+        console.print(f"[yellow]No saved provider found with NPI {npi}.[/yellow]")
+
+
+@app.command()
 def remove(
     npi: Annotated[str, typer.Argument(help="NPI of provider to remove")],
 ) -> None:
     """Remove a saved provider from the local database."""
     storage = _get_storage()
-    if storage.delete_provider(npi):
+    if storage.delete_provider(npi, _get_cli_user_id()):
         console.print(f"[green]Removed provider {npi} from saved list.[/green]")
     else:
         console.print(f"[yellow]No saved provider found with NPI {npi}.[/yellow]")
+
+
+@app.command(name="export-all")
+def export_all(
+    fmt: Annotated[str, typer.Option("--format", "-f", help="Output format: csv or json")] = "csv",
+    output: Annotated[Optional[str], typer.Option("--output", "-o", help="Output file (default: stdout)")] = None,
+) -> None:
+    """Export all saved providers as CSV or JSON."""
+    import csv
+    import io
+
+    storage = _get_storage()
+    providers = storage.list_providers(_get_cli_user_id())
+
+    if not providers:
+        console.print("[yellow]No saved providers to export.[/yellow]")
+        raise typer.Exit(0)
+
+    if fmt == "json":
+        data = [p.export_fields() for p in providers]
+        text = json.dumps(data, indent=2)
+    elif fmt == "csv":
+        buf = io.StringIO()
+        rows = [p.export_fields() for p in providers]
+        writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+        text = buf.getvalue()
+    else:
+        console.print(f"[red]Unknown format: {fmt}. Use csv or json.[/red]")
+        raise typer.Exit(1)
+
+    if output:
+        Path(output).write_text(text)
+        console.print(f"[green]Exported {len(providers)} providers to {output}[/green]")
+    else:
+        print(text)
 
 
 @app.command()

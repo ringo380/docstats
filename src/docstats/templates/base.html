@@ -306,6 +306,35 @@
   .provider-row .info .name { font-weight: 600; font-size: 0.9rem; }
   .provider-row .info .meta { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; }
   .provider-row .row-actions { display: flex; gap: 5px; flex-shrink: 0; }
+  .notes-wrap { margin-top: 6px; }
+  .notes-display {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 0;
+  }
+  .notes-display:hover { color: var(--text); }
+  .notes-placeholder {
+    color: var(--text-dim);
+    font-style: italic;
+  }
+  .notes-icon { font-size: 0.7rem; }
+  .notes-edit textarea {
+    width: 100%;
+    font-size: 0.8rem;
+    resize: vertical;
+    min-height: 40px;
+  }
+  .notes-actions { display: flex; gap: 6px; margin-top: 4px; }
+  .notes-preview {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-top: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 400px;
+  }
   .appt-address-wrap { margin-top: 8px; }
   .appt-address-link {
     font-size: 0.75rem;
@@ -515,6 +544,15 @@
         div.textContent = msg;
         target.replaceChildren(div);
     });
+    function toggleNoteEdit(npi) {
+        var display = document.getElementById('notes-display-' + npi);
+        var edit = document.getElementById('notes-edit-' + npi);
+        if (!display || !edit) return;
+        var showing = edit.style.display !== 'none';
+        display.style.display = showing ? '' : 'none';
+        edit.style.display = showing ? 'none' : '';
+        if (!showing) edit.querySelector('textarea').focus();
+    }
     </script>
     <footer class="container">
         <small>docstats &mdash; NPI Registry lookup for HMO referrals. Data from <a href="https://npiregistry.cms.hhs.gov/" target="_blank">CMS NPPES</a>.</small>

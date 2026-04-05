@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+from datetime import date
 import logging
 import os
 import secrets
@@ -10,7 +13,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, Form, Query, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -885,6 +888,25 @@ async def clear_appt_address(
     })
 
 
+@app.put("/provider/{npi}/notes", response_class=HTMLResponse)
+async def update_notes(
+    request: Request,
+    npi: str,
+    notes: str = Form(""),
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+):
+    user_id = current_user["id"]
+    text = notes.strip() or None
+    storage.update_notes(npi, text, user_id)
+    return _render("_notes.html", {
+        "request": request,
+        "npi": npi,
+        "saved_notes": text,
+        "is_saved": True,
+    })
+
+
 @app.get("/provider/{npi}/export", response_class=HTMLResponse)
 async def export_view(
     request: Request,
@@ -944,6 +966,48 @@ async def export_text(
     return PlainTextResponse(
         content=text,
         headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
+    )
+
+
+_CSV_FIELDNAMES = [
+    "NPI", "Name", "Entity Type", "Specialty", "Phone", "Fax",
+    "Address", "City", "State", "ZIP", "Notes", "Appointment Address", "Saved At",
+]
+
+
+@app.get("/saved/export/csv")
+async def export_all_csv(
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+):
+    user_id = current_user["id"]
+    providers = storage.list_providers(user_id)
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_CSV_FIELDNAMES)
+    writer.writeheader()
+    for p in providers:
+        writer.writerow(p.export_fields())
+    filename = f"referrals_{date.today().isoformat()}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.get("/saved/export/json")
+async def export_all_json(
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+):
+    user_id = current_user["id"]
+    providers = storage.list_providers(user_id)
+    data = [p.export_fields() for p in providers]
+    filename = f"referrals_{date.today().isoformat()}.json"
+    return Response(
+        content=json.dumps(data, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 

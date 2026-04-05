@@ -221,6 +221,16 @@ class PostgresStorage:
         )
         return len(result.data) > 0
 
+    def update_notes(self, npi: str, notes: str | None, user_id: int) -> bool:
+        result = (
+            self._t("saved_providers")
+            .update({"notes": notes, "updated_at": _now_iso()})
+            .eq("npi", npi)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return len(result.data) > 0
+
     # --- Search history ---
 
     def log_search(
