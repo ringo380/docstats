@@ -22,7 +22,7 @@ build-backend = "hatchling.build"
 packages = ["src/docstats"]
 
 [project.optional-dependencies]
-web = ["fastapi>=0.115", "jinja2>=3.1", "uvicorn[standard]>=0.30", "passlib[bcrypt]>=1.7.4", "bcrypt>=3.2.0,<4.0.0", "itsdangerous>=2.1.2", "python-multipart>=0.0.9"]
+web = ["fastapi>=0.115", "jinja2>=3.1", "uvicorn[standard]>=0.30", "passlib[bcrypt]>=1.7.4", "bcrypt>=3.2.0,<4.0.0", "itsdangerous>=2.1.2", "python-multipart>=0.0.9", "supabase>=2.0,<3"]
 dev = ["pytest>=8.0", "pytest-httpx>=0.30", "ruff>=0.4"]
 
 [tool.ruff]

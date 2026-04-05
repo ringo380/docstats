@@ -15,8 +15,10 @@
 - Flat `src/docstats/` layout — one module per concern, each under 300 lines
 - Core modules (client, models, storage, cache, normalize, scoring) have zero dependency on Rich/Typer/FastAPI
 - Web layer imports core modules directly — no wrappers or adapters
-- SQLite for everything: saved providers, search history, response cache, ZIP codes
-- Single DB at `~/.local/share/docstats/docstats.db`
+- Dual-backend storage: Supabase Postgres in production (when `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` are set), SQLite locally (default)
+- SQLite DB at `~/.local/share/docstats/docstats.db` (local dev/CLI only)
+- Supabase tables use `docstats_` prefix (e.g. `docstats_users`) to coexist with robworks-software in shared project (ref: `uhnymifvdauzlmaogjfj`)
+- `get_storage()` returns `PostgresStorage` or `Storage` (SQLite) — both implement the same public API; consumers don't need to know which backend is active
 - Typeahead: name/org fields use htmx (server-side NPPES queries), specialty uses client-side filtering from static taxonomy list
 - Location autocomplete uses Mapbox Geocoding API (client-side fetch, 300ms debounce) — reads `MAPBOX_PUBLIC_TOKEN` env var; gracefully absent if unset
 - `initAutocomplete(inputEl, listEl)` in `index.html` is reusable for any field; `data-value=""` + `data-extra='{"field":"val"}'` pattern populates sibling fields on selection without htmx
@@ -84,10 +86,12 @@
 - Config: `railway.toml` for build/start commands, `requirements.txt` for deps
 - Railpack doesn't install pyproject.toml optional extras — `requirements.txt` must include all web deps explicitly
 - Pre-launch protections: HTTP Basic Auth removed; robots.txt and X-Robots-Tag header remain
-- Required Railway env vars: `SESSION_SECRET_KEY` (generate with `python -c "import secrets; print(secrets.token_hex(32))"`)
+- Required Railway env vars: `SESSION_SECRET_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`
+- `SUPABASE_URL` = `https://uhnymifvdauzlmaogjfj.supabase.co` (robworks-software project)
+- `SUPABASE_SERVICE_KEY` = service_role JWT for robworks-software (set on Railway, also in `~/.zshrc`)
 - Optional Railway env vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` (GitHub OAuth App; callback URL: `https://referme.help/auth/github/callback`)
 - `MAPBOX_PUBLIC_TOKEN` — Railway env var for address autocomplete (use `pk.` public token, not `sk.` secret)
-- SQLite data doesn't persist across redeploys (ephemeral filesystem)
+- Data persists across deploys via Supabase Postgres (SQLite ephemeral filesystem issue is resolved)
 - Deploy: `railway up --detach --service docstats`
 
 ## Code Style

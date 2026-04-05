@@ -1,20 +1,30 @@
-"""SQLite persistence for saved providers and search history."""
+"""Persistence for saved providers and search history.
+
+Supports two backends:
+- SQLite (default): local development and CLI usage
+- Supabase Postgres: production, when SUPABASE_URL + SUPABASE_SERVICE_KEY env vars are set
+"""
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
+
+if TYPE_CHECKING:
+    from docstats.pg_storage import PostgresStorage
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_DIR = Path.home() / ".local" / "share" / "docstats"
 
-_storage: "Storage | None" = None
+_storage: "Storage | PostgresStorage | None" = None
 
 
 def get_db_path(db_dir: Path | None = None) -> Path:
@@ -24,11 +34,23 @@ def get_db_path(db_dir: Path | None = None) -> Path:
     return d / "docstats.db"
 
 
-def get_storage() -> "Storage":
-    """Return the singleton Storage instance."""
+def _use_postgres() -> bool:
+    """Return True if Supabase env vars are configured."""
+    return bool(os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SERVICE_KEY"))
+
+
+def get_storage() -> "Storage | PostgresStorage":
+    """Return the singleton storage instance (Postgres if configured, else SQLite)."""
     global _storage
     if _storage is None:
-        _storage = Storage()
+        if _use_postgres():
+            from docstats.pg_storage import PostgresStorage
+
+            _storage = PostgresStorage()
+            logger.info("Using Supabase Postgres storage")
+        else:
+            _storage = Storage()
+            logger.info("Using SQLite storage")
     return _storage
 
 
