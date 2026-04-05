@@ -313,6 +313,7 @@ async def onboarding(
         "request": request,
         "active_page": None,
         "saved_count": _saved_count(storage, user_id),
+        "mapbox_token": MAPBOX_TOKEN,
         "user": current_user,
     })
 
@@ -469,19 +470,6 @@ async def search(
 
     user_id = current_user["id"] if current_user else None
 
-    # Anonymous search limit
-    if current_user is None:
-        count = get_anon_search_count(request)
-        if count >= ANON_SEARCH_LIMIT:
-            return _render("_results.html", {
-                "request": request,
-                "error": None,
-                "results": None,
-                "result_count": 0,
-                "interp_desc": None,
-                "anon_limit_reached": True,
-            })
-
     def _error(msg: str):
         if context in ("onboarding", "profile"):
             return _render("_pcp_results.html", {
@@ -500,6 +488,19 @@ async def search(
             "interp_desc": None,
             "anon_limit_reached": False,
         })
+
+    # Anonymous search limit
+    if current_user is None:
+        count = get_anon_search_count(request)
+        if count >= ANON_SEARCH_LIMIT:
+            return _render("_results.html", {
+                "request": request,
+                "error": None,
+                "results": None,
+                "result_count": 0,
+                "interp_desc": None,
+                "anon_limit_reached": True,
+            })
 
     response = None
     interp_desc: str | None = None
@@ -544,14 +545,7 @@ async def search(
             if last_error:
                 return _error(str(last_error))
             storage.log_search({"query": query}, 0, user_id=user_id)
-            return _render("_results.html", {
-                "request": request,
-                "error": None,
-                "results": [],
-                "result_count": 0,
-                "interp_desc": None,
-                "anon_limit_reached": False,
-            })
+            return _error("No results found. Try broadening your search.")
 
         log_params: dict[str, str] = {"query": query}
         if interp_desc:
