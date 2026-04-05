@@ -87,6 +87,8 @@
 - Railpack doesn't install pyproject.toml optional extras — `requirements.txt` must include all web deps explicitly
 - Pre-launch protections: HTTP Basic Auth removed; robots.txt and X-Robots-Tag header remain
 - Required Railway env vars: `SESSION_SECRET_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`
+- `SUPABASE_URL` = `https://uhnymifvdauzlmaogjfj.supabase.co` (robworks-software project)
+- `SUPABASE_SERVICE_KEY` = service_role JWT for robworks-software (set on Railway, also in `~/.zshrc`)
 - Optional Railway env vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` (GitHub OAuth App; callback URL: `https://referme.help/auth/github/callback`)
 - `MAPBOX_PUBLIC_TOKEN` — Railway env var for address autocomplete (use `pk.` public token, not `sk.` secret)
 - Data persists across deploys via Supabase Postgres (SQLite ephemeral filesystem issue is resolved)
