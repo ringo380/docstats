@@ -4,10 +4,16 @@
       hx-swap="innerHTML">
   <input type="hidden" name="type" value="NPI-1">
   <input type="hidden" name="context" value="profile">
+  <input type="hidden" id="field-city" name="city" value="">
+  <input type="hidden" id="field-state" name="state" value="">
+  <input type="hidden" id="field-zip" name="zip" value="">
+  <input type="hidden" id="field-geo-state" name="geo_state" value="">
+
   <div class="search-bar-wrap">
     <span class="search-icon">&#x2315;</span>
     <input
       type="text"
+      id="query-input"
       name="query"
       placeholder="Search by provider name..."
       autocomplete="off"
@@ -17,5 +23,26 @@
     <button type="submit" class="btn btn-primary btn-sm">Search</button>
     <span id="pcp-profile-spinner" class="htmx-indicator" style="color:var(--text-muted); font-size:0.8rem;">searching...</span>
   </div>
+
+  <div class="parse-chips" id="parse-chips"></div>
+
+  <div class="filter-pills" id="filter-pills">
+    <button type="button" class="filter-pill" id="pill-location" onclick="toggleLocation()">+ Location</button>
+  </div>
+
+  <div id="location-fields" style="display:none; margin-top: 10px;">
+    {% if mapbox_token %}
+    <div class="autocomplete-wrap" style="margin-bottom: 6px;">
+      <input type="text" id="location-input" placeholder="City, ZIP, or address..." autocomplete="off" style="width:100%;">
+      <ul id="location-suggestions" class="suggestions-list" style="display:none;"></ul>
+    </div>
+    {% else %}
+    <div style="display:flex; gap:6px;">
+      <input type="text" id="city-input" placeholder="City" style="flex:1;" oninput="document.getElementById('field-city').value=this.value">
+      <input type="text" id="zip-input" placeholder="ZIP" style="width:90px;" oninput="document.getElementById('field-zip').value=this.value">
+    </div>
+    {% endif %}
+  </div>
+
 </form>
 <div id="pcp-search-results" style="margin-top:0.75rem;"></div>

@@ -25,4 +25,19 @@
     </div>
   </div>
 </div>
+
+{% include "_search_js.html" %}
+
+<script>
+  var qInput = document.getElementById('query-input');
+  if (qInput) {
+    qInput.addEventListener('input', function(e) {
+      clearTimeout(parseDebounce);
+      parseDebounce = setTimeout(function() {
+        var parsed = parseQuery(e.target.value);
+        renderChips(parsed);
+      }, 80);
+    });
+  }
+</script>
 {% endblock %}

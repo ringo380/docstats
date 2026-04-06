@@ -463,6 +463,7 @@ async def profile(
         "saved_count": _saved_count(storage, user_id),
         "user": current_user,
         "pcp_provider": pcp_provider,
+        "mapbox_token": MAPBOX_TOKEN,
     })
 
 
