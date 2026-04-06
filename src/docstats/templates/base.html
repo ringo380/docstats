@@ -4,7 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex, nofollow">
-    <title>{% block title %}docstats{% endblock %}</title>
+    <title>{% block title %}referme.help{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect width='32' height='32' rx='6' fill='%23111827'/%3E%3Cg transform='translate(4,3)'%3E%3Cpath d='M3.5 18C8 7.5 13 8.5 20 8' stroke='%2368d391' stroke-width='1.8' stroke-linecap='round' fill='none'/%3E%3Cpath d='M17.5 11.2L20 8L16.2 7.5' stroke='%2368d391' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Ccircle cx='3.5' cy='18' r='3.2' fill='%2368d391'/%3E%3Ccircle cx='20' cy='8' r='3.2' stroke='%2368d391' stroke-width='1.8' fill='none'/%3E%3C/g%3E%3C/svg%3E">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -71,12 +72,12 @@
     z-index: 100;
   }
   .site-nav .brand {
-    color: var(--green);
-    font-weight: 700;
-    font-size: 1rem;
-    letter-spacing: -0.01em;
     text-decoration: none;
+    display: flex;
+    align-items: center;
+    line-height: 1;
   }
+  .site-nav .brand svg { height: 22px; width: auto; }
   .nav-links { display: flex; gap: 2px; }
   .nav-link {
     padding: 6px 14px;
@@ -499,9 +500,8 @@
 </head>
 <body>
     <nav class="site-nav">
-      <a href="/" class="brand">referme.help</a>
+      <a href="/" class="brand"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 138 28" height="28" fill="none"><g><path d="M 4.0 18.5 C 9.0 8.0, 14.0 9.0, 20.0 9.5" stroke="#68d391" stroke-width="1.5" stroke-linecap="round" fill="none" opacity="0.8"/><path d="M 16.5 11.0 L 20.0 9.5 L 16.8 7.4" stroke="#68d391" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.8"/><circle cx="4.0" cy="18.5" r="2.8" fill="#68d391" opacity="0.9"/><circle cx="20.0" cy="9.5" r="2.8" stroke="#68d391" stroke-width="1.5" fill="none" opacity="0.9"/></g><text x="31.0" y="19.5" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif" font-size="15" font-weight="600" letter-spacing="-0.3px"><tspan fill="#e2e8f0">refer</tspan><tspan fill="#68d391" font-weight="700">me</tspan><tspan fill="#68d391" font-size="17.2" font-weight="700">.</tspan><tspan fill="#e2e8f0" font-weight="500">help</tspan></text></svg></a>
       <div class="nav-links">
-        <a href="/" class="nav-link {% if active_page == 'search' %}active{% endif %}">Search</a>
         {% if user %}
         <a href="/saved" class="nav-link {% if active_page == 'saved' %}active{% endif %}">
           My Referrals
@@ -555,7 +555,7 @@
     }
     </script>
     <footer class="container">
-        <small>docstats &mdash; NPI Registry lookup for HMO referrals. Data from <a href="https://npiregistry.cms.hhs.gov/" target="_blank">CMS NPPES</a>.</small>
+        <small>referme.help &mdash; NPI Registry lookup for HMO referrals. Data from <a href="https://npiregistry.cms.hhs.gov/" target="_blank">CMS NPPES</a>.</small>
     </footer>
 </body>
 </html>
