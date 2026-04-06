@@ -95,6 +95,7 @@ class Storage:
         self._migrate_saved_providers()
         self._migrate_search_history_user_id()
         self._migrate_users_pcp_npi()
+        self._migrate_users_profile_fields()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -153,6 +154,25 @@ class Storage:
             self._conn.commit()
         except Exception:
             pass  # Column already exists
+
+    def _migrate_users_profile_fields(self) -> None:
+        """Add profile and terms-acceptance columns to users if not present."""
+        cols = [
+            "first_name TEXT",
+            "last_name TEXT",
+            "middle_name TEXT",
+            "date_of_birth TEXT",
+            "terms_accepted_at TEXT",
+            "terms_version TEXT",
+            "terms_ip TEXT",
+            "terms_user_agent TEXT",
+        ]
+        for col in cols:
+            try:
+                self._conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
+            except Exception:
+                pass
+        self._conn.commit()
 
     # --- User CRUD ---
 
@@ -233,6 +253,50 @@ class Storage:
     def clear_user_pcp(self, user_id: int) -> None:
         self._conn.execute(
             "UPDATE users SET pcp_npi=NULL WHERE id=?", (user_id,)
+        )
+        self._conn.commit()
+
+    def update_user_profile(
+        self,
+        user_id: int,
+        *,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        middle_name: str | None = None,
+        date_of_birth: str | None = None,
+        display_name: str | None = None,
+    ) -> None:
+        fields: dict[str, str] = {}
+        if first_name is not None:
+            fields["first_name"] = first_name
+        if last_name is not None:
+            fields["last_name"] = last_name
+        if middle_name is not None:
+            fields["middle_name"] = middle_name
+        if date_of_birth is not None:
+            fields["date_of_birth"] = date_of_birth
+        if display_name is not None:
+            fields["display_name"] = display_name
+        if not fields:
+            return
+        set_clause = ", ".join(f"{k}=?" for k in fields)
+        self._conn.execute(
+            f"UPDATE users SET {set_clause} WHERE id=?",
+            (*fields.values(), user_id),
+        )
+        self._conn.commit()
+
+    def record_terms_acceptance(
+        self,
+        user_id: int,
+        *,
+        terms_version: str,
+        ip_address: str,
+        user_agent: str,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE users SET terms_accepted_at=datetime('now'), terms_version=?, terms_ip=?, terms_user_agent=? WHERE id=?",
+            (terms_version, ip_address, user_agent, user_id),
         )
         self._conn.commit()
 

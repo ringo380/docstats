@@ -105,6 +105,134 @@
     padding: 0 4px;
     font-weight: 700;
   }
+  .profile-menu { position: relative; }
+  .profile-trigger {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border: none;
+    background: none;
+    color: var(--text);
+    font-size: 0.82rem;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: background 0.15s;
+  }
+  .profile-trigger:hover { background: var(--bg-card); }
+  .profile-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--green-dark);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .profile-avatar svg { width: 28px; height: 28px; }
+  .profile-chevron {
+    width: 12px;
+    height: 12px;
+    color: var(--text-muted);
+    transition: transform 0.15s;
+  }
+  .profile-menu.open .profile-chevron { transform: rotate(180deg); }
+  .profile-dropdown {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 180px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    padding: 4px 0;
+    z-index: 200;
+  }
+  .profile-menu.open .profile-dropdown { display: block; }
+  .profile-dropdown a {
+    display: block;
+    padding: 8px 14px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: color 0.15s, background 0.15s;
+  }
+  .profile-dropdown a:hover { color: var(--text); background: var(--bg); }
+  .profile-dropdown .divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 0;
+  }
+
+  /* ── Onboarding Wizard ───────────────────────────────────────────── */
+  .wizard-step { animation: wizardFadeIn 0.3s ease; }
+  @keyframes wizardFadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .wizard-progress {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 2rem;
+    padding: 0 3rem;
+  }
+  .wizard-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--border);
+    transition: background 0.3s, transform 0.3s, box-shadow 0.3s;
+    flex-shrink: 0;
+  }
+  .wizard-dot.active { background: var(--green); }
+  .wizard-dot.current {
+    transform: scale(1.4);
+    box-shadow: 0 0 0 3px rgba(104,211,145,0.2);
+  }
+  .wizard-bar {
+    flex: 1;
+    height: 2px;
+    background: var(--border);
+    margin: 0 6px;
+    border-radius: 1px;
+    overflow: hidden;
+  }
+  .wizard-bar-fill {
+    height: 100%;
+    width: 0;
+    background: var(--green);
+    transition: width 0.4s ease;
+  }
+  .badge-pill {
+    display: inline-block;
+    background: var(--green-bg);
+    color: var(--green);
+    border: 1px solid var(--green-dark);
+    border-radius: 12px;
+    padding: 2px 12px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .terms-scroll {
+    max-height: 280px;
+    overflow-y: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
+  .terms-scroll h3 { color: var(--text); }
+  .terms-scroll p { margin-bottom: 0.6rem; }
+  .terms-scroll strong { color: var(--text); }
 
   /* ── Page body ────────────────────────────────────────────────────── */
   main { padding: 2rem 1.25rem; max-width: 800px; margin: 0 auto; }
@@ -515,8 +643,21 @@
       </div>
       <div class="nav-links">
         {% if user %}
-          <span style="font-size:0.78rem; color:var(--text-dim); padding:6px 10px;">{{ user.display_name or user.email }}</span>
-          <a href="/auth/logout" class="nav-link">Sign Out</a>
+          {% set uname = ((user.first_name ~ ' ' ~ user.last_name) if user.first_name and user.last_name else user.display_name) or user.email %}
+          {% set parts = uname.split() %}
+          {% set initials = (parts[0][0] ~ parts[-1][0]) | upper if parts | length > 1 else uname[0] | upper %}
+          <div class="profile-menu" id="profile-menu">
+            <button class="profile-trigger" id="profile-trigger" type="button" aria-expanded="false" aria-haspopup="true">
+              <span class="profile-avatar"><svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg"><circle cx="14" cy="14" r="14" fill="#276749"/><text x="14" y="15" text-anchor="middle" dominant-baseline="central" fill="#c6f6d5" font-family="-apple-system,BlinkMacSystemFont,'Inter',sans-serif" font-size="11" font-weight="600">{{ initials }}</text></svg></span>
+              <span>{{ uname }}</span>
+              <svg class="profile-chevron" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5L6 7.5L9 4.5"/></svg>
+            </button>
+            <div class="profile-dropdown" role="menu">
+              <a href="/profile" role="menuitem">Profile</a>
+              <div class="divider"></div>
+              <a href="/auth/logout" role="menuitem">Sign Out</a>
+            </div>
+          </div>
         {% else %}
           <a href="/auth/login" class="nav-link">Log In</a>
           <a href="/auth/signup" class="nav-link" style="color:var(--green);">Sign Up</a>
@@ -544,6 +685,23 @@
         div.textContent = msg;
         target.replaceChildren(div);
     });
+    (function() {
+        var trigger = document.getElementById('profile-trigger');
+        var menu = document.getElementById('profile-menu');
+        if (trigger && menu) {
+            trigger.addEventListener('click', function(e) {
+                e.stopPropagation();
+                var open = menu.classList.toggle('open');
+                trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+            });
+            document.addEventListener('click', function(e) {
+                if (!menu.contains(e.target)) {
+                    menu.classList.remove('open');
+                    trigger.setAttribute('aria-expanded', 'false');
+                }
+            });
+        }
+    })();
     function toggleNoteEdit(npi) {
         var display = document.getElementById('notes-display-' + npi);
         var edit = document.getElementById('notes-edit-' + npi);
