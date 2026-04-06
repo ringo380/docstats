@@ -29,6 +29,10 @@
 - `get_storage()` is defined in `storage.py` (not `web.py`); web.py imports and re-exports it for backward compatibility
 - Anonymous users get 3 free searches (tracked in session cookie); save attempts return `_auth_gate.html` inline partial instead of a redirect
 - Smart search: `parse.py` module (`parse_query()`, `build_interpretations()`) parses free-text query into ranked NPPES API fallback interpretations; winning `interp` dict populates `SearchQuery` for `rank_results()`
+- Onboarding: 4-step wizard at `/onboarding` (name → DOB → PCP selection → terms acceptance); `_onboarding_step()` computes resume position from user record; step transitions via `HX-Trigger: stepComplete` + JS listener; PCP step is skippable (tracked in session `pcp_skipped` flag)
+- User profile fields: `first_name`, `last_name`, `middle_name`, `date_of_birth` on users table; `update_user_profile()` method on both storage backends; also sets `display_name` to "First Last" during onboarding
+- Terms acceptance: `terms_accepted_at` (UTC), `terms_version`, `terms_ip` (proxy-aware via X-Forwarded-For), `terms_user_agent` stored per-user; `record_terms_acceptance()` method; `terms_accepted_at` is the onboarding completion gate (replaces old `pcp_npi` gate)
+- Profile dropdown: navbar shows user initials avatar (inline SVG) + name + chevron; dropdown with Profile/Sign Out; click-outside closes; CSS class `.profile-menu.open` toggles visibility
 - `appt_address` stored per `SavedProvider` in SQLite; rendered as an editable chip in the saved list; appended to referral export
 - Dark theme CSS in `base.html`: CSS custom properties (`--bg`, `--bg-card`, `--green`, `--blue`, `--text`, `--text-muted`, `--text-dim`, `--border`); no external CSS framework
 - CSS utility classes in `base.html`: `.action-bar` (flex row for primary actions), `.back-link` (muted nav link), `.empty-state` (centered muted placeholder), `.badge`, `.badge-ind`, `.badge-org`, `.badge-active`, `.badge-inactive`, `.btn`, `.btn-primary`, `.btn-secondary`, `.btn-blue`, `.btn-sm`, `.result-card`, `.detail-section`, `.detail-table`
@@ -79,6 +83,9 @@
 - `python-multipart` must be explicit in `requirements.txt` — FastAPI requires it for any form POST route; Railpack won't install it as a transitive dep
 - CSS input styles in `base.html` must enumerate `input[type="email"]` and `input[type="password"]` explicitly — they don't inherit from `input[type="text"]` rules
 - Railway build environment uses Python 3.13 — passlib prints a `crypt` deprecation warning on startup; harmless but expected
+- Onboarding gate checks `terms_accepted_at` (DB column), not `pcp_npi` — GitHub OAuth bypass must also check `terms_accepted_at` to avoid skipping terms acceptance
+- `_onboarding_step()` accepts `pcp_skipped` kwarg from session — if PCP was skipped, step 3 is bypassed on resume so user lands on step 4 (terms) instead of looping back to PCP
+- `date_of_birth` must be validated server-side (`date.fromisoformat()` + future-date check) — the HTML `max` attribute is client-side only
 
 ## Deployment (Railway)
 - Hosted at https://docstats-production.up.railway.app

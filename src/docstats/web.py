@@ -291,23 +291,23 @@ async def github_callback(
     request.session["user_id"] = user_id
     request.session.pop("anon_searches", None)
     user = storage.get_user_by_id(user_id)
-    if user and user.get("pcp_npi"):
+    if user and user.get("terms_accepted_at"):
         return RedirectResponse("/", status_code=303)
-    # New GitHub users go to onboarding; returning users who previously
-    # skipped land here too but the onboarding route checks the session flag.
+    # New GitHub users and returning users who haven't accepted terms
+    # go to onboarding; the onboarding route checks the gate.
     return RedirectResponse("/onboarding", status_code=303)
 
 
 # --- Onboarding routes ---
 
 
-def _onboarding_step(user: dict) -> int:
+def _onboarding_step(user: dict, *, pcp_skipped: bool = False) -> int:
     """Determine which onboarding step a user should be on."""
     if not (user.get("first_name") and user.get("last_name")):
         return 1
     if not user.get("date_of_birth"):
         return 2
-    if not user.get("pcp_npi"):
+    if not user.get("pcp_npi") and not pcp_skipped:
         return 3
     return 4
 
@@ -327,7 +327,7 @@ async def onboarding(
         "saved_count": _saved_count(storage, user_id),
         "mapbox_token": MAPBOX_TOKEN,
         "user": current_user,
-        "initial_step": _onboarding_step(current_user),
+        "initial_step": _onboarding_step(current_user, pcp_skipped=request.session.get("pcp_skipped", False)),
         "today": date.today().isoformat(),
     })
 
@@ -363,6 +363,12 @@ async def onboarding_save_dob(
     current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
 ):
+    try:
+        parsed = date.fromisoformat(date_of_birth)
+    except ValueError:
+        return Response("Invalid date format.", status_code=200)
+    if parsed > date.today():
+        return Response("Date of birth cannot be in the future.", status_code=200)
     storage.update_user_profile(current_user["id"], date_of_birth=date_of_birth)
     resp = Response(status_code=200)
     resp.headers["HX-Trigger"] = "stepComplete"
@@ -395,6 +401,7 @@ async def onboarding_skip_pcp(
     request: Request,
     current_user: dict = Depends(require_user),
 ):
+    request.session["pcp_skipped"] = True
     resp = Response(status_code=200)
     resp.headers["HX-Trigger"] = "stepComplete"
     return resp
