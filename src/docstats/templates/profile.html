@@ -29,15 +29,21 @@
 {% include "_search_js.html" %}
 
 <script>
-  var qInput = document.getElementById('query-input');
-  if (qInput) {
-    qInput.addEventListener('input', function(e) {
-      clearTimeout(parseDebounce);
-      parseDebounce = setTimeout(function() {
-        var parsed = parseQuery(e.target.value);
-        renderChips(parsed);
-      }, 80);
-    });
-  }
+  // Event delegation — survives htmx swaps that replace #query-input
+  document.addEventListener('input', function(e) {
+    if (e.target.id !== 'query-input') return;
+    clearTimeout(parseDebounce);
+    parseDebounce = setTimeout(function() {
+      var parsed = parseQuery(e.target.value);
+      renderChips(parsed);
+    }, 80);
+  });
+
+  // Re-init Mapbox autocomplete and geolocation after htmx swaps #pcp-section
+  document.body.addEventListener('htmx:afterSettle', function(e) {
+    if (!e.detail.target || e.detail.target.id !== 'pcp-section') return;
+    if (typeof initLocationAutocomplete === 'function') initLocationAutocomplete();
+    if (typeof initGeolocation === 'function') initGeolocation();
+  });
 </script>
 {% endblock %}
