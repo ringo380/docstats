@@ -463,6 +463,7 @@ async def profile(
         "saved_count": _saved_count(storage, user_id),
         "user": current_user,
         "pcp_provider": pcp_provider,
+        "mapbox_token": MAPBOX_TOKEN,
     })
 
 
@@ -497,6 +498,7 @@ async def profile_clear_pcp(
     return _render("_pcp_section.html", {
         "request": request,
         "pcp_provider": None,
+        "mapbox_token": MAPBOX_TOKEN,
     })
 
 

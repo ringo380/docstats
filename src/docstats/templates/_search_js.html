@@ -167,7 +167,8 @@
 
   {% if mapbox_token %}
   // ── Mapbox location autocomplete ──────────────────────────────────────────
-  (function() {
+  var _locationDocClickBound = false;
+  function initLocationAutocomplete() {
     var input = document.getElementById('location-input');
     var list = document.getElementById('location-suggestions');
     if (!input || !list) return;
@@ -206,15 +207,27 @@
       }, 300);
     });
 
-    document.addEventListener('click', function(e) {
-      if (!input.contains(e.target) && !list.contains(e.target)) list.style.display = 'none';
-    });
-  })();
+    if (!_locationDocClickBound) {
+      _locationDocClickBound = true;
+      document.addEventListener('click', function(e) {
+        var inp = document.getElementById('location-input');
+        var lst = document.getElementById('location-suggestions');
+        if (inp && lst && !inp.contains(e.target) && !lst.contains(e.target)) lst.style.display = 'none';
+      });
+    }
+  }
+  initLocationAutocomplete();
   {% endif %}
 
   // ── Browser geolocation → auto state boost ────────────────────────────────
-  (function() {
+  var _detectedGeoState = '';
+  function initGeolocation() {
     if (!navigator.geolocation || !MAPBOX_TOKEN) return;
+    if (_detectedGeoState) {
+      var geoField = document.getElementById('field-geo-state');
+      if (geoField && !geoField.value) geoField.value = _detectedGeoState;
+      return;
+    }
     navigator.geolocation.getCurrentPosition(function(pos) {
       var lat = pos.coords.latitude, lon = pos.coords.longitude;
       var url = 'https://api.mapbox.com/geocoding/v5/mapbox.places/' +
@@ -226,10 +239,12 @@
           ? feat.properties.short_code.replace('US-', '')
           : '';
         if (stateCode) {
+          _detectedGeoState = stateCode;
           var geoField = document.getElementById('field-geo-state');
           if (geoField && !geoField.value) geoField.value = stateCode;
         }
       }).catch(function() {});
     }, function() {}, { timeout: 5000 });
-  })();
+  }
+  initGeolocation();
 </script>
