@@ -3,94 +3,253 @@
 {% block content %}
 <div style="max-width: 560px; margin: 0 auto; padding-top: 2rem;">
 
-  <div style="text-align:center; margin-bottom:0.5rem;">
-    <span style="display:inline-block; background:var(--green-bg); color:var(--green); border:1px solid var(--green-dark); border-radius:12px; padding:2px 12px; font-size:0.72rem; font-weight:600; letter-spacing:0.04em; text-transform:uppercase;">Getting started</span>
+  {# ── Progress dots ── #}
+  <div class="wizard-progress" id="wizard-progress">
+    <div class="wizard-dot active current" data-step="1"></div>
+    <div class="wizard-bar"><div class="wizard-bar-fill"></div></div>
+    <div class="wizard-dot" data-step="2"></div>
+    <div class="wizard-bar"><div class="wizard-bar-fill"></div></div>
+    <div class="wizard-dot" data-step="3"></div>
+    <div class="wizard-bar"><div class="wizard-bar-fill"></div></div>
+    <div class="wizard-dot" data-step="4"></div>
   </div>
 
-  <div style="text-align:center; margin-bottom:1.25rem;">
-    <h1 style="font-size:1.5rem; font-weight:700; margin-bottom:0.3rem; letter-spacing:-0.02em;">Select your primary care provider</h1>
-    <p style="color:var(--text-muted); font-size:0.88rem;">Your PCP is the starting point for referrals. Search by name, specialty, or both.</p>
+  {# ══════════════════════════════════════════════════════════════ #}
+  {# Step 1 — Name                                                 #}
+  {# ══════════════════════════════════════════════════════════════ #}
+  <div class="wizard-step" id="step-1" {% if initial_step != 1 %}style="display:none;"{% endif %}>
+    <div style="text-align:center; margin-bottom:0.5rem;">
+      <span class="badge-pill">Step 1 of 4</span>
+    </div>
+    <div style="text-align:center; margin-bottom:1.25rem;">
+      <h1 style="font-size:1.5rem; font-weight:700; margin-bottom:0.3rem; letter-spacing:-0.02em;">What's your name?</h1>
+      <p style="color:var(--text-muted); font-size:0.88rem;">We use this to personalize your experience and medical records.</p>
+    </div>
+    <form hx-post="/onboarding/save-name" hx-swap="none" id="name-form">
+      <div style="margin-bottom:0.75rem;">
+        <label style="display:block; font-size:0.82rem; font-weight:500; margin-bottom:4px;">First name <span style="color:var(--red);">*</span></label>
+        <input type="text" name="first_name" required autocomplete="given-name"
+               value="{{ user.first_name or '' }}"
+               style="width:100%;">
+      </div>
+      <div style="margin-bottom:0.75rem;">
+        <label style="display:block; font-size:0.82rem; font-weight:500; margin-bottom:4px;">Last name <span style="color:var(--red);">*</span></label>
+        <input type="text" name="last_name" required autocomplete="family-name"
+               value="{{ user.last_name or '' }}"
+               style="width:100%;">
+      </div>
+      <div style="margin-bottom:0.75rem;">
+        <label style="display:block; font-size:0.82rem; font-weight:500; margin-bottom:4px;">Middle name <small style="color:var(--text-muted);">(initial or full — optional)</small></label>
+        <input type="text" name="middle_name" autocomplete="additional-name"
+               value="{{ user.middle_name or '' }}"
+               style="width:100%;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%; margin-top:0.75rem;">Continue</button>
+    </form>
   </div>
 
-  <div style="background:var(--blue-bg); border:1px solid #2b4c73; border-radius:var(--radius-sm); padding:10px 14px; margin-bottom:1.25rem; font-size:0.8rem; color:var(--blue); line-height:1.45;">
-    We'll save your PCP to your profile so referral lookups are faster. You can change this anytime from your profile page.
+  {# ══════════════════════════════════════════════════════════════ #}
+  {# Step 2 — Date of Birth                                        #}
+  {# ══════════════════════════════════════════════════════════════ #}
+  <div class="wizard-step" id="step-2" {% if initial_step != 2 %}style="display:none;"{% endif %}>
+    <div style="text-align:center; margin-bottom:0.5rem;">
+      <span class="badge-pill">Step 2 of 4</span>
+    </div>
+    <div style="text-align:center; margin-bottom:1.25rem;">
+      <h1 style="font-size:1.5rem; font-weight:700; margin-bottom:0.3rem; letter-spacing:-0.02em;">Date of birth</h1>
+      <p style="color:var(--text-muted); font-size:0.88rem;">Required for medical record context. This is stored securely and never shared.</p>
+    </div>
+    <form hx-post="/onboarding/save-dob" hx-swap="none" id="dob-form">
+      <div style="margin-bottom:0.75rem;">
+        <label style="display:block; font-size:0.82rem; font-weight:500; margin-bottom:4px;">Date of birth <span style="color:var(--red);">*</span></label>
+        <input type="date" name="date_of_birth" required
+               max="{{ today }}"
+               value="{{ user.date_of_birth or '' }}"
+               style="width:100%;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%; margin-top:0.75rem;">Continue</button>
+    </form>
   </div>
 
-  <form id="pcp-search-form"
-        hx-get="/search"
-        hx-target="#pcp-results"
-        hx-indicator="#pcp-spinner"
-        hx-swap="innerHTML">
-
-    <input type="hidden" name="type" value="NPI-1">
-    <input type="hidden" name="context" value="onboarding">
-    <input type="hidden" id="field-city" name="city" value="">
-    <input type="hidden" id="field-state" name="state" value="">
-    <input type="hidden" id="field-zip" name="zip" value="">
-    <input type="hidden" id="field-geo-state" name="geo_state" value="">
-
-    <div class="search-bar-wrap">
-      <span class="search-icon">&#x2315;</span>
-      <input
-        type="text"
-        id="query-input"
-        name="query"
-        placeholder="Dr. Sarah Chen, family medicine..."
-        autocomplete="off"
-        spellcheck="false"
-        autofocus
-        style="flex:1; background:transparent; border:none; padding:0; font-size:1rem; color:var(--text);"
-      >
-      <button type="submit" class="btn btn-primary btn-sm">Search</button>
-      <span id="pcp-spinner" class="htmx-indicator" style="color:var(--text-muted); font-size:0.8rem;">searching...</span>
+  {# ══════════════════════════════════════════════════════════════ #}
+  {# Step 3 — PCP Selection                                        #}
+  {# ══════════════════════════════════════════════════════════════ #}
+  <div class="wizard-step" id="step-3" {% if initial_step != 3 %}style="display:none;"{% endif %}>
+    <div style="text-align:center; margin-bottom:0.5rem;">
+      <span class="badge-pill">Step 3 of 4</span>
+    </div>
+    <div style="text-align:center; margin-bottom:1.25rem;">
+      <h1 style="font-size:1.5rem; font-weight:700; margin-bottom:0.3rem; letter-spacing:-0.02em;">Select your primary care provider</h1>
+      <p style="color:var(--text-muted); font-size:0.88rem;">Your PCP is the starting point for referrals. Search by name, specialty, or both.</p>
     </div>
 
-    <div class="parse-chips" id="parse-chips"></div>
-
-    <div class="filter-pills" id="filter-pills">
-      <button type="button" class="filter-pill" id="pill-location" onclick="toggleLocation()">+ Location</button>
+    <div style="background:var(--blue-bg); border:1px solid #2b4c73; border-radius:var(--radius-sm); padding:10px 14px; margin-bottom:1.25rem; font-size:0.8rem; color:var(--blue); line-height:1.45;">
+      We'll save your PCP to your profile so referral lookups are faster. You can change this anytime from your profile page.
     </div>
 
-    <div id="location-fields" style="display:none; margin-top: 10px;">
-      {% if mapbox_token %}
-      <div class="autocomplete-wrap" style="margin-bottom: 6px;">
+    <form id="pcp-search-form"
+          hx-get="/search"
+          hx-target="#pcp-results"
+          hx-indicator="#pcp-spinner"
+          hx-swap="innerHTML">
+
+      <input type="hidden" name="type" value="NPI-1">
+      <input type="hidden" name="context" value="onboarding">
+      <input type="hidden" id="field-city" name="city" value="">
+      <input type="hidden" id="field-state" name="state" value="">
+      <input type="hidden" id="field-zip" name="zip" value="">
+      <input type="hidden" id="field-geo-state" name="geo_state" value="">
+
+      <div class="search-bar-wrap">
+        <span class="search-icon">&#x2315;</span>
         <input
           type="text"
-          id="location-input"
-          placeholder="City, ZIP, or address..."
+          id="query-input"
+          name="query"
+          placeholder="Dr. Sarah Chen, family medicine..."
           autocomplete="off"
-          style="width:100%;"
+          spellcheck="false"
+          style="flex:1; background:transparent; border:none; padding:0; font-size:1rem; color:var(--text);"
         >
-        <ul id="location-suggestions" class="suggestions-list" style="display:none;"></ul>
+        <button type="submit" class="btn btn-primary btn-sm">Search</button>
+        <span id="pcp-spinner" class="htmx-indicator" style="color:var(--text-muted); font-size:0.8rem;">searching...</span>
       </div>
-      {% else %}
-      <div style="display:flex; gap:6px;">
-        <input type="text" id="city-input" placeholder="City" style="flex:1;" oninput="document.getElementById('field-city').value=this.value">
-        <input type="text" id="zip-input" placeholder="ZIP" style="width:90px;" oninput="document.getElementById('field-zip').value=this.value">
+
+      <div class="parse-chips" id="parse-chips"></div>
+
+      <div class="filter-pills" id="filter-pills">
+        <button type="button" class="filter-pill" id="pill-location" onclick="toggleLocation()">+ Location</button>
       </div>
-      {% endif %}
+
+      <div id="location-fields" style="display:none; margin-top: 10px;">
+        {% if mapbox_token %}
+        <div class="autocomplete-wrap" style="margin-bottom: 6px;">
+          <input
+            type="text"
+            id="location-input"
+            placeholder="City, ZIP, or address..."
+            autocomplete="off"
+            style="width:100%;"
+          >
+          <ul id="location-suggestions" class="suggestions-list" style="display:none;"></ul>
+        </div>
+        {% else %}
+        <div style="display:flex; gap:6px;">
+          <input type="text" id="city-input" placeholder="City" style="flex:1;" oninput="document.getElementById('field-city').value=this.value">
+          <input type="text" id="zip-input" placeholder="ZIP" style="width:90px;" oninput="document.getElementById('field-zip').value=this.value">
+        </div>
+        {% endif %}
+      </div>
+
+    </form>
+
+    <div id="pcp-results" style="margin-top:1rem;"></div>
+
+    <p style="text-align:center; margin-top:2rem; font-size:0.83rem; color:var(--text-dim);">
+      <a href="#" hx-get="/onboarding/skip-pcp" hx-swap="none" style="color:var(--text-muted);">Skip for now</a>
+      &mdash; you can set your PCP later from your profile.
+    </p>
+  </div>
+
+  {# ══════════════════════════════════════════════════════════════ #}
+  {# Step 4 — Terms & Privacy                                      #}
+  {# ══════════════════════════════════════════════════════════════ #}
+  <div class="wizard-step" id="step-4" {% if initial_step != 4 %}style="display:none;"{% endif %}>
+    <div style="text-align:center; margin-bottom:0.5rem;">
+      <span class="badge-pill">Step 4 of 4</span>
+    </div>
+    <div style="text-align:center; margin-bottom:1.25rem;">
+      <h1 style="font-size:1.5rem; font-weight:700; margin-bottom:0.3rem; letter-spacing:-0.02em;">Terms &amp; Privacy</h1>
+      <p style="color:var(--text-muted); font-size:0.88rem;">Please review and accept to continue.</p>
     </div>
 
-  </form>
+    <div class="terms-scroll">
+      <h3 style="font-size:0.88rem; font-weight:600; margin-bottom:0.5rem;">Terms of Service</h3>
+      <p>By using referme.help ("the Service"), you agree to the following terms. The Service provides access to publicly available National Plan and Provider Enumeration System (NPPES) data maintained by the Centers for Medicare &amp; Medicaid Services (CMS).</p>
 
-  <div id="pcp-results" style="margin-top:1rem;"></div>
+      <p><strong>Medical Disclaimer.</strong> The Service is an informational tool only and does not constitute medical advice, diagnosis, or treatment. Always consult your healthcare provider for medical decisions. Provider information is sourced from the NPPES NPI Registry and may not reflect current practice status, accepting-patient status, or insurance participation.</p>
 
-  <p style="text-align:center; margin-top:2rem; font-size:0.83rem; color:var(--text-dim);">
-    <a href="/onboarding/skip" style="color:var(--text-muted);">Skip for now</a>
-    &mdash; you can set your PCP later from your profile.
-  </p>
+      <p><strong>Data Accuracy.</strong> While we strive to present NPPES data accurately, we do not guarantee the completeness, accuracy, or timeliness of any information displayed. Provider details including addresses, phone numbers, and specialties are as reported to CMS and may be outdated.</p>
+
+      <p><strong>Your Data.</strong> We collect and store the personal information you provide during registration (name, date of birth, email) and your usage data (saved providers, search history). This data is stored securely and is used solely to provide and improve the Service. We do not sell your personal information to third parties.</p>
+
+      <p><strong>Account Responsibility.</strong> You are responsible for maintaining the confidentiality of your account credentials and for all activity under your account.</p>
+
+      <h3 style="font-size:0.88rem; font-weight:600; margin:1rem 0 0.5rem;">Privacy Policy</h3>
+
+      <p><strong>Information We Collect.</strong> Account information (name, email, date of birth), saved provider selections, search history, and technical data (IP address, browser type) for security and service improvement.</p>
+
+      <p><strong>How We Use It.</strong> To provide personalized provider lookup services, maintain your saved referral lists, and improve the Service. We use your date of birth for age-appropriate healthcare context.</p>
+
+      <p><strong>Data Storage &amp; Security.</strong> Your data is stored in encrypted databases hosted by Supabase (PostgreSQL). We use industry-standard security measures including encrypted connections (TLS), hashed passwords (bcrypt), and secure session management.</p>
+
+      <p><strong>Data Retention.</strong> Your data is retained for as long as your account is active. You may request deletion of your account and associated data at any time.</p>
+
+      <p><strong>HIPAA Notice.</strong> referme.help is not a covered entity under HIPAA. The NPPES data we display is publicly available information. However, we treat all user data with the care and security appropriate for health-related information.</p>
+    </div>
+
+    <form hx-post="/onboarding/accept-terms" hx-swap="none" id="terms-form" style="margin-top:1rem;">
+      <input type="hidden" name="terms_version" value="1.0">
+      <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; font-size:0.85rem; line-height:1.45; padding:10px 0;">
+        <input type="checkbox" id="terms-checkbox" required style="margin-top:3px; flex-shrink:0;">
+        <span>I have read and agree to the <strong>Terms of Service</strong> and <strong>Privacy Policy</strong> above.</span>
+      </label>
+      <button type="submit" class="btn btn-primary" id="terms-submit" disabled style="width:100%; margin-top:0.5rem;">Accept &amp; Get Started</button>
+    </form>
+  </div>
+
 </div>
 
 {% include "_search_js.html" %}
 
 <script>
-  // ── Page-specific: query input for parse chips (no org detection) ────────
-  document.getElementById('query-input').addEventListener('input', function(e) {
-    clearTimeout(parseDebounce);
-    parseDebounce = setTimeout(function() {
-      var parsed = parseQuery(e.target.value);
-      renderChips(parsed);
-    }, 80);
+  var currentStep = {{ initial_step | default(1) }};
+  var totalSteps = 4;
+
+  function showStep(n) {
+    for (var i = 1; i <= totalSteps; i++) {
+      var el = document.getElementById('step-' + i);
+      if (el) el.style.display = (i === n) ? '' : 'none';
+    }
+    var dots = document.querySelectorAll('.wizard-dot');
+    for (var j = 0; j < dots.length; j++) {
+      var s = parseInt(dots[j].getAttribute('data-step'));
+      dots[j].classList.toggle('active', s <= n);
+      dots[j].classList.toggle('current', s === n);
+    }
+    var bars = document.querySelectorAll('.wizard-bar-fill');
+    for (var k = 0; k < bars.length; k++) {
+      bars[k].style.width = (k < n - 1) ? '100%' : '0';
+    }
+    currentStep = n;
+    window.scrollTo(0, 0);
+  }
+
+  document.body.addEventListener('stepComplete', function() {
+    if (currentStep < totalSteps) {
+      showStep(currentStep + 1);
+    }
   });
+
+  var cb = document.getElementById('terms-checkbox');
+  var tbtn = document.getElementById('terms-submit');
+  if (cb && tbtn) {
+    cb.addEventListener('change', function() {
+      tbtn.disabled = !cb.checked;
+    });
+  }
+
+  var qInput = document.getElementById('query-input');
+  if (qInput) {
+    qInput.addEventListener('input', function(e) {
+      clearTimeout(parseDebounce);
+      parseDebounce = setTimeout(function() {
+        var parsed = parseQuery(e.target.value);
+        renderChips(parsed);
+      }, 80);
+    });
+  }
+
+  showStep(currentStep);
 </script>
 {% endblock %}

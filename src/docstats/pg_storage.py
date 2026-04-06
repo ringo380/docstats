@@ -131,6 +131,46 @@ class PostgresStorage:
     def clear_user_pcp(self, user_id: int) -> None:
         self._t("users").update({"pcp_npi": None}).eq("id", user_id).execute()
 
+    def update_user_profile(
+        self,
+        user_id: int,
+        *,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        middle_name: str | None = None,
+        date_of_birth: str | None = None,
+        display_name: str | None = None,
+    ) -> None:
+        fields: dict[str, str] = {}
+        if first_name is not None:
+            fields["first_name"] = first_name
+        if last_name is not None:
+            fields["last_name"] = last_name
+        if middle_name is not None:
+            fields["middle_name"] = middle_name
+        if date_of_birth is not None:
+            fields["date_of_birth"] = date_of_birth
+        if display_name is not None:
+            fields["display_name"] = display_name
+        if not fields:
+            return
+        self._t("users").update(fields).eq("id", user_id).execute()
+
+    def record_terms_acceptance(
+        self,
+        user_id: int,
+        *,
+        terms_version: str,
+        ip_address: str,
+        user_agent: str,
+    ) -> None:
+        self._t("users").update({
+            "terms_accepted_at": _now_iso(),
+            "terms_version": terms_version,
+            "terms_ip": ip_address,
+            "terms_user_agent": user_agent,
+        }).eq("id", user_id).execute()
+
     # --- Provider CRUD ---
 
     def save_provider(
