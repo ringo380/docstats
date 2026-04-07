@@ -381,15 +381,8 @@ async def onboarding_select_pcp(
     request: Request,
     current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
-    client: NPPESClient = Depends(get_client),
 ):
     user_id = current_user["id"]
-    try:
-        result = client.lookup(npi)
-    except NPPESError:
-        result = None
-    if result:
-        storage.save_provider(result, user_id)
     storage.set_user_pcp(user_id, npi)
     resp = Response(status_code=200)
     resp.headers["HX-Trigger"] = "stepComplete"
@@ -473,15 +466,8 @@ async def profile_set_pcp(
     request: Request,
     current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
-    client: NPPESClient = Depends(get_client),
 ):
     user_id = current_user["id"]
-    try:
-        result = client.lookup(npi)
-    except NPPESError:
-        result = None
-    if result:
-        storage.save_provider(result, user_id)
     storage.set_user_pcp(user_id, npi)
     resp = Response(status_code=200)
     resp.headers["HX-Redirect"] = "/profile"
