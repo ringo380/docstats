@@ -447,9 +447,7 @@ async def profile(
         try:
             pcp_provider = client.lookup(pcp_npi)
         except NPPESError:
-            saved = storage.get_provider(pcp_npi, user_id)
-            if saved:
-                pcp_provider = NPIResult(**json.loads(saved.raw_json))
+            pass
     return _render("profile.html", {
         "request": request,
         "active_page": "profile",
