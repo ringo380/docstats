@@ -271,6 +271,7 @@ class SavedProvider(BaseModel):
     raw_json: str  # full API result for rehydration
     notes: str | None = None
     appt_address: str | None = None
+    enrichment_json: str | None = None  # serialized EnrichmentData
     saved_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -302,7 +303,7 @@ class SavedProvider(BaseModel):
 
     def export_fields(self) -> dict[str, str]:
         """Flat dict of human-readable fields for CSV/JSON export."""
-        return {
+        fields = {
             "NPI": self.npi,
             "Name": self.display_name,
             "Entity Type": self.entity_type,
@@ -317,6 +318,25 @@ class SavedProvider(BaseModel):
             "Appointment Address": self.appt_address or "",
             "Saved At": self.saved_at.isoformat() if self.saved_at else "",
         }
+        # Enrichment fields (when available)
+        if self.enrichment_json:
+            try:
+                enr = json.loads(self.enrichment_json)
+                if enr.get("oig_excluded") is True:
+                    fields["OIG Excluded"] = "Yes"
+                elif enr.get("oig_excluded") is False:
+                    fields["OIG Excluded"] = "No"
+                else:
+                    fields["OIG Excluded"] = ""
+                if enr.get("medicare_enrolled") is True:
+                    fields["Medicare Enrolled"] = "Yes"
+                elif enr.get("medicare_enrolled") is False:
+                    fields["Medicare Enrolled"] = "No"
+                if enr.get("total_payments") is not None:
+                    fields["Industry Payments ($)"] = f"{enr['total_payments']:.2f}"
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return fields
 
 
 class SearchHistoryEntry(BaseModel):

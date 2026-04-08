@@ -8,8 +8,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from typing import TYPE_CHECKING
 
 from docstats.models import NPIResult
+
+if TYPE_CHECKING:
+    from docstats.enrichment import EnrichmentData
 
 
 @dataclass
@@ -27,10 +31,15 @@ class SearchQuery:
     geo_state: str | None = None  # browser-detected user state for proximity boost
 
 
-def score_result(result: NPIResult, query: SearchQuery) -> int:
+def score_result(
+    result: NPIResult,
+    query: SearchQuery,
+    enrichment: EnrichmentData | None = None,
+) -> int:
     """Score a single result against the user's search query.
 
-    Higher scores indicate better matches. Range is roughly 0-155.
+    Higher scores indicate better matches. Range is roughly 0-155
+    (before enrichment adjustments).
     """
     score = 0
     basic = result.basic
@@ -111,6 +120,13 @@ def score_result(result: NPIResult, query: SearchQuery) -> int:
             if spec_upper in t.desc.upper():
                 score += 10 if t.primary else 5
                 break
+
+    # Enrichment-based adjustments (optional, from cached data)
+    if enrichment is not None:
+        if enrichment.oig_excluded is True:
+            score -= 100  # Excluded from federal programs -- critical safety signal
+        if enrichment.medicare_enrolled is True:
+            score += 10  # Confirms active practice
 
     return score
 

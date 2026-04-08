@@ -90,5 +90,14 @@
     </div>
     {% endif %}
 
+    <div id="enrichment-data"
+         hx-get="/provider/{{ npi }}/enrichment"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <div style="padding: 16px 0; color: var(--text-dim); font-size: 0.82rem;">
+        Loading additional data...
+      </div>
+    </div>
+
   {% endif %}
 {% endblock %}

@@ -830,6 +830,35 @@ async def provider_detail(
     })
 
 
+@app.get("/provider/{npi}/enrichment", response_class=HTMLResponse)
+async def provider_enrichment(
+    request: Request,
+    npi: str,
+    current_user: dict | None = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+):
+    """Fetch enrichment data for a provider (htmx lazy-load partial)."""
+    from docstats.enrichment import EnrichmentCache, enrich_provider
+
+    cache = EnrichmentCache(get_db_path())
+    try:
+        data = await enrich_provider(npi, cache)
+    finally:
+        cache.close()
+
+    # If provider is saved, persist enrichment data
+    user_id = current_user["id"] if current_user else None
+    if user_id and data.sources_checked:
+        enrichment_json = data.model_dump_json()
+        storage.update_enrichment(npi, enrichment_json, user_id)
+
+    return _render("_enrichment.html", {
+        "request": request,
+        "enrichment": data,
+        "npi": npi,
+    })
+
+
 @app.post("/provider/{npi}/save", response_class=HTMLResponse)
 async def save_provider(
     request: Request,
@@ -1041,6 +1070,7 @@ async def export_text(
 _CSV_FIELDNAMES = [
     "NPI", "Name", "Entity Type", "Specialty", "Phone", "Fax",
     "Address", "City", "State", "ZIP", "Notes", "Appointment Address", "Saved At",
+    "OIG Excluded", "Medicare Enrolled", "Industry Payments ($)",
 ]
 
 
