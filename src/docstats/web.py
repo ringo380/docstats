@@ -30,7 +30,6 @@ from docstats.auth import (
 from docstats.cache import ResponseCache
 from docstats.client import NPPESClient, NPPESError
 from docstats.formatting import referral_export
-from docstats.models import NPIResult
 from docstats.normalize import format_name
 from docstats.oauth import (
     GITHUB_ENABLED,
@@ -381,15 +380,8 @@ async def onboarding_select_pcp(
     request: Request,
     current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
-    client: NPPESClient = Depends(get_client),
 ):
     user_id = current_user["id"]
-    try:
-        result = client.lookup(npi)
-    except NPPESError:
-        result = None
-    if result:
-        storage.save_provider(result, user_id)
     storage.set_user_pcp(user_id, npi)
     resp = Response(status_code=200)
     resp.headers["HX-Trigger"] = "stepComplete"
@@ -454,9 +446,7 @@ async def profile(
         try:
             pcp_provider = client.lookup(pcp_npi)
         except NPPESError:
-            saved = storage.get_provider(pcp_npi, user_id)
-            if saved:
-                pcp_provider = NPIResult(**json.loads(saved.raw_json))
+            pass
     return _render("profile.html", {
         "request": request,
         "active_page": "profile",
@@ -473,15 +463,8 @@ async def profile_set_pcp(
     request: Request,
     current_user: dict = Depends(require_user),
     storage: Storage = Depends(get_storage),
-    client: NPPESClient = Depends(get_client),
 ):
     user_id = current_user["id"]
-    try:
-        result = client.lookup(npi)
-    except NPPESError:
-        result = None
-    if result:
-        storage.save_provider(result, user_id)
     storage.set_user_pcp(user_id, npi)
     resp = Response(status_code=200)
     resp.headers["HX-Redirect"] = "/profile"
