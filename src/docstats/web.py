@@ -30,7 +30,6 @@ from docstats.auth import (
 from docstats.cache import ResponseCache
 from docstats.client import NPPESClient, NPPESError
 from docstats.formatting import referral_export
-from docstats.models import NPIResult
 from docstats.normalize import format_name
 from docstats.oauth import (
     GITHUB_ENABLED,
