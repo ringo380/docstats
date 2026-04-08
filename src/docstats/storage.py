@@ -96,6 +96,7 @@ class Storage:
         self._migrate_search_history_user_id()
         self._migrate_users_pcp_npi()
         self._migrate_users_profile_fields()
+        self._migrate_enrichment_json()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -173,6 +174,14 @@ class Storage:
             except Exception:
                 pass
         self._conn.commit()
+
+    def _migrate_enrichment_json(self) -> None:
+        """Add enrichment_json column to saved_providers if not present."""
+        try:
+            self._conn.execute("ALTER TABLE saved_providers ADD COLUMN enrichment_json TEXT")
+            self._conn.commit()
+        except Exception:
+            pass  # Column already exists
 
     # --- User CRUD ---
 
@@ -396,6 +405,15 @@ class Storage:
         self._conn.commit()
         return cursor.rowcount > 0
 
+    def update_enrichment(self, npi: str, enrichment_json: str, user_id: int) -> bool:
+        """Update enrichment data for a saved provider."""
+        cursor = self._conn.execute(
+            "UPDATE saved_providers SET enrichment_json = ?, updated_at = ? WHERE npi = ? AND user_id = ?",
+            (enrichment_json, datetime.now().isoformat(), npi, user_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
     def clear_appt_address(self, npi: str, user_id: int) -> bool:
         """Clear the appointment address for a saved provider."""
         cursor = self._conn.execute(
@@ -495,6 +513,7 @@ class Storage:
             raw_json=row["raw_json"],
             notes=row["notes"],
             appt_address=row["appt_address"],
+            enrichment_json=row["enrichment_json"] if "enrichment_json" in row.keys() else None,
             saved_at=datetime.fromisoformat(row["saved_at"]) if row["saved_at"] else None,
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
         )

@@ -1,0 +1,84 @@
+{% if enrichment.oig_excluded is true %}
+<div class="detail-section" style="background: var(--red-bg); border: 1px solid var(--red); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;">
+  <div style="display: flex; align-items: center; gap: 8px;">
+    <span style="color: var(--red); font-weight: 600; font-size: 0.9rem;">OIG Excluded</span>
+    <span style="font-size: 0.78rem; color: var(--text-muted);">This provider is on the OIG List of Excluded Individuals/Entities</span>
+  </div>
+  {% if enrichment.oig_exclusion_date or enrichment.oig_exclusion_type %}
+  <div style="margin-top: 6px; font-size: 0.78rem; color: var(--text-muted);">
+    {% if enrichment.oig_exclusion_type %}Type: {{ enrichment.oig_exclusion_type }}{% endif %}
+    {% if enrichment.oig_exclusion_date %} &middot; Excluded since {{ enrichment.oig_exclusion_date }}{% endif %}
+  </div>
+  {% endif %}
+</div>
+{% elif enrichment.oig_excluded is false %}
+<div class="detail-section" style="margin-bottom: 12px;">
+  <div style="font-size: 0.78rem; color: var(--green);">
+    No OIG exclusions found
+  </div>
+</div>
+{% endif %}
+
+{% if enrichment.medicare_enrolled is true %}
+<div class="detail-section">
+  <h3>Medicare</h3>
+  <div style="font-size: 0.85rem; margin-bottom: 8px;">
+    <span class="badge badge-active">Medicare Enrolled</span>
+  </div>
+  {% if enrichment.group_affiliations %}
+  <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 4px;">Group Affiliations:</div>
+  {% for grp in enrichment.group_affiliations %}
+    <div style="font-size: 0.82rem; margin-bottom: 2px;">{{ grp.get("name", "") }}{% if grp.get("npi") %} <span style="color:var(--text-dim);">(NPI {{ grp.npi }})</span>{% endif %}</div>
+  {% endfor %}
+  {% endif %}
+  {% if enrichment.hospital_affiliations %}
+  <div style="font-size: 0.82rem; color: var(--text-muted); margin-top: 8px; margin-bottom: 4px;">Hospital Affiliations:</div>
+  {% for hosp in enrichment.hospital_affiliations %}
+    <div style="font-size: 0.82rem; margin-bottom: 2px;">{{ hosp.get("name", "") }}{% if hosp.get("ccn") %} <span style="color:var(--text-dim);">(CCN {{ hosp.ccn }})</span>{% endif %}</div>
+  {% endfor %}
+  {% endif %}
+</div>
+{% elif enrichment.medicare_enrolled is false %}
+<div class="detail-section">
+  <h3>Medicare</h3>
+  <div style="font-size: 0.82rem; color: var(--text-muted);">Not found in Medicare provider data</div>
+</div>
+{% endif %}
+
+{% if enrichment.total_payments is not none %}
+<div class="detail-section">
+  <h3>Industry Payments</h3>
+  <div style="font-size: 0.85rem; margin-bottom: 4px;">
+    <span style="font-weight: 500;">${{ "%.2f"|format(enrichment.total_payments) }}</span>
+    <span style="color: var(--text-muted); font-size: 0.78rem;">
+      total ({{ enrichment.payment_count or 0 }} payment{{ "s" if (enrichment.payment_count or 0) != 1 else "" }}{% if enrichment.payment_year %}, {{ enrichment.payment_year }}{% endif %})
+    </span>
+  </div>
+  {% if enrichment.top_payers %}
+  <details style="margin-top: 8px;">
+    <summary style="font-size: 0.78rem; color: var(--text-muted); cursor: pointer;">Top payers</summary>
+    <div style="margin-top: 6px;">
+      {% for payer in enrichment.top_payers[:5] %}
+      <div style="font-size: 0.82rem; margin-bottom: 2px; display: flex; justify-content: space-between;">
+        <span>{{ payer.get("name", "Unknown") }}</span>
+        <span style="color: var(--text-muted);">${{ "%.2f"|format(payer.get("amount", 0)) }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+  <div style="font-size: 0.68rem; color: var(--text-dim); margin-top: 6px;">
+    Source: <a href="https://openpaymentsdata.cms.gov/" target="_blank" rel="noopener">CMS Open Payments</a>
+  </div>
+</div>
+{% endif %}
+
+{% if not enrichment.sources_checked and enrichment.sources_failed %}
+<div style="font-size: 0.78rem; color: var(--text-dim); padding: 8px 0;">
+  Enrichment data temporarily unavailable
+</div>
+{% elif enrichment.sources_checked %}
+<div style="font-size: 0.68rem; color: var(--text-dim); padding: 8px 0; border-top: 1px solid var(--border); margin-top: 8px;">
+  Data from {{ enrichment.sources_checked | join(", ") | upper }}{% if enrichment.fetched_at %} &middot; Last checked {{ enrichment.fetched_at.strftime("%b %d, %Y") }}{% endif %}
+</div>
+{% endif %}
