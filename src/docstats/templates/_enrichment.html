@@ -24,17 +24,35 @@
   <h3>Medicare</h3>
   <div style="font-size: 0.85rem; margin-bottom: 8px;">
     <span class="badge badge-active">Medicare Enrolled</span>
+    {% if enrichment.medicare_accepts_assignment is true %}
+    <span style="font-size: 0.72rem; color: var(--green); margin-left: 8px;">Accepts Medicare Assignment</span>
+    {% endif %}
+    {% if enrichment.medicare_telehealth is true %}
+    <span style="font-size: 0.72rem; color: var(--text-muted); margin-left: 8px;">Telehealth</span>
+    {% endif %}
   </div>
+  {% if enrichment.medicare_medical_school or enrichment.medicare_graduation_year %}
+  <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 8px;">
+    {% if enrichment.medicare_medical_school %}{{ enrichment.medicare_medical_school | title }}{% endif %}
+    {% if enrichment.medicare_graduation_year %} &middot; Class of {{ enrichment.medicare_graduation_year }}{% endif %}
+  </div>
+  {% endif %}
   {% if enrichment.group_affiliations %}
-  <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 4px;">Group Affiliations:</div>
+  <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 4px;">Group Practice:</div>
   {% for grp in enrichment.group_affiliations %}
-    <div style="font-size: 0.82rem; margin-bottom: 2px;">{{ grp.get("name", "") }}{% if grp.get("npi") %} <span style="color:var(--text-dim);">(NPI {{ grp.npi }})</span>{% endif %}</div>
+    <div style="font-size: 0.82rem; margin-bottom: 2px;">
+      {{ grp.get("name", "") | title }}
+      {% if grp.get("num_members") %}<span style="color:var(--text-dim);"> ({{ grp.num_members }} members)</span>{% endif %}
+    </div>
   {% endfor %}
   {% endif %}
   {% if enrichment.hospital_affiliations %}
   <div style="font-size: 0.82rem; color: var(--text-muted); margin-top: 8px; margin-bottom: 4px;">Hospital Affiliations:</div>
   {% for hosp in enrichment.hospital_affiliations %}
-    <div style="font-size: 0.82rem; margin-bottom: 2px;">{{ hosp.get("name", "") }}{% if hosp.get("ccn") %} <span style="color:var(--text-dim);">(CCN {{ hosp.ccn }})</span>{% endif %}</div>
+    <div style="font-size: 0.82rem; margin-bottom: 2px;">
+      {{ hosp.get("type", "Facility") }}
+      {% if hosp.get("ccn") %}<span style="color:var(--text-dim);"> (CCN {{ hosp.ccn }})</span>{% endif %}
+    </div>
   {% endfor %}
   {% endif %}
 </div>

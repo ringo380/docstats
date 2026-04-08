@@ -289,3 +289,55 @@ async def test_enrich_provider_source_failure(tmp_path):
     assert data.oig_excluded is None  # unchecked
     assert "oig" in data.sources_failed
     cache.close()
+
+
+@pytest.mark.asyncio
+async def test_enrich_provider_with_medicare(tmp_path):
+    """Test orchestrator integrates Medicare data."""
+    cache = EnrichmentCache(tmp_path / "test.db")
+
+    mock_medicare = {
+        "enrolled": True,
+        "primary_specialty": "HOSPITALIST",
+        "credential": "MD",
+        "medical_school": "OTHER",
+        "graduation_year": "1994",
+        "accepts_assignment": True,
+        "telehealth": False,
+        "group_affiliations": [{"name": "TEST GROUP", "pac_id": "123", "num_members": "50"}],
+        "hospital_affiliations": [{"ccn": "090012", "type": "Hospital"}],
+    }
+
+    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
+         patch("docstats.enrichment._fetch_medicare") as mock_cms:
+        mock_oig.return_value = None
+        mock_cms.return_value = mock_medicare
+
+        data = await enrich_provider("1003000126", cache)
+
+    assert data.medicare_enrolled is True
+    assert data.medicare_primary_specialty == "HOSPITALIST"
+    assert data.medicare_medical_school == "OTHER"
+    assert data.medicare_accepts_assignment is True
+    assert len(data.group_affiliations) == 1
+    assert len(data.hospital_affiliations) == 1
+    assert "medicare" in data.sources_checked
+    assert "oig" in data.sources_checked
+    cache.close()
+
+
+@pytest.mark.asyncio
+async def test_enrich_provider_medicare_not_found(tmp_path):
+    """Test orchestrator when provider not in Medicare data."""
+    cache = EnrichmentCache(tmp_path / "test.db")
+
+    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
+         patch("docstats.enrichment._fetch_medicare") as mock_cms:
+        mock_oig.return_value = None
+        mock_cms.return_value = None
+
+        data = await enrich_provider("5555555555", cache)
+
+    assert data.medicare_enrolled is False
+    assert "medicare" in data.sources_checked
+    cache.close()

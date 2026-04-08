@@ -36,8 +36,14 @@ class EnrichmentData(BaseModel):
     oig_exclusion_date: str | None = None
     oig_exclusion_type: str | None = None
 
-    # CMS Medicare (Phase 2)
+    # CMS Medicare
     medicare_enrolled: bool | None = None
+    medicare_primary_specialty: str | None = None
+    medicare_credential: str | None = None
+    medicare_medical_school: str | None = None
+    medicare_graduation_year: str | None = None
+    medicare_accepts_assignment: bool | None = None
+    medicare_telehealth: bool | None = None
     group_affiliations: list[dict[str, str]] = []
     hospital_affiliations: list[dict[str, str]] = []
 
@@ -146,13 +152,12 @@ async def enrich_provider(npi: str, cache: EnrichmentCache) -> EnrichmentData:
     except ImportError:
         pass
 
-    # Phase 2: CMS Medicare (uncomment when cms_client.py exists)
-    # try:
-    #     from docstats.cms_client import CMSClient
-    #     task = asyncio.create_task(_fetch_medicare(npi, cache))
-    #     tasks.append(("medicare", task))
-    # except ImportError:
-    #     pass
+    try:
+        from docstats.cms_client import CMSClient  # noqa: F401
+        task = asyncio.create_task(_fetch_medicare(npi, cache))
+        tasks.append(("medicare", task))
+    except ImportError:
+        pass
 
     # Phase 3: Open Payments (uncomment when open_payments_client.py exists)
     # try:
@@ -174,6 +179,18 @@ async def enrich_provider(npi: str, cache: EnrichmentCache) -> EnrichmentData:
             elif source_name == "oig":
                 # API responded, provider not found = not excluded
                 data.oig_excluded = False
+            elif source_name == "medicare" and result is not None:
+                data.medicare_enrolled = result.get("enrolled", False)
+                data.medicare_primary_specialty = result.get("primary_specialty") or None
+                data.medicare_credential = result.get("credential") or None
+                data.medicare_medical_school = result.get("medical_school") or None
+                data.medicare_graduation_year = result.get("graduation_year") or None
+                data.medicare_accepts_assignment = result.get("accepts_assignment")
+                data.medicare_telehealth = result.get("telehealth")
+                data.group_affiliations = result.get("group_affiliations", [])
+                data.hospital_affiliations = result.get("hospital_affiliations", [])
+            elif source_name == "medicare":
+                data.medicare_enrolled = False
         except Exception:
             logger.exception("Enrichment source %s failed for NPI %s", source_name, npi)
             sources_failed.append(source_name)
@@ -200,5 +217,30 @@ async def _fetch_oig(npi: str, cache: EnrichmentCache) -> dict | None:
         cache_value = json.dumps(result) if result else "null"
         cache.set("oig", npi, cache_value, TTL_OIG)
         return result
+    finally:
+        client.close()
+
+
+async def _fetch_medicare(npi: str, cache: EnrichmentCache) -> dict | None:
+    """Fetch Medicare enrollment and facility affiliation data from CMS."""
+    from docstats.cms_client import CMSClient
+
+    # Check cache first
+    cached = cache.get("medicare", npi)
+    if cached is not None:
+        return json.loads(cached)
+
+    client = CMSClient()
+    try:
+        clinician = client.lookup_clinician(npi)
+        if clinician is None:
+            cache.set("medicare", npi, "null", TTL_MEDICARE)
+            return None
+
+        facilities = client.lookup_facility_affiliations(npi)
+        clinician["hospital_affiliations"] = facilities
+
+        cache.set("medicare", npi, json.dumps(clinician), TTL_MEDICARE)
+        return clinician
     finally:
         client.close()
