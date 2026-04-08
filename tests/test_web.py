@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from pathlib import Path
 
 import pytest
@@ -33,6 +33,8 @@ def client(tmp_path: Path):
         "last_login_at": None,
     }
     mock_client = MagicMock()
+    mock_client.async_search = AsyncMock()
+    mock_client.async_lookup = AsyncMock()
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_client] = lambda: mock_client
     app.dependency_overrides[get_current_user] = lambda: fake_user
@@ -47,10 +49,10 @@ def _make_response(results=None):
 
 def test_search_with_query_param(client):
     test_client, storage, mock_client, user_id = client
-    mock_client.search.return_value = _make_response()
+    mock_client.async_search.return_value = _make_response()
     resp = test_client.get("/search", params={"query": "dr sarah chen"})
     assert resp.status_code == 200
-    assert mock_client.search.called
+    assert mock_client.async_search.called
 
 
 def test_search_tries_interpretations_until_results(client):
@@ -58,16 +60,16 @@ def test_search_tries_interpretations_until_results(client):
     test_client, storage, mock_client, user_id = client
     empty = NPIResponse(result_count=0, results=[])
     full = _make_response()
-    mock_client.search.side_effect = [empty, full]
+    mock_client.async_search.side_effect = [empty, full]
     resp = test_client.get("/search", params={"query": "dr kim do orthopedics"})
     assert resp.status_code == 200
-    assert mock_client.search.call_count == 2
+    assert mock_client.async_search.call_count == 2
 
 
 def test_search_returns_interp_desc(client):
     """Response HTML includes 'Searched as:' text."""
     test_client, storage, mock_client, user_id = client
-    mock_client.search.return_value = _make_response()
+    mock_client.async_search.return_value = _make_response()
     resp = test_client.get("/search", params={"query": "dr sarah chen cardiology"})
     assert "Searched as:" in resp.text
 
