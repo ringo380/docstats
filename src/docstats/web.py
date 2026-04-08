@@ -444,7 +444,7 @@ async def profile(
     pcp_npi = current_user.get("pcp_npi")
     if pcp_npi:
         try:
-            pcp_provider = client.lookup(pcp_npi)
+            pcp_provider = await client.async_lookup(pcp_npi)
         except NPPESError:
             pass
     return _render("profile.html", {
@@ -593,9 +593,9 @@ async def search(
                 search_kwargs = dict(interp)
                 if geo_state and not state and not zip:
                     search_kwargs["state"] = geo_state
-                result = client.search(**search_kwargs, limit=limit)
+                result = await client.async_search(**search_kwargs, limit=limit)
                 if result.result_count == 0 and geo_state and not state and not zip:
-                    result = client.search(**interp, limit=limit)
+                    result = await client.async_search(**interp, limit=limit)
                 if result.result_count > 0:
                     response = result
                     parts = []
@@ -635,7 +635,7 @@ async def search(
                 "Cannot search by individual name and organization name at the same time."
             )
         try:
-            response = client.search(
+            response = await client.async_search(
                 last_name=name or None,
                 first_name=first or None,
                 organization_name=org or None,
@@ -728,7 +728,7 @@ async def suggest_names(
         return HTMLResponse("")
 
     try:
-        response = client.search(**{field: q}, limit=50)
+        response = await client.async_search(**{field: q}, limit=50)
     except NPPESError:
         return HTMLResponse("")
 
@@ -799,7 +799,7 @@ async def provider_detail(
         saved_notes = saved.notes
     else:
         try:
-            result = client.lookup(npi)
+            result = await client.async_lookup(npi)
         except NPPESError as e:
             return _render("detail.html", {
                 "request": request,
@@ -856,7 +856,7 @@ async def save_provider(
         })
 
     try:
-        result = client.lookup(npi)
+        result = await client.async_lookup(npi)
     except NPPESError:
         result = None
 
@@ -990,7 +990,7 @@ async def export_view(
         result = saved.to_npi_result()
     else:
         try:
-            result = client.lookup(npi)
+            result = await client.async_lookup(npi)
         except NPPESError as e:
             return HTMLResponse(content=f"<p>Error: {e}</p>", status_code=500)
         if result is None:
@@ -1024,7 +1024,7 @@ async def export_text(
         appt_address = saved.appt_address
     else:
         try:
-            result = client.lookup(npi)
+            result = await client.async_lookup(npi)
         except NPPESError as e:
             return PlainTextResponse(content=f"Error: {e}", status_code=500)
         if result is None:
