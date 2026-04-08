@@ -250,8 +250,12 @@ async def test_enrich_provider_with_oig(tmp_path):
     """Test the orchestrator calls OIG and returns enrichment data."""
     cache = EnrichmentCache(tmp_path / "test.db")
 
-    with patch("docstats.enrichment._fetch_oig") as mock_fetch:
-        mock_fetch.return_value = {"excluded": True, "exclusion_date": "2020-01-01", "exclusion_type": "1128a"}
+    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
+         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
+         patch("docstats.enrichment._fetch_open_payments") as mock_op:
+        mock_oig.return_value = {"excluded": True, "exclusion_date": "2020-01-01", "exclusion_type": "1128a"}
+        mock_cms.return_value = None
+        mock_op.return_value = None
 
         data = await enrich_provider("1234567890", cache)
 
@@ -266,8 +270,12 @@ async def test_enrich_provider_clean(tmp_path):
     """Test orchestrator with clean provider (not excluded)."""
     cache = EnrichmentCache(tmp_path / "test.db")
 
-    with patch("docstats.enrichment._fetch_oig") as mock_fetch:
-        mock_fetch.return_value = None
+    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
+         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
+         patch("docstats.enrichment._fetch_open_payments") as mock_op:
+        mock_oig.return_value = None
+        mock_cms.return_value = None
+        mock_op.return_value = None
 
         data = await enrich_provider("5555555555", cache)
 
@@ -281,8 +289,12 @@ async def test_enrich_provider_source_failure(tmp_path):
     """Test orchestrator handles source failures gracefully."""
     cache = EnrichmentCache(tmp_path / "test.db")
 
-    with patch("docstats.enrichment._fetch_oig") as mock_fetch:
-        mock_fetch.side_effect = Exception("network error")
+    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
+         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
+         patch("docstats.enrichment._fetch_open_payments") as mock_op:
+        mock_oig.side_effect = Exception("network error")
+        mock_cms.return_value = None
+        mock_op.return_value = None
 
         data = await enrich_provider("1234567890", cache)
 
@@ -309,9 +321,11 @@ async def test_enrich_provider_with_medicare(tmp_path):
     }
 
     with patch("docstats.enrichment._fetch_oig") as mock_oig, \
-         patch("docstats.enrichment._fetch_medicare") as mock_cms:
+         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
+         patch("docstats.enrichment._fetch_open_payments") as mock_op:
         mock_oig.return_value = None
         mock_cms.return_value = mock_medicare
+        mock_op.return_value = None
 
         data = await enrich_provider("1003000126", cache)
 
@@ -332,12 +346,43 @@ async def test_enrich_provider_medicare_not_found(tmp_path):
     cache = EnrichmentCache(tmp_path / "test.db")
 
     with patch("docstats.enrichment._fetch_oig") as mock_oig, \
-         patch("docstats.enrichment._fetch_medicare") as mock_cms:
+         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
+         patch("docstats.enrichment._fetch_open_payments") as mock_op:
         mock_oig.return_value = None
         mock_cms.return_value = None
+        mock_op.return_value = None
 
         data = await enrich_provider("5555555555", cache)
 
     assert data.medicare_enrolled is False
     assert "medicare" in data.sources_checked
+    cache.close()
+
+
+@pytest.mark.asyncio
+async def test_enrich_provider_with_open_payments(tmp_path):
+    """Test orchestrator integrates Open Payments data."""
+    cache = EnrichmentCache(tmp_path / "test.db")
+
+    mock_payments = {
+        "total_payments": 246.28,
+        "payment_count": 3,
+        "payment_year": 2024,
+        "top_payers": [{"name": "Pfizer Inc.", "amount": 150.00}],
+    }
+
+    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
+         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
+         patch("docstats.enrichment._fetch_open_payments") as mock_op:
+        mock_oig.return_value = None
+        mock_cms.return_value = None
+        mock_op.return_value = mock_payments
+
+        data = await enrich_provider("1003000126", cache)
+
+    assert data.total_payments == 246.28
+    assert data.payment_count == 3
+    assert data.payment_year == 2024
+    assert len(data.top_payers) == 1
+    assert "open_payments" in data.sources_checked
     cache.close()

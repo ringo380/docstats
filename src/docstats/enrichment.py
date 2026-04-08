@@ -159,13 +159,12 @@ async def enrich_provider(npi: str, cache: EnrichmentCache) -> EnrichmentData:
     except ImportError:
         pass
 
-    # Phase 3: Open Payments (uncomment when open_payments_client.py exists)
-    # try:
-    #     from docstats.open_payments_client import OpenPaymentsClient
-    #     task = asyncio.create_task(_fetch_open_payments(npi, cache))
-    #     tasks.append(("open_payments", task))
-    # except ImportError:
-    #     pass
+    try:
+        from docstats.open_payments_client import OpenPaymentsClient  # noqa: F401
+        task = asyncio.create_task(_fetch_open_payments(npi, cache))
+        tasks.append(("open_payments", task))
+    except ImportError:
+        pass
 
     # Await all tasks
     for source_name, task in tasks:
@@ -191,6 +190,11 @@ async def enrich_provider(npi: str, cache: EnrichmentCache) -> EnrichmentData:
                 data.hospital_affiliations = result.get("hospital_affiliations", [])
             elif source_name == "medicare":
                 data.medicare_enrolled = False
+            elif source_name == "open_payments" and result is not None:
+                data.total_payments = result.get("total_payments")
+                data.payment_count = result.get("payment_count")
+                data.payment_year = result.get("payment_year")
+                data.top_payers = result.get("top_payers", [])
         except Exception:
             logger.exception("Enrichment source %s failed for NPI %s", source_name, npi)
             sources_failed.append(source_name)
@@ -242,5 +246,24 @@ async def _fetch_medicare(npi: str, cache: EnrichmentCache) -> dict | None:
 
         cache.set("medicare", npi, json.dumps(clinician), TTL_MEDICARE)
         return clinician
+    finally:
+        client.close()
+
+
+async def _fetch_open_payments(npi: str, cache: EnrichmentCache) -> dict | None:
+    """Fetch industry payment data from CMS Open Payments."""
+    from docstats.open_payments_client import OpenPaymentsClient
+
+    # Check cache first
+    cached = cache.get("open_payments", npi)
+    if cached is not None:
+        return json.loads(cached)
+
+    client = OpenPaymentsClient()
+    try:
+        result = client.lookup_payments(npi)
+        cache_value = json.dumps(result) if result else "null"
+        cache.set("open_payments", npi, cache_value, TTL_OPEN_PAYMENTS)
+        return result
     finally:
         client.close()
