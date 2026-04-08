@@ -12,7 +12,7 @@ import hashlib
 import json
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +68,8 @@ class EnrichmentCache:
 
     def __init__(self, db_path: Path) -> None:
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys = ON")
         self._init_table()
 
     def _init_table(self) -> None:
@@ -106,9 +108,14 @@ class EnrichmentCache:
         key = self._make_key(source, npi)
         self._conn.execute(
             """
-            INSERT OR REPLACE INTO enrichment_cache
+            INSERT INTO enrichment_cache
                 (cache_key, source, response_json, cached_at, ttl_seconds)
             VALUES (?, ?, ?, datetime('now'), ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                source=excluded.source,
+                response_json=excluded.response_json,
+                cached_at=datetime('now'),
+                ttl_seconds=excluded.ttl_seconds
             """,
             (key, source, response_json, ttl_seconds),
         )
@@ -201,69 +208,75 @@ async def enrich_provider(npi: str, cache: EnrichmentCache) -> EnrichmentData:
 
     data.sources_checked = sources_checked
     data.sources_failed = sources_failed
-    data.fetched_at = datetime.now()
+    data.fetched_at = datetime.now(tz=timezone.utc)
     return data
 
 
 async def _fetch_oig(npi: str, cache: EnrichmentCache) -> dict | None:
     """Check OIG LEIE for exclusion status. Returns dict if excluded, None if clean."""
-    from docstats.oig_client import OIGClient
-
-    # Check cache first
+    # Check cache first (SQLite is fast, no executor needed)
     cached = cache.get("oig", npi)
     if cached is not None:
         return json.loads(cached)
 
-    client = OIGClient()
-    try:
-        result = client.check_exclusion(npi)
-        # Cache the result (even "not excluded" to avoid re-fetching)
-        cache_value = json.dumps(result) if result else "null"
-        cache.set("oig", npi, cache_value, TTL_OIG)
-        return result
-    finally:
-        client.close()
+    def _sync_fetch() -> dict | None:
+        from docstats.oig_client import OIGClient
+        client = OIGClient()
+        try:
+            return client.check_exclusion(npi)
+        finally:
+            client.close()
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, _sync_fetch)
+    # Cache the result (even "not excluded" to avoid re-fetching)
+    cache_value = json.dumps(result) if result else "null"
+    cache.set("oig", npi, cache_value, TTL_OIG)
+    return result
 
 
 async def _fetch_medicare(npi: str, cache: EnrichmentCache) -> dict | None:
     """Fetch Medicare enrollment and facility affiliation data from CMS."""
-    from docstats.cms_client import CMSClient
-
-    # Check cache first
     cached = cache.get("medicare", npi)
     if cached is not None:
         return json.loads(cached)
 
-    client = CMSClient()
-    try:
-        clinician = client.lookup_clinician(npi)
-        if clinician is None:
-            cache.set("medicare", npi, "null", TTL_MEDICARE)
-            return None
+    def _sync_fetch() -> dict | None:
+        from docstats.cms_client import CMSClient
+        client = CMSClient()
+        try:
+            clinician = client.lookup_clinician(npi)
+            if clinician is None:
+                return None
+            facilities = client.lookup_facility_affiliations(npi)
+            clinician["hospital_affiliations"] = facilities
+            return clinician
+        finally:
+            client.close()
 
-        facilities = client.lookup_facility_affiliations(npi)
-        clinician["hospital_affiliations"] = facilities
-
-        cache.set("medicare", npi, json.dumps(clinician), TTL_MEDICARE)
-        return clinician
-    finally:
-        client.close()
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, _sync_fetch)
+    cache_value = json.dumps(result) if result else "null"
+    cache.set("medicare", npi, cache_value, TTL_MEDICARE)
+    return result
 
 
 async def _fetch_open_payments(npi: str, cache: EnrichmentCache) -> dict | None:
     """Fetch industry payment data from CMS Open Payments."""
-    from docstats.open_payments_client import OpenPaymentsClient
-
-    # Check cache first
     cached = cache.get("open_payments", npi)
     if cached is not None:
         return json.loads(cached)
 
-    client = OpenPaymentsClient()
-    try:
-        result = client.lookup_payments(npi)
-        cache_value = json.dumps(result) if result else "null"
-        cache.set("open_payments", npi, cache_value, TTL_OPEN_PAYMENTS)
-        return result
-    finally:
-        client.close()
+    def _sync_fetch() -> dict | None:
+        from docstats.open_payments_client import OpenPaymentsClient
+        client = OpenPaymentsClient()
+        try:
+            return client.lookup_payments(npi)
+        finally:
+            client.close()
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, _sync_fetch)
+    cache_value = json.dumps(result) if result else "null"
+    cache.set("open_payments", npi, cache_value, TTL_OPEN_PAYMENTS)
+    return result

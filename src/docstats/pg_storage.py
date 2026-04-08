@@ -275,14 +275,20 @@ class PostgresStorage:
         return len(result.data) > 0
 
     def update_enrichment(self, npi: str, enrichment_json: str, user_id: int) -> bool:
-        result = (
-            self._t("saved_providers")
-            .update({"enrichment_json": enrichment_json, "updated_at": _now_iso()})
-            .eq("npi", npi)
-            .eq("user_id", user_id)
-            .execute()
-        )
-        return len(result.data) > 0
+        try:
+            result = (
+                self._t("saved_providers")
+                .update({"enrichment_json": enrichment_json, "updated_at": _now_iso()})
+                .eq("npi", npi)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            return len(result.data) > 0
+        except Exception:
+            # Column may not exist yet — requires manual migration:
+            # ALTER TABLE docstats_saved_providers ADD COLUMN enrichment_json TEXT;
+            logger.warning("Failed to update enrichment_json — column may not exist in Postgres")
+            return False
 
     # --- Search history ---
 

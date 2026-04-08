@@ -1070,6 +1070,7 @@ async def export_text(
 _CSV_FIELDNAMES = [
     "NPI", "Name", "Entity Type", "Specialty", "Phone", "Fax",
     "Address", "City", "State", "ZIP", "Notes", "Appointment Address", "Saved At",
+    "OIG Excluded", "Medicare Enrolled", "Industry Payments ($)",
 ]
 
 

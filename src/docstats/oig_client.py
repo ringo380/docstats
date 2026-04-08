@@ -121,7 +121,7 @@ class OIGClient:
                     text = resp.text
                     # Cache to disk
                     self._cache_dir.mkdir(parents=True, exist_ok=True)
-                    self._cache_file.write_text(text, encoding="utf-8")
+                    self._cache_file.write_text(text, encoding="utf-8-sig")
                     logger.info("Downloaded LEIE CSV (%d bytes)", len(text))
                     return text
                 if resp.status_code in RETRYABLE_STATUS and attempt < MAX_RETRIES:
