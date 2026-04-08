@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 import httpx
 
@@ -17,6 +18,9 @@ API_VERSION = "2.1"
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 1200
 REQUEST_TIMEOUT = 30.0
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE = 1.0  # seconds — delays: 1s, 2s, 4s
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 class NPPESError(Exception):
@@ -133,7 +137,7 @@ class NPPESClient:
         return response.results[0]
 
     def _execute(self, params: dict[str, str], *, use_cache: bool = True) -> NPIResponse:
-        """Execute an API request with optional caching."""
+        """Execute an API request with optional caching and automatic retry."""
         # Check cache first
         if use_cache and self._cache:
             cached = self._cache.get(params)
@@ -142,38 +146,98 @@ class NPPESClient:
                 return cached
 
         logger.debug("Requesting NPPES API: %s", params)
-        try:
-            resp = self._http.get(API_BASE, params=params)
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            raise NPPESError(
-                "The NPI Registry is temporarily unavailable. Please try again."
-            ) from e
-        except httpx.TimeoutException as e:
+        last_exc: Exception | None = None
+
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                resp = self._http.get(API_BASE, params=params)
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in RETRYABLE_STATUS_CODES:
+                    last_exc = e
+                    delay = self._retry_delay(attempt, e.response)
+                    if delay is not None:
+                        logger.warning(
+                            "NPPES API returned %s, retrying in %.1fs (attempt %d/%d)",
+                            e.response.status_code, delay, attempt + 1, MAX_RETRIES,
+                        )
+                        time.sleep(delay)
+                        continue
+                raise NPPESError(
+                    "The NPI Registry is temporarily unavailable. Please try again."
+                ) from e
+            except httpx.TimeoutException as e:
+                last_exc = e
+                delay = self._retry_delay(attempt)
+                if delay is not None:
+                    logger.warning(
+                        "NPPES API timed out, retrying in %.1fs (attempt %d/%d)",
+                        delay, attempt + 1, MAX_RETRIES,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise NPPESError(
+                    "The NPI Registry took too long to respond. Please try again."
+                ) from e
+            except httpx.RequestError as e:
+                last_exc = e
+                delay = self._retry_delay(attempt)
+                if delay is not None:
+                    logger.warning(
+                        "NPPES API request failed, retrying in %.1fs (attempt %d/%d)",
+                        delay, attempt + 1, MAX_RETRIES,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise NPPESError(
+                    "Could not reach the NPI Registry. Check your internet connection and try again."
+                ) from e
+
+            # Success — process the response
+            data = resp.json()
+
+            # The API returns errors in an "Errors" field instead of HTTP status codes
+            if "Errors" in data:
+                errors = data["Errors"]
+                if isinstance(errors, list):
+                    msgs = [e.get("description", str(e)) for e in errors]
+                    raw = "; ".join(msgs)
+                else:
+                    raw = str(errors)
+                raise NPPESError(_translate_error(raw))
+
+            response = NPIResponse.model_validate(data)
+
+            # Cache successful responses
+            if use_cache and self._cache:
+                self._cache.set(params, response)
+
+            return response
+
+        # All retries exhausted
+        if isinstance(last_exc, httpx.TimeoutException):
             raise NPPESError(
                 "The NPI Registry took too long to respond. Please try again."
-            ) from e
-        except httpx.RequestError as e:
+            ) from last_exc
+        if isinstance(last_exc, httpx.RequestError):
             raise NPPESError(
                 "Could not reach the NPI Registry. Check your internet connection and try again."
-            ) from e
+            ) from last_exc
+        raise NPPESError(
+            "The NPI Registry is temporarily unavailable. Please try again."
+        ) from last_exc
 
-        data = resp.json()
-
-        # The API returns errors in an "Errors" field instead of HTTP status codes
-        if "Errors" in data:
-            errors = data["Errors"]
-            if isinstance(errors, list):
-                msgs = [e.get("description", str(e)) for e in errors]
-                raw = "; ".join(msgs)
-            else:
-                raw = str(errors)
-            raise NPPESError(_translate_error(raw))
-
-        response = NPIResponse.model_validate(data)
-
-        # Cache successful responses
-        if use_cache and self._cache:
-            self._cache.set(params, response)
-
-        return response
+    @staticmethod
+    def _retry_delay(attempt: int, response: httpx.Response | None = None) -> float | None:
+        """Return backoff delay in seconds, or None if retries are exhausted."""
+        if attempt >= MAX_RETRIES:
+            return None
+        # Honor Retry-After header if present (429 responses)
+        if response is not None:
+            retry_after = response.headers.get("retry-after")
+            if retry_after:
+                try:
+                    return max(float(retry_after), 0.5)
+                except (ValueError, TypeError):
+                    pass
+        return RETRY_BACKOFF_BASE * (2 ** attempt)
