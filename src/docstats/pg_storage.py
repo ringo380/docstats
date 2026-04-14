@@ -63,6 +63,7 @@ class PostgresStorage:
             raw_json=row["raw_json"],
             notes=row.get("notes"),
             appt_address=row.get("appt_address"),
+            enrichment_json=row.get("enrichment_json"),
             saved_at=_parse_ts(row.get("saved_at")),
             updated_at=_parse_ts(row.get("updated_at")),
         )
@@ -179,9 +180,10 @@ class PostgresStorage:
         provider = SavedProvider.from_npi_result(result, notes=notes)
         now = _now_iso()
 
-        # Fetch existing to preserve appt_address and merge notes (matches SQLite behavior)
+        # Fetch existing to preserve appt_address, enrichment, and merge notes (matches SQLite behavior)
         existing = self.get_provider(provider.npi, user_id)
         appt_address = existing.appt_address if existing else None
+        enrichment_json = existing.enrichment_json if existing else None
         merged_notes = provider.notes if provider.notes is not None else (existing.notes if existing else None)
 
         self._t("saved_providers").upsert(
@@ -200,6 +202,7 @@ class PostgresStorage:
                 "raw_json": provider.raw_json,
                 "notes": merged_notes,
                 "appt_address": appt_address,
+                "enrichment_json": enrichment_json,
                 "saved_at": provider.saved_at.isoformat() if provider.saved_at else now,
                 "updated_at": now,
             },
@@ -270,6 +273,22 @@ class PostgresStorage:
             .execute()
         )
         return len(result.data) > 0
+
+    def update_enrichment(self, npi: str, enrichment_json: str, user_id: int) -> bool:
+        try:
+            result = (
+                self._t("saved_providers")
+                .update({"enrichment_json": enrichment_json, "updated_at": _now_iso()})
+                .eq("npi", npi)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            return len(result.data) > 0
+        except Exception:
+            # Column may not exist yet — requires manual migration:
+            # ALTER TABLE docstats_saved_providers ADD COLUMN enrichment_json TEXT;
+            logger.warning("Failed to update enrichment_json — column may not exist in Postgres")
+            return False
 
     # --- Search history ---
 
