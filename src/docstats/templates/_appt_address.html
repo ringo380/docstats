@@ -1,13 +1,26 @@
 <div class="appt-address-wrap" id="appt-{{ npi }}">
   {% if appt_address %}
     <div class="appt-chip">
-      📍 {{ appt_address }}
+      📍 {{ appt_address }}{% if appt_suite %} · {{ appt_suite }}{% endif %}
       <button
         hx-delete="/provider/{{ npi }}/appt-address"
         hx-target="#appt-{{ npi }}"
         hx-swap="outerHTML"
         title="Remove appointment address">✕</button>
     </div>
+    <form class="appt-suite-row"
+          hx-put="/provider/{{ npi }}/appt-suite"
+          hx-target="#appt-{{ npi }}"
+          hx-swap="outerHTML"
+          style="display:flex; gap:4px; margin-top:4px; align-items:center;">
+      <input type="text" name="suite" value="{{ appt_suite or '' }}"
+             placeholder="Suite, Rm, Office #…"
+             style="font-size:0.75rem; width:140px; padding:2px 6px;">
+      <button type="submit" class="btn btn-secondary btn-sm"
+              style="font-size:0.7rem; padding:2px 8px;">
+        {% if appt_suite %}Update{% else %}Add{% endif %}
+      </button>
+    </form>
   {% else %}
     {% if mapbox_token %}
       <div class="appt-input-row">

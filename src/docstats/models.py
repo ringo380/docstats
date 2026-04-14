@@ -271,6 +271,7 @@ class SavedProvider(BaseModel):
     raw_json: str  # full API result for rehydration
     notes: str | None = None
     appt_address: str | None = None
+    appt_suite: str | None = None
     enrichment_json: str | None = None  # serialized EnrichmentData
     saved_at: datetime | None = None
     updated_at: datetime | None = None
@@ -316,6 +317,7 @@ class SavedProvider(BaseModel):
             "ZIP": self.address_zip or "",
             "Notes": self.notes or "",
             "Appointment Address": self.appt_address or "",
+            "Appointment Suite": self.appt_suite or "",
             "Saved At": self.saved_at.isoformat() if self.saved_at else "",
         }
         # Enrichment fields (when available)

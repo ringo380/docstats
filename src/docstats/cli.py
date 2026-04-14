@@ -216,14 +216,22 @@ def save(
 
 @app.command()
 def saved(
-    # Named 'saved' instead of 'list' to avoid Python builtin shadowing
+    search: Annotated[Optional[str], typer.Option("--search", "-s", help="Filter saved providers by name, NPI, specialty, or notes")] = None,
 ) -> None:
     """List all saved providers."""
     storage = _get_storage()
-    providers = storage.list_providers(_get_cli_user_id())
+    user_id = _get_cli_user_id()
+
+    if search:
+        providers = storage.search_providers(user_id, search)
+    else:
+        providers = storage.list_providers(user_id)
 
     if not providers:
-        console.print("[yellow]No saved providers. Use [cyan]docstats save <NPI>[/cyan] to save one.[/yellow]")
+        if search:
+            console.print(f"[yellow]No saved providers matching [cyan]{search}[/cyan].[/yellow]")
+        else:
+            console.print("[yellow]No saved providers. Use [cyan]docstats save <NPI>[/cyan] to save one.[/yellow]")
         raise typer.Exit(0)
 
     console.print(saved_table(providers))

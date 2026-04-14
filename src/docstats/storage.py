@@ -12,6 +12,7 @@ import logging
 import os
 import sqlite3
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_DIR = Path.home() / ".local" / "share" / "docstats"
+
+
+def _fuzzy_score(provider: SavedProvider, query: str) -> float:
+    """Score a saved provider against a search query for result ranking."""
+    best = 0.0
+    for field in (provider.display_name, provider.specialty, provider.notes):
+        if field:
+            ratio = SequenceMatcher(None, query, field.lower()).ratio()
+            if ratio > best:
+                best = ratio
+    if provider.npi.startswith(query):
+        best = max(best, 1.0)
+    return best
 
 _storage: "Storage | PostgresStorage | None" = None
 
@@ -97,6 +111,7 @@ class Storage:
         self._migrate_users_pcp_npi()
         self._migrate_users_profile_fields()
         self._migrate_enrichment_json()
+        self._migrate_appt_suite()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -179,6 +194,14 @@ class Storage:
         """Add enrichment_json column to saved_providers if not present."""
         try:
             self._conn.execute("ALTER TABLE saved_providers ADD COLUMN enrichment_json TEXT")
+            self._conn.commit()
+        except Exception:
+            pass  # Column already exists
+
+    def _migrate_appt_suite(self) -> None:
+        """Add appt_suite column to saved_providers if not present."""
+        try:
+            self._conn.execute("ALTER TABLE saved_providers ADD COLUMN appt_suite TEXT")
             self._conn.commit()
         except Exception:
             pass  # Column already exists
@@ -321,8 +344,8 @@ class Storage:
             INSERT INTO saved_providers
                 (user_id, npi, display_name, entity_type, specialty, phone, fax,
                  address_line1, address_city, address_state, address_zip,
-                 raw_json, notes, appt_address, saved_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 raw_json, notes, appt_address, appt_suite, saved_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, npi) DO UPDATE SET
                 display_name=excluded.display_name,
                 entity_type=excluded.entity_type,
@@ -352,6 +375,7 @@ class Storage:
                 provider.raw_json,
                 provider.notes,
                 None,  # appt_address: always NULL on initial save; preserved on conflict
+                None,  # appt_suite: always NULL on initial save; preserved on conflict
                 provider.saved_at.isoformat() if provider.saved_at else datetime.now().isoformat(),
                 provider.updated_at.isoformat() if provider.updated_at else datetime.now().isoformat(),
             ),
@@ -379,6 +403,23 @@ class Storage:
         ).fetchall()
         return [self._row_to_provider(r) for r in rows]
 
+    def search_providers(self, user_id: int, query: str) -> list[SavedProvider]:
+        """Search saved providers by fuzzy matching against name, NPI, specialty, notes, and city."""
+        pattern = f"%{query}%"
+        rows = self._conn.execute(
+            """SELECT * FROM saved_providers
+               WHERE user_id = ?
+                 AND (display_name LIKE ? COLLATE NOCASE
+                   OR npi LIKE ?
+                   OR specialty LIKE ? COLLATE NOCASE
+                   OR notes LIKE ? COLLATE NOCASE
+                   OR address_city LIKE ? COLLATE NOCASE)""",
+            (user_id, pattern, pattern, pattern, pattern, pattern),
+        ).fetchall()
+        providers = [self._row_to_provider(r) for r in rows]
+        query_lower = query.lower()
+        return sorted(providers, key=lambda p: _fuzzy_score(p, query_lower), reverse=True)
+
     def delete_provider(self, npi: str, user_id: int) -> bool:
         """Delete a saved provider. Returns True if it existed."""
         cursor = self._conn.execute(
@@ -405,6 +446,15 @@ class Storage:
         self._conn.commit()
         return cursor.rowcount > 0
 
+    def set_appt_suite(self, npi: str, suite: str | None, user_id: int) -> bool:
+        """Set or clear the appointment suite/room for a saved provider."""
+        cursor = self._conn.execute(
+            "UPDATE saved_providers SET appt_suite = ? WHERE npi = ? AND user_id = ?",
+            (suite.strip() if suite else None, npi, user_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
     def update_enrichment(self, npi: str, enrichment_json: str, user_id: int) -> bool:
         """Update enrichment data for a saved provider."""
         cursor = self._conn.execute(
@@ -415,9 +465,9 @@ class Storage:
         return cursor.rowcount > 0
 
     def clear_appt_address(self, npi: str, user_id: int) -> bool:
-        """Clear the appointment address for a saved provider."""
+        """Clear the appointment address and suite for a saved provider."""
         cursor = self._conn.execute(
-            "UPDATE saved_providers SET appt_address = NULL WHERE npi = ? AND user_id = ?",
+            "UPDATE saved_providers SET appt_address = NULL, appt_suite = NULL WHERE npi = ? AND user_id = ?",
             (npi, user_id),
         )
         self._conn.commit()
@@ -513,6 +563,7 @@ class Storage:
             raw_json=row["raw_json"],
             notes=row["notes"],
             appt_address=row["appt_address"],
+            appt_suite=row["appt_suite"] if "appt_suite" in row.keys() else None,
             enrichment_json=row["enrichment_json"] if "enrichment_json" in row.keys() else None,
             saved_at=datetime.fromisoformat(row["saved_at"]) if row["saved_at"] else None,
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,

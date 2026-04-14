@@ -965,6 +965,28 @@ async def set_appt_address(
         "request": request,
         "npi": npi,
         "appt_address": provider.appt_address if provider else None,
+        "appt_suite": provider.appt_suite if provider else None,
+        "mapbox_token": MAPBOX_TOKEN,
+    })
+
+
+@app.put("/provider/{npi}/appt-suite", response_class=HTMLResponse)
+async def update_appt_suite(
+    request: Request,
+    npi: str,
+    suite: str = Form(""),
+    current_user: dict = Depends(require_user),
+    storage: Storage = Depends(get_storage),
+):
+    user_id = current_user["id"]
+    suite = suite.strip()
+    storage.set_appt_suite(npi, suite or None, user_id)
+    provider = storage.get_provider(npi, user_id)
+    return _render("_appt_address.html", {
+        "request": request,
+        "npi": npi,
+        "appt_address": provider.appt_address if provider else None,
+        "appt_suite": provider.appt_suite if provider else None,
         "mapbox_token": MAPBOX_TOKEN,
     })
 
@@ -982,6 +1004,7 @@ async def clear_appt_address(
         "request": request,
         "npi": npi,
         "appt_address": None,
+        "appt_suite": None,
         "mapbox_token": MAPBOX_TOKEN,
     })
 
@@ -1026,7 +1049,8 @@ async def export_view(
             return HTMLResponse(content=f"<p>No provider found for NPI {npi}.</p>", status_code=404)
 
     appt_address = saved.appt_address if saved else None
-    export_text = referral_export(result, appt_address=appt_address)
+    appt_suite = saved.appt_suite if saved else None
+    export_text = referral_export(result, appt_address=appt_address, appt_suite=appt_suite)
 
     return _render("export.html", {
         "request": request,
@@ -1034,6 +1058,7 @@ async def export_view(
         "result": result,
         "export_text": export_text,
         "appt_address": appt_address,
+        "appt_suite": appt_suite,
         "saved_count": _saved_count(storage, user_id),
         "user": current_user,
     })
@@ -1051,6 +1076,7 @@ async def export_text(
     if saved:
         result = saved.to_npi_result()
         appt_address = saved.appt_address
+        appt_suite = saved.appt_suite
     else:
         try:
             result = await client.async_lookup(npi)
@@ -1059,8 +1085,9 @@ async def export_text(
         if result is None:
             return PlainTextResponse(content=f"No provider found for NPI {npi}.", status_code=404)
         appt_address = None
+        appt_suite = None
 
-    text = referral_export(result, appt_address=appt_address)
+    text = referral_export(result, appt_address=appt_address, appt_suite=appt_suite)
     return PlainTextResponse(
         content=text,
         headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
@@ -1069,7 +1096,7 @@ async def export_text(
 
 _CSV_FIELDNAMES = [
     "NPI", "Name", "Entity Type", "Specialty", "Phone", "Fax",
-    "Address", "City", "State", "ZIP", "Notes", "Appointment Address", "Saved At",
+    "Address", "City", "State", "ZIP", "Notes", "Appointment Address", "Appointment Suite", "Saved At",
     "OIG Excluded", "Medicare Enrolled", "Industry Payments ($)",
 ]
 
@@ -1121,11 +1148,12 @@ async def export_all(
     referrals = []
     for p in providers:
         result = p.to_npi_result()
-        text = referral_export(result, appt_address=p.appt_address)
+        text = referral_export(result, appt_address=p.appt_address, appt_suite=p.appt_suite)
         referrals.append({
             "result": result,
             "export_text": text,
             "appt_address": p.appt_address,
+            "appt_suite": p.appt_suite,
         })
     return _render("export_all.html", {
         "request": request,

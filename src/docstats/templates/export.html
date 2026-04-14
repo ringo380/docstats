@@ -26,7 +26,7 @@
   {% if appt_address %}
     <div class="appt-address-section" style="margin-top: 1rem;">
       <div class="label">My Appointment Location</div>
-      <div>{{ appt_address }}</div>
+      <div>{{ appt_address }}{% if appt_suite %} · {{ appt_suite }}{% endif %}</div>
     </div>
   {% endif %}
   {% else %}

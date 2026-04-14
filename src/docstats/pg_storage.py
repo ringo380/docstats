@@ -63,6 +63,7 @@ class PostgresStorage:
             raw_json=row["raw_json"],
             notes=row.get("notes"),
             appt_address=row.get("appt_address"),
+            appt_suite=row.get("appt_suite"),
             enrichment_json=row.get("enrichment_json"),
             saved_at=_parse_ts(row.get("saved_at")),
             updated_at=_parse_ts(row.get("updated_at")),
@@ -180,9 +181,10 @@ class PostgresStorage:
         provider = SavedProvider.from_npi_result(result, notes=notes)
         now = _now_iso()
 
-        # Fetch existing to preserve appt_address, enrichment, and merge notes (matches SQLite behavior)
+        # Fetch existing to preserve appt_address, appt_suite, enrichment, and merge notes (matches SQLite behavior)
         existing = self.get_provider(provider.npi, user_id)
         appt_address = existing.appt_address if existing else None
+        appt_suite = existing.appt_suite if existing else None
         enrichment_json = existing.enrichment_json if existing else None
         merged_notes = provider.notes if provider.notes is not None else (existing.notes if existing else None)
 
@@ -202,6 +204,7 @@ class PostgresStorage:
                 "raw_json": provider.raw_json,
                 "notes": merged_notes,
                 "appt_address": appt_address,
+                "appt_suite": appt_suite,
                 "enrichment_json": enrichment_json,
                 "saved_at": provider.saved_at.isoformat() if provider.saved_at else now,
                 "updated_at": now,
@@ -234,6 +237,27 @@ class PostgresStorage:
         )
         return [self._row_to_provider(r) for r in result.data]
 
+    def search_providers(self, user_id: int, query: str) -> list[SavedProvider]:
+        from docstats.storage import _fuzzy_score
+
+        pattern = f"%{query}%"
+        result = (
+            self._t("saved_providers")
+            .select("*")
+            .eq("user_id", user_id)
+            .or_(
+                f"display_name.ilike.{pattern},"
+                f"npi.ilike.{pattern},"
+                f"specialty.ilike.{pattern},"
+                f"notes.ilike.{pattern},"
+                f"address_city.ilike.{pattern}"
+            )
+            .execute()
+        )
+        providers = [self._row_to_provider(r) for r in result.data]
+        query_lower = query.lower()
+        return sorted(providers, key=lambda p: _fuzzy_score(p, query_lower), reverse=True)
+
     def delete_provider(self, npi: str, user_id: int) -> bool:
         result = (
             self._t("saved_providers")
@@ -254,10 +278,20 @@ class PostgresStorage:
         )
         return len(result.data) > 0
 
+    def set_appt_suite(self, npi: str, suite: str | None, user_id: int) -> bool:
+        result = (
+            self._t("saved_providers")
+            .update({"appt_suite": suite.strip() if suite else None})
+            .eq("npi", npi)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return len(result.data) > 0
+
     def clear_appt_address(self, npi: str, user_id: int) -> bool:
         result = (
             self._t("saved_providers")
-            .update({"appt_address": None})
+            .update({"appt_address": None, "appt_suite": None})
             .eq("npi", npi)
             .eq("user_id", user_id)
             .execute()

@@ -155,7 +155,7 @@ def history_table(entries: list[SearchHistoryEntry]) -> Table:
     return table
 
 
-def referral_export(result: NPIResult, appt_address: str | None = None) -> str:
+def referral_export(result: NPIResult, appt_address: str | None = None, appt_suite: str | None = None) -> str:
     """Generate a plain-text referral-ready summary.
 
     Suitable for pasting into referral forms or faxing.
@@ -207,6 +207,8 @@ def referral_export(result: NPIResult, appt_address: str | None = None) -> str:
         lines.append("MY APPOINTMENT LOCATION")
         lines.append("-" * 50)
         lines.append(f"  {appt_address}")
+        if appt_suite:
+            lines.append(f"  {appt_suite}")
         lines.append("  (This location may differ from the NPI registry address above)")
 
     lines.append("")

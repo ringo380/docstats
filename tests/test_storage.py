@@ -140,3 +140,129 @@ def test_save_provider_preserves_appt_address(storage: Storage, user_id: int):
     storage.save_provider(result, user_id)
     provider = storage.get_provider("1234567890", user_id)
     assert provider.appt_address == "1 Shrader St, San Francisco, CA 94117"
+
+
+def test_appt_suite_column_exists(storage: Storage):
+    """appt_suite column should exist after init."""
+    cols = [r[1] for r in storage._conn.execute("PRAGMA table_info(saved_providers)")]
+    assert "appt_suite" in cols
+
+
+def test_set_appt_suite(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_suite("1234567890", "Suite 6A", user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_suite == "Suite 6A"
+
+
+def test_set_appt_suite_strips_whitespace(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_suite("1234567890", "  Room 201  ", user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_suite == "Room 201"
+
+
+def test_clear_appt_suite(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_suite("1234567890", "Suite 6A", user_id)
+    storage.set_appt_suite("1234567890", None, user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_suite is None
+
+
+def test_clear_appt_address_clears_suite(storage: Storage, user_id: int):
+    """Clearing the address must also clear the suite."""
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117", user_id)
+    storage.set_appt_suite("1234567890", "Suite 6A", user_id)
+    storage.clear_appt_address("1234567890", user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_address is None
+    assert provider.appt_suite is None
+
+
+def test_save_provider_preserves_appt_suite(storage: Storage, user_id: int):
+    """Re-saving a provider must not reset its appt_suite."""
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_suite("1234567890", "Rm 100-B", user_id)
+    storage.save_provider(result, user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_suite == "Rm 100-B"
+
+
+# --- search_providers tests ---
+
+
+def test_search_providers_by_name(storage: Storage, user_id: int):
+    r1 = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    r2 = NPIResult.model_validate(SAMPLE_NPI2_RESULT)
+    storage.save_provider(r1, user_id)
+    storage.save_provider(r2, user_id)
+
+    results = storage.search_providers(user_id, "smith")
+    assert len(results) == 1
+    assert results[0].npi == "1234567890"
+
+
+def test_search_providers_by_npi(storage: Storage, user_id: int):
+    r1 = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(r1, user_id)
+
+    results = storage.search_providers(user_id, "1234")
+    assert len(results) == 1
+    assert results[0].npi == "1234567890"
+
+
+def test_search_providers_by_specialty(storage: Storage, user_id: int):
+    r1 = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    r2 = NPIResult.model_validate(SAMPLE_NPI2_RESULT)
+    storage.save_provider(r1, user_id)
+    storage.save_provider(r2, user_id)
+
+    results = storage.search_providers(user_id, "internal medicine")
+    assert len(results) == 1
+    assert results[0].npi == "1234567890"
+
+
+def test_search_providers_by_notes(storage: Storage, user_id: int):
+    r1 = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(r1, user_id, notes="great cardiologist")
+
+    results = storage.search_providers(user_id, "cardiologist")
+    assert len(results) == 1
+    assert results[0].npi == "1234567890"
+
+
+def test_search_providers_no_results(storage: Storage, user_id: int):
+    r1 = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(r1, user_id)
+
+    results = storage.search_providers(user_id, "zzzznotfound")
+    assert len(results) == 0
+
+
+def test_search_providers_per_user(storage: Storage):
+    """Search must not return providers from other users."""
+    uid_a = storage.create_user("a@example.com", "h")
+    uid_b = storage.create_user("b@example.com", "h")
+    r1 = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(r1, uid_a)
+
+    assert len(storage.search_providers(uid_a, "smith")) == 1
+    assert len(storage.search_providers(uid_b, "smith")) == 0
+
+
+def test_search_providers_by_city(storage: Storage, user_id: int):
+    r1 = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    r2 = NPIResult.model_validate(SAMPLE_NPI2_RESULT)
+    storage.save_provider(r1, user_id)
+    storage.save_provider(r2, user_id)
+
+    results = storage.search_providers(user_id, "walnut creek")
+    assert len(results) == 1
+    assert results[0].npi == "9876543210"
