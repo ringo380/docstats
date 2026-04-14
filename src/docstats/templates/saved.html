@@ -5,7 +5,7 @@
   <div class="saved-header">
     <div>
       <h1>My Referrals</h1>
-      <div class="sub">{{ providers | length }} provider{% if providers | length != 1 %}s{% endif %} saved</div>
+      <div class="sub" id="saved-count">{{ providers | length }} provider{% if providers | length != 1 %}s{% endif %} saved</div>
     </div>
     {% if providers %}
       <div style="display: flex; gap: 6px; flex-wrap: wrap;">
@@ -17,6 +17,9 @@
   </div>
 
   {% if providers %}
+    <input type="text" id="saved-search" placeholder="Filter by name, NPI, specialty, notes..."
+           autocomplete="off" style="width: 100%; padding: 10px 14px; margin-bottom: 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.95rem; background: var(--card-bg); color: var(--text);">
+    <div id="no-match" style="display: none; text-align: center; padding: 32px 0; color: var(--muted);">No providers match your filter.</div>
     {% for p in providers %}
       <div class="provider-row" id="saved-row-{{ p.npi }}">
         <div class="type-bar {% if p.entity_type == 'Organization' %}org{% endif %}"></div>
@@ -32,7 +35,7 @@
           {% if p.notes %}
             <div class="notes-preview">Note: {{ p.notes }}</div>
           {% endif %}
-          {% set npi = p.npi %}{% set appt_address = p.appt_address %}{% include "_appt_address.html" %}
+          {% set npi = p.npi %}{% set appt_address = p.appt_address %}{% set appt_suite = p.appt_suite %}{% include "_appt_address.html" %}
         </div>
         <div class="row-actions">
           <a href="/provider/{{ p.npi }}/export" class="btn btn-blue btn-sm">Export</a>
@@ -56,5 +59,32 @@
 
 <script>
   var MAPBOX_TOKEN = {{ mapbox_token | tojson }};
+
+  var searchInput = document.getElementById("saved-search");
+  if (searchInput) {
+    var rows = document.querySelectorAll(".provider-row");
+    var countEl = document.getElementById("saved-count");
+    var noMatch = document.getElementById("no-match");
+    var totalCount = rows.length;
+
+    searchInput.addEventListener("input", function () {
+      var query = searchInput.value.toLowerCase().trim();
+      var visible = 0;
+      for (var i = 0; i < rows.length; i++) {
+        var text = rows[i].textContent.toLowerCase();
+        var show = !query || text.indexOf(query) !== -1;
+        rows[i].style.display = show ? "" : "none";
+        if (show) visible++;
+      }
+      if (countEl) {
+        countEl.textContent = query
+          ? visible + " of " + totalCount + " provider" + (totalCount !== 1 ? "s" : "")
+          : totalCount + " provider" + (totalCount !== 1 ? "s" : "") + " saved";
+      }
+      if (noMatch) {
+        noMatch.style.display = (query && visible === 0) ? "" : "none";
+      }
+    });
+  }
 </script>
 {% endblock %}

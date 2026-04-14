@@ -63,6 +63,7 @@ class PostgresStorage:
             raw_json=row["raw_json"],
             notes=row.get("notes"),
             appt_address=row.get("appt_address"),
+            appt_suite=row.get("appt_suite"),
             enrichment_json=row.get("enrichment_json"),
             saved_at=_parse_ts(row.get("saved_at")),
             updated_at=_parse_ts(row.get("updated_at")),
@@ -180,9 +181,10 @@ class PostgresStorage:
         provider = SavedProvider.from_npi_result(result, notes=notes)
         now = _now_iso()
 
-        # Fetch existing to preserve appt_address, enrichment, and merge notes (matches SQLite behavior)
+        # Fetch existing to preserve appt_address, appt_suite, enrichment, and merge notes (matches SQLite behavior)
         existing = self.get_provider(provider.npi, user_id)
         appt_address = existing.appt_address if existing else None
+        appt_suite = existing.appt_suite if existing else None
         enrichment_json = existing.enrichment_json if existing else None
         merged_notes = provider.notes if provider.notes is not None else (existing.notes if existing else None)
 
@@ -202,6 +204,7 @@ class PostgresStorage:
                 "raw_json": provider.raw_json,
                 "notes": merged_notes,
                 "appt_address": appt_address,
+                "appt_suite": appt_suite,
                 "enrichment_json": enrichment_json,
                 "saved_at": provider.saved_at.isoformat() if provider.saved_at else now,
                 "updated_at": now,
@@ -234,6 +237,23 @@ class PostgresStorage:
         )
         return [self._row_to_provider(r) for r in result.data]
 
+    def search_providers(self, user_id: int, query: str) -> list[SavedProvider]:
+        from docstats.storage import _fuzzy_score
+
+        # Fetch all providers and filter in Python to avoid PostgREST .or_()
+        # escaping issues (commas, %, _ in query break the filter DSL string).
+        all_providers = self.list_providers(user_id)
+        query_lower = query.lower()
+        matched = [
+            p for p in all_providers
+            if query_lower in (p.display_name or "").lower()
+            or query_lower in (p.npi or "")
+            or query_lower in (p.specialty or "").lower()
+            or query_lower in (p.notes or "").lower()
+            or query_lower in (p.address_city or "").lower()
+        ]
+        return sorted(matched, key=lambda p: _fuzzy_score(p, query_lower), reverse=True)
+
     def delete_provider(self, npi: str, user_id: int) -> bool:
         result = (
             self._t("saved_providers")
@@ -254,10 +274,22 @@ class PostgresStorage:
         )
         return len(result.data) > 0
 
+    def set_appt_suite(self, npi: str, suite: str | None, user_id: int) -> bool:
+        # Requires manual Supabase migration before deploy:
+        # ALTER TABLE docstats_saved_providers ADD COLUMN IF NOT EXISTS appt_suite TEXT;
+        result = (
+            self._t("saved_providers")
+            .update({"appt_suite": suite.strip() if suite else None})
+            .eq("npi", npi)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return len(result.data) > 0
+
     def clear_appt_address(self, npi: str, user_id: int) -> bool:
         result = (
             self._t("saved_providers")
-            .update({"appt_address": None})
+            .update({"appt_address": None, "appt_suite": None})
             .eq("npi", npi)
             .eq("user_id", user_id)
             .execute()

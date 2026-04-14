@@ -110,3 +110,67 @@ def test_appt_address_delete(client):
     assert resp.status_code == 200
     provider = storage.get_provider("1234567890", user_id)
     assert provider.appt_address is None
+
+
+def test_appt_suite_put(client):
+    """PUT /provider/{npi}/appt-suite saves suite."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117", user_id)
+    resp = test_client.put(
+        "/provider/1234567890/appt-suite",
+        data={"suite": "Suite 6A"},
+    )
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_suite == "Suite 6A"
+
+
+def test_appt_suite_put_empty_clears(client):
+    """PUT with empty suite clears it."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_suite("1234567890", "Suite 6A", user_id)
+    resp = test_client.put(
+        "/provider/1234567890/appt-suite",
+        data={"suite": ""},
+    )
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_suite is None
+
+
+def test_appt_address_delete_clears_suite(client):
+    """DELETE /provider/{npi}/appt-address also clears suite."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117", user_id)
+    storage.set_appt_suite("1234567890", "Room 201", user_id)
+    resp = test_client.delete("/provider/1234567890/appt-address")
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_address is None
+    assert provider.appt_suite is None
+
+
+def test_saved_page_renders_search_input(client):
+    """Saved page includes the client-side search input when providers exist."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    resp = test_client.get("/saved")
+    assert resp.status_code == 200
+    assert 'id="saved-search"' in resp.text
+    assert "Smith" in resp.text
+
+
+def test_saved_page_empty_has_no_search(client):
+    """Saved page with no providers does not show the search input."""
+    test_client, storage, mock_client, user_id = client
+    resp = test_client.get("/saved")
+    assert resp.status_code == 200
+    assert 'id="saved-search"' not in resp.text
+    assert "No providers saved" in resp.text
