@@ -240,23 +240,19 @@ class PostgresStorage:
     def search_providers(self, user_id: int, query: str) -> list[SavedProvider]:
         from docstats.storage import _fuzzy_score
 
-        pattern = f"%{query}%"
-        result = (
-            self._t("saved_providers")
-            .select("*")
-            .eq("user_id", user_id)
-            .or_(
-                f"display_name.ilike.{pattern},"
-                f"npi.ilike.{pattern},"
-                f"specialty.ilike.{pattern},"
-                f"notes.ilike.{pattern},"
-                f"address_city.ilike.{pattern}"
-            )
-            .execute()
-        )
-        providers = [self._row_to_provider(r) for r in result.data]
+        # Fetch all providers and filter in Python to avoid PostgREST .or_()
+        # escaping issues (commas, %, _ in query break the filter DSL string).
+        all_providers = self.list_providers(user_id)
         query_lower = query.lower()
-        return sorted(providers, key=lambda p: _fuzzy_score(p, query_lower), reverse=True)
+        matched = [
+            p for p in all_providers
+            if query_lower in (p.display_name or "").lower()
+            or query_lower in (p.npi or "")
+            or query_lower in (p.specialty or "").lower()
+            or query_lower in (p.notes or "").lower()
+            or query_lower in (p.address_city or "").lower()
+        ]
+        return sorted(matched, key=lambda p: _fuzzy_score(p, query_lower), reverse=True)
 
     def delete_provider(self, npi: str, user_id: int) -> bool:
         result = (
@@ -279,6 +275,8 @@ class PostgresStorage:
         return len(result.data) > 0
 
     def set_appt_suite(self, npi: str, suite: str | None, user_id: int) -> bool:
+        # Requires manual Supabase migration before deploy:
+        # ALTER TABLE docstats_saved_providers ADD COLUMN IF NOT EXISTS appt_suite TEXT;
         result = (
             self._t("saved_providers")
             .update({"appt_suite": suite.strip() if suite else None})

@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_DB_DIR = Path.home() / ".local" / "share" / "docstats"
 
 
+def _escape_like(query: str) -> str:
+    """Escape SQL LIKE wildcard characters in a search query."""
+    return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _fuzzy_score(provider: SavedProvider, query: str) -> float:
     """Score a saved provider against a search query for result ranking."""
     best = 0.0
@@ -405,15 +410,15 @@ class Storage:
 
     def search_providers(self, user_id: int, query: str) -> list[SavedProvider]:
         """Search saved providers by fuzzy matching against name, NPI, specialty, notes, and city."""
-        pattern = f"%{query}%"
+        pattern = f"%{_escape_like(query)}%"
         rows = self._conn.execute(
             """SELECT * FROM saved_providers
                WHERE user_id = ?
-                 AND (display_name LIKE ? COLLATE NOCASE
-                   OR npi LIKE ?
-                   OR specialty LIKE ? COLLATE NOCASE
-                   OR notes LIKE ? COLLATE NOCASE
-                   OR address_city LIKE ? COLLATE NOCASE)""",
+                 AND (display_name LIKE ? ESCAPE '\\' COLLATE NOCASE
+                   OR npi LIKE ? ESCAPE '\\'
+                   OR specialty LIKE ? ESCAPE '\\' COLLATE NOCASE
+                   OR notes LIKE ? ESCAPE '\\' COLLATE NOCASE
+                   OR address_city LIKE ? ESCAPE '\\' COLLATE NOCASE)""",
             (user_id, pattern, pattern, pattern, pattern, pattern),
         ).fetchall()
         providers = [self._row_to_provider(r) for r in rows]

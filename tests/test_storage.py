@@ -266,3 +266,17 @@ def test_search_providers_by_city(storage: Storage, user_id: int):
     results = storage.search_providers(user_id, "walnut creek")
     assert len(results) == 1
     assert results[0].npi == "9876543210"
+
+
+def test_search_providers_wildcard_escaped(storage: Storage, user_id: int):
+    """% and _ in query should be treated as literals, not LIKE wildcards."""
+    r1 = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(r1, user_id, notes="100% recommended")
+
+    # "100%" should match the literal string, not act as a wildcard
+    results = storage.search_providers(user_id, "100%")
+    assert len(results) == 1
+
+    # "_ohn" with _ as wildcard would match "John" — escaped, it should not
+    results = storage.search_providers(user_id, "_ohn")
+    assert len(results) == 0

@@ -216,6 +216,7 @@ def save(
 
 @app.command()
 def saved(
+    # Named 'saved' instead of 'list' to avoid Python builtin shadowing
     search: Annotated[Optional[str], typer.Option("--search", "-s", help="Filter saved providers by name, NPI, specialty, or notes")] = None,
 ) -> None:
     """List all saved providers."""
