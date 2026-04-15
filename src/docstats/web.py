@@ -525,6 +525,9 @@ async def search(
     zip: str = Query("", alias="zip"),
     type: str = Query("", alias="type"),
     geo_state: str = Query("", alias="geo_state"),
+    geo_city: str = Query("", alias="geo_city"),
+    geo_lat: str = Query("", alias="geo_lat"),
+    geo_lon: str = Query("", alias="geo_lon"),
     limit: int = Query(10, alias="limit"),
     context: str = Query("", alias="context"),
     current_user: dict | None = Depends(get_current_user),
@@ -542,6 +545,15 @@ async def search(
     state = state.strip()
     zip = zip.strip()
     geo_state = geo_state.strip()
+    geo_city = geo_city.strip()
+    parsed_geo_lat: float | None = None
+    parsed_geo_lon: float | None = None
+    try:
+        if geo_lat and geo_lon:
+            parsed_geo_lat = float(geo_lat)
+            parsed_geo_lon = float(geo_lon)
+    except ValueError:
+        pass
 
     user_id = current_user["id"] if current_user else None
 
@@ -602,7 +614,9 @@ async def search(
                 if zip:
                     search_kwargs["postal_code"] = zip
                 has_location = city or state or zip
-                result = await client.async_search(**search_kwargs, limit=limit)
+                # Fetch more results when geo-detected so scoring can rank by proximity
+                geo_limit = limit * 5 if (parsed_geo_lat is not None and not has_location) else limit
+                result = await client.async_search(**search_kwargs, limit=geo_limit)
                 if result.result_count == 0 and (has_location or geo_state):
                     # Retry without location filters but preserve specialty
                     fallback_kwargs = dict(interp)
@@ -682,6 +696,9 @@ async def search(
             organization_name=interp.get("organization_name") or None,
             specialty=interp.get("taxonomy_description") or specialty or None,
             geo_state=geo_state or None,
+            geo_city=geo_city or None,
+            geo_lat=parsed_geo_lat,
+            geo_lon=parsed_geo_lon,
         )
     else:
         query_obj = SearchQuery(
@@ -694,8 +711,11 @@ async def search(
             state=state or None,
             postal_code=zip or None,
             geo_state=geo_state or None,
+            geo_city=geo_city or None,
+            geo_lat=parsed_geo_lat,
+            geo_lon=parsed_geo_lon,
         )
-    ranked = rank_results(response.results, query_obj)
+    ranked = rank_results(response.results, query_obj)[:limit]
 
     if context in ("onboarding", "profile"):
         pcp_action_url = "/onboarding/select-pcp" if context == "onboarding" else "/profile/pcp"

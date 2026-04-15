@@ -29,6 +29,9 @@ class SearchQuery:
     state: str | None = None
     postal_code: str | None = None
     geo_state: str | None = None  # browser-detected user state for proximity boost
+    geo_city: str | None = None   # browser-detected user city for proximity boost
+    geo_lat: float | None = None  # browser-detected latitude
+    geo_lon: float | None = None  # browser-detected longitude
 
 
 def score_result(
@@ -108,9 +111,24 @@ def score_result(
                 score += 10
 
     # Geolocation proximity boost (only when user didn't manually filter by location)
-    if query.geo_state and not query.state and not query.postal_code:
+    if query.geo_lat is not None and query.geo_lon is not None and not query.state and not query.postal_code:
         addr = result.location_address
-        if addr and addr.state.upper() == query.geo_state.upper():
+        if addr and addr.postal_code:
+            from docstats.zip_coords import haversine_miles, zip_to_coords
+
+            provider_coords = zip_to_coords(addr.postal_code)
+            if provider_coords:
+                dist = haversine_miles(query.geo_lat, query.geo_lon, *provider_coords)
+                if dist <= 15:
+                    score += 25
+                elif dist <= 30:
+                    score += 20
+                elif dist <= 60:
+                    score += 15
+                elif dist <= 120:
+                    score += 10
+        elif addr and query.geo_state and addr.state.upper() == query.geo_state.upper():
+            # Fallback: no ZIP centroid data — use state match
             score += 8
 
     # Taxonomy/specialty matching

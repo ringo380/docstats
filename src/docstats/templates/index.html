@@ -25,6 +25,9 @@
     <input type="hidden" id="field-state" name="state" value="">
     <input type="hidden" id="field-zip" name="zip" value="">
     <input type="hidden" id="field-geo-state" name="geo_state" value="">
+    <input type="hidden" id="field-geo-city" name="geo_city" value="">
+    <input type="hidden" id="field-geo-lat" name="geo_lat" value="">
+    <input type="hidden" id="field-geo-lon" name="geo_lon" value="">
 
     <div class="search-bar-wrap">
       <span class="search-icon">⌕</span>
@@ -106,8 +109,21 @@
       if (parsed.isOrg) {
         document.getElementById('field-type').value = 'NPI-2';
       }
-      htmx.trigger(document.getElementById('search-form'), 'submit');
+      onGeoReady(function() {
+        htmx.trigger(document.getElementById('search-form'), 'submit');
+      });
     }
+  });
+
+  // ── Page-specific: gate first manual search on geo readiness ─────────────
+  var _geoGateUsed = false;
+  document.getElementById('search-form').addEventListener('htmx:beforeRequest', function(evt) {
+    if (_geoGateUsed || _geoReady) return;
+    _geoGateUsed = true;
+    evt.preventDefault();
+    onGeoReady(function() {
+      htmx.trigger(document.getElementById('search-form'), 'submit');
+    });
   });
 
   // ── Page-specific: query input with org type detection ───────────────────
