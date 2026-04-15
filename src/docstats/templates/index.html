@@ -20,6 +20,7 @@
         hx-swap="innerHTML">
 
     <input type="hidden" id="field-type" name="type" value="">
+    <input type="hidden" id="field-specialty" name="specialty" value="">
     <input type="hidden" id="field-city" name="city" value="">
     <input type="hidden" id="field-state" name="state" value="">
     <input type="hidden" id="field-zip" name="zip" value="">
@@ -44,8 +45,22 @@
     <div class="parse-chips" id="parse-chips"></div>
 
     <div class="filter-pills" id="filter-pills">
+      <button type="button" class="filter-pill" id="pill-specialty" onclick="toggleSpecialty()">+ Specialty</button>
       <button type="button" class="filter-pill" id="pill-location" onclick="toggleLocation()">+ Location</button>
       <button type="button" class="filter-pill" id="pill-org" onclick="toggleOrg()">Org search</button>
+    </div>
+
+    <div id="specialty-fields" style="display:none; margin-top: 10px;">
+      <div class="autocomplete-wrap">
+        <input
+          type="text"
+          id="specialty-input"
+          placeholder="e.g. Cardiology, Dermatology…"
+          autocomplete="off"
+          style="width:100%;"
+        >
+        <ul id="specialty-suggestions" class="suggestions-list" style="display:none;"></ul>
+      </div>
     </div>
 
     <div id="location-fields" style="display:none; margin-top: 10px;">
@@ -117,5 +132,99 @@
     var queryInput = document.getElementById('query-input');
     queryInput.placeholder = active ? 'Hospital or clinic name…' : 'Dr. Sarah Chen, cardiology…';
   }
+
+  // ── Page-specific: specialty filter toggle & autocomplete ────────────────
+  function toggleSpecialty() {
+    var pill = document.getElementById('pill-specialty');
+    var fields = document.getElementById('specialty-fields');
+    var shown = fields.style.display !== 'none';
+    fields.style.display = shown ? 'none' : 'block';
+    pill.classList.toggle('active', !shown);
+    if (shown) {
+      var fieldEl = document.getElementById('field-specialty');
+      if (fieldEl) fieldEl.value = '';
+      document.getElementById('specialty-input').value = '';
+      var list = document.getElementById('specialty-suggestions');
+      if (list) list.style.display = 'none';
+    }
+  }
+
+  // Named function (not IIFE) so it can be re-initialized after htmx swaps
+  var _specialtyLabels = null;
+  var _specialtyActiveIdx = -1;
+  function initSpecialtyAutocomplete() {
+    var input = document.getElementById('specialty-input');
+    var list = document.getElementById('specialty-suggestions');
+    if (!input || !list) return;
+
+    // Build unique labels from SPECIALTIES (defined in _search_js.html) once
+    if (!_specialtyLabels) {
+      var seen = {};
+      _specialtyLabels = [];
+      for (var i = 0; i < SPECIALTIES.length; i++) {
+        var label = SPECIALTIES[i][1];
+        if (!seen[label]) { seen[label] = true; _specialtyLabels.push(label); }
+      }
+      _specialtyLabels.sort();
+    }
+
+    function selectSpecialty(val) {
+      input.value = val;
+      var fieldEl = document.getElementById('field-specialty');
+      if (fieldEl) fieldEl.value = val;
+      list.style.display = 'none';
+      _specialtyActiveIdx = -1;
+    }
+
+    function updateActive() {
+      var items = list.querySelectorAll('li');
+      for (var i = 0; i < items.length; i++) {
+        items[i].classList.toggle('active', i === _specialtyActiveIdx);
+      }
+    }
+
+    input.addEventListener('input', function() {
+      var q = input.value.trim().toLowerCase();
+      clearChildren(list);
+      _specialtyActiveIdx = -1;
+      if (!q) { list.style.display = 'none'; return; }
+      var matches = [];
+      for (var i = 0; i < _specialtyLabels.length; i++) {
+        if (_specialtyLabels[i].toLowerCase().indexOf(q) !== -1) matches.push(_specialtyLabels[i]);
+      }
+      if (!matches.length) { list.style.display = 'none'; return; }
+      for (var i = 0; i < matches.length; i++) {
+        var li = document.createElement('li');
+        li.textContent = matches[i];
+        li.addEventListener('click', (function(val) {
+          return function() { selectSpecialty(val); };
+        })(matches[i]));
+        list.appendChild(li);
+      }
+      list.style.display = 'block';
+    });
+
+    input.addEventListener('keydown', function(e) {
+      var items = list.querySelectorAll('li');
+      if (!items.length || list.style.display === 'none') return;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        _specialtyActiveIdx = Math.min(_specialtyActiveIdx + 1, items.length - 1);
+        updateActive();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        _specialtyActiveIdx = Math.max(_specialtyActiveIdx - 1, 0);
+        updateActive();
+      } else if (e.key === 'Enter' && _specialtyActiveIdx >= 0) {
+        e.preventDefault();
+        selectSpecialty(items[_specialtyActiveIdx].textContent);
+      }
+    });
+
+    document.addEventListener('click', function(e) {
+      if (!input.contains(e.target) && !list.contains(e.target)) list.style.display = 'none';
+    });
+  }
+  initSpecialtyAutocomplete();
 </script>
 {% endblock %}
