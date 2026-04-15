@@ -191,6 +191,7 @@
               list.style.display = 'none';
               var zip = '', city = '', state = '';
               if (f.place_type && f.place_type[0] === 'postcode') { zip = f.text; }
+              if (f.place_type && f.place_type[0] === 'place') { city = f.text; }
               (f.context || []).forEach(function(c) {
                 if (c.id.startsWith('place.')) city = c.text;
                 if (c.id.startsWith('region.')) state = c.short_code ? c.short_code.replace('US-','') : '';

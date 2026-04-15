@@ -591,10 +591,18 @@ async def search(
         for interp in interpretations:
             try:
                 search_kwargs = dict(interp)
-                if geo_state and not state and not zip:
+                if city:
+                    search_kwargs["city"] = city
+                if state:
+                    search_kwargs["state"] = state
+                elif geo_state:
                     search_kwargs["state"] = geo_state
+                if zip:
+                    search_kwargs["postal_code"] = zip
+                has_location = city or state or zip
                 result = await client.async_search(**search_kwargs, limit=limit)
-                if result.result_count == 0 and geo_state and not state and not zip:
+                if result.result_count == 0 and (has_location or geo_state):
+                    # Retry without location filters to fall back to national
                     result = await client.async_search(**interp, limit=limit)
                 if result.result_count > 0:
                     response = result
