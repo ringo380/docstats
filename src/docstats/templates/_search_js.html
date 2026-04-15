@@ -234,15 +234,13 @@
     _geoReadyCallbacks = [];
   }
 
-  // ── Browser geolocation → auto city/state/lat/lon ─────────────────────────
+  // ── Browser geolocation → auto state/lat/lon ──────────────────────────────
   var _detectedGeoState = '';
-  var _detectedGeoCity = '';
   var _detectedGeoLat = '';
   var _detectedGeoLon = '';
   function _setGeoFields() {
     var f;
     if (_detectedGeoState) { f = document.getElementById('field-geo-state'); if (f && !f.value) f.value = _detectedGeoState; }
-    if (_detectedGeoCity) { f = document.getElementById('field-geo-city'); if (f && !f.value) f.value = _detectedGeoCity; }
     if (_detectedGeoLat) { f = document.getElementById('field-geo-lat'); if (f && !f.value) f.value = _detectedGeoLat; }
     if (_detectedGeoLon) { f = document.getElementById('field-geo-lon'); if (f && !f.value) f.value = _detectedGeoLon; }
   }
@@ -255,30 +253,27 @@
     }
     navigator.geolocation.getCurrentPosition(function(pos) {
       var lat = pos.coords.latitude, lon = pos.coords.longitude;
-      _detectedGeoLat = '' + lat;
-      _detectedGeoLon = '' + lon;
+      // Round to 2 decimals (~1km) to limit precision in logs/URLs
+      _detectedGeoLat = '' + Math.round(lat * 100) / 100;
+      _detectedGeoLon = '' + Math.round(lon * 100) / 100;
       var url = 'https://api.mapbox.com/geocoding/v5/mapbox.places/' +
-        lon + ',' + lat + '.json?types=place,region&access_token=' + MAPBOX_TOKEN;
+        lon + ',' + lat + '.json?types=region&access_token=' + MAPBOX_TOKEN;
       fetch(url).then(function(r) { return r.json(); }).then(function(data) {
         if (!data.features || !data.features.length) { _setGeoFields(); _fireGeoReady(); return; }
-        var city = '', stateCode = '';
+        var stateCode = '';
         for (var i = 0; i < data.features.length; i++) {
           var f = data.features[i];
-          if (f.place_type && f.place_type[0] === 'place' && !city) {
-            city = f.text;
-          }
           if (f.place_type && f.place_type[0] === 'region' && !stateCode) {
             stateCode = f.properties && f.properties.short_code
               ? f.properties.short_code.replace('US-', '') : '';
           }
         }
         if (stateCode) _detectedGeoState = stateCode;
-        if (city) _detectedGeoCity = city;
         _setGeoFields();
         _fireGeoReady();
       }).catch(function() { _setGeoFields(); _fireGeoReady(); });
     }, function() { _fireGeoReady(); }, { timeout: 5000 });
   }
   initGeolocation();
-  setTimeout(function() { _fireGeoReady(); }, 3000);
+  setTimeout(function() { _setGeoFields(); _fireGeoReady(); }, 3000);
 </script>

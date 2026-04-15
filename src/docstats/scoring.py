@@ -11,6 +11,7 @@ from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
 
 from docstats.models import NPIResult
+from docstats.zip_coords import haversine_miles, zip_to_coords
 
 if TYPE_CHECKING:
     from docstats.enrichment import EnrichmentData
@@ -29,9 +30,8 @@ class SearchQuery:
     state: str | None = None
     postal_code: str | None = None
     geo_state: str | None = None  # browser-detected user state for proximity boost
-    geo_city: str | None = None   # browser-detected user city for proximity boost
-    geo_lat: float | None = None  # browser-detected latitude
-    geo_lon: float | None = None  # browser-detected longitude
+    geo_lat: float | None = None  # browser-detected latitude (rounded to ~1km)
+    geo_lon: float | None = None  # browser-detected longitude (rounded to ~1km)
 
 
 def score_result(
@@ -114,8 +114,6 @@ def score_result(
     if query.geo_lat is not None and query.geo_lon is not None and not query.state and not query.postal_code:
         addr = result.location_address
         if addr and addr.postal_code:
-            from docstats.zip_coords import haversine_miles, zip_to_coords
-
             provider_coords = zip_to_coords(addr.postal_code)
             if provider_coords:
                 dist = haversine_miles(query.geo_lat, query.geo_lon, *provider_coords)

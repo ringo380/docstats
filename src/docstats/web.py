@@ -525,7 +525,6 @@ async def search(
     zip: str = Query("", alias="zip"),
     type: str = Query("", alias="type"),
     geo_state: str = Query("", alias="geo_state"),
-    geo_city: str = Query("", alias="geo_city"),
     geo_lat: str = Query("", alias="geo_lat"),
     geo_lon: str = Query("", alias="geo_lon"),
     limit: int = Query(10, alias="limit"),
@@ -545,13 +544,12 @@ async def search(
     state = state.strip()
     zip = zip.strip()
     geo_state = geo_state.strip()
-    geo_city = geo_city.strip()
     parsed_geo_lat: float | None = None
     parsed_geo_lon: float | None = None
     try:
         if geo_lat and geo_lon:
-            parsed_geo_lat = float(geo_lat)
-            parsed_geo_lon = float(geo_lon)
+            parsed_geo_lat = round(float(geo_lat), 2)
+            parsed_geo_lon = round(float(geo_lon), 2)
     except ValueError:
         pass
 
@@ -622,7 +620,7 @@ async def search(
                     fallback_kwargs = dict(interp)
                     if specialty:
                         fallback_kwargs["taxonomy_description"] = specialty
-                    result = await client.async_search(**fallback_kwargs, limit=limit)
+                    result = await client.async_search(**fallback_kwargs, limit=geo_limit)
                 if result.result_count > 0:
                     response = result
                     parts = []
@@ -661,6 +659,8 @@ async def search(
             return _error(
                 "Cannot search by individual name and organization name at the same time."
             )
+        struct_has_location = city or state or zip
+        struct_geo_limit = limit * 5 if (parsed_geo_lat is not None and not struct_has_location) else limit
         try:
             response = await client.async_search(
                 last_name=name or None,
@@ -671,7 +671,7 @@ async def search(
                 state=state or None,
                 postal_code=zip or None,
                 enumeration_type=type or None,
-                limit=limit,
+                limit=struct_geo_limit,
             )
         except NPPESError as e:
             return _error(str(e))
@@ -696,7 +696,6 @@ async def search(
             organization_name=interp.get("organization_name") or None,
             specialty=interp.get("taxonomy_description") or specialty or None,
             geo_state=geo_state or None,
-            geo_city=geo_city or None,
             geo_lat=parsed_geo_lat,
             geo_lon=parsed_geo_lon,
         )
@@ -711,7 +710,6 @@ async def search(
             state=state or None,
             postal_code=zip or None,
             geo_state=geo_state or None,
-            geo_city=geo_city or None,
             geo_lat=parsed_geo_lat,
             geo_lon=parsed_geo_lon,
         )
