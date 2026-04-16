@@ -99,8 +99,11 @@ def request_with_retry(
     computed delay.
 
     Returns the successful response (status 200).
-    Raises *error_class* on non-retryable failure or exhausted retries; the original
-    exception is attached as ``__cause__`` so callers can inspect it.
+    Raises *error_class* on non-retryable failure or exhausted retries. When exhaustion
+    is caused by a transport error (timeout / connect / read), the underlying exception
+    is attached as ``__cause__``; when exhaustion is caused by repeated retryable status
+    codes, ``__cause__`` is ``None`` because the last operation was a successful HTTP
+    round-trip with a non-200 status.
     """
     if max_retries is None:
         max_retries = get_default_max_retries()

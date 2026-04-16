@@ -1,5 +1,7 @@
 """Tests for the NPPES API client."""
 
+import asyncio
+
 import pytest
 import httpx
 from unittest.mock import MagicMock, patch
@@ -217,3 +219,61 @@ class TestRetry:
                 client_no_cache.search(last_name="Smith")
             delays = [call.args[0] for call in mock_sleep.call_args_list]
             assert delays == [1.0, 2.0, 4.0]
+
+
+class TestAsyncLookupMany:
+    def _single_result_response(self, npi: str) -> MagicMock:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.json.return_value = {
+            "result_count": 1,
+            "results": [
+                {
+                    "enumeration_type": "NPI-1",
+                    "number": npi,
+                    "basic": {"first_name": "Test", "last_name": "Provider"},
+                    "addresses": [],
+                    "taxonomies": [],
+                    "identifiers": [],
+                    "endpoints": [],
+                    "other_names": [],
+                }
+            ],
+        }
+        return resp
+
+    def test_returns_results_in_input_order(self, client_no_cache):
+        npis = ["1111111111", "2222222222", "3333333333"]
+        responses = {npi: self._single_result_response(npi) for npi in npis}
+
+        def _by_npi(method, url, **kwargs):
+            return responses[kwargs["params"]["number"]]
+
+        with patch.object(client_no_cache._http, "request", side_effect=_by_npi):
+            results = asyncio.run(client_no_cache.async_lookup_many(npis))
+
+        assert [r.number for r in results if r] == npis
+
+    def test_respects_explicit_limiter(self, client_no_cache):
+        npis = [f"{i:010d}" for i in range(6)]
+        responses = {npi: self._single_result_response(npi) for npi in npis}
+        sem = asyncio.Semaphore(2)
+
+        in_flight = 0
+        peak = 0
+
+        def _by_npi(method, url, **kwargs):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            try:
+                return responses[kwargs["params"]["number"]]
+            finally:
+                in_flight -= 1
+
+        with patch.object(client_no_cache._http, "request", side_effect=_by_npi):
+            results = asyncio.run(client_no_cache.async_lookup_many(npis, limiter=sem))
+
+        assert len(results) == len(npis)
+        # Executor may serialize work further, but the semaphore must never be exceeded.
+        assert peak <= 2

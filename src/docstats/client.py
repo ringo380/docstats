@@ -10,6 +10,7 @@ import re
 import httpx
 
 from docstats.cache import ResponseCache
+from docstats.concurrency import async_limiter
 from docstats.http_retry import get_default_timeout, request_with_retry
 from docstats.models import NPIResponse, NPIResult
 
@@ -149,6 +150,26 @@ class NPPESClient:
             None,
             functools.partial(self.lookup, npi, **kwargs),
         )
+
+    async def async_lookup_many(
+        self,
+        npis: list[str],
+        *,
+        limiter: asyncio.Semaphore | None = None,
+        use_cache: bool = True,
+    ) -> list[NPIResult | None]:
+        """Concurrently look up many NPIs, capped by ``limiter`` (or the env default).
+
+        Results are returned in input order. Entries are ``None`` when an NPI is not
+        found; ``NPPESError`` is re-raised from any worker that fails.
+        """
+        sem = limiter if limiter is not None else async_limiter()
+
+        async def _one(npi: str) -> NPIResult | None:
+            async with sem:
+                return await self.async_lookup(npi, use_cache=use_cache)
+
+        return await asyncio.gather(*(_one(npi) for npi in npis))
 
     def _execute(self, params: dict[str, str], *, use_cache: bool = True) -> NPIResponse:
         """Execute an API request with optional caching and automatic retry.
