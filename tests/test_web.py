@@ -156,6 +156,130 @@ def test_appt_address_delete_clears_suite(client):
     assert provider.appt_suite is None
 
 
+def test_appt_address_delete_clears_phone_fax(client):
+    """DELETE /provider/{npi}/appt-address also clears phone and fax."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117", user_id)
+    storage.set_appt_contact("1234567890", "555-1234", "555-5678", user_id)
+    resp = test_client.delete("/provider/1234567890/appt-address")
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_phone is None
+    assert provider.appt_fax is None
+
+
+def test_televisit_toggle_on(client):
+    """PUT /provider/{npi}/televisit with on sets the flag."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    resp = test_client.put(
+        "/provider/1234567890/televisit",
+        data={"is_televisit": "on"},
+    )
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.is_televisit is True
+
+
+def test_televisit_toggle_off(client):
+    """PUT /provider/{npi}/televisit with off clears the flag."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_televisit("1234567890", True, user_id)
+    resp = test_client.put(
+        "/provider/1234567890/televisit",
+        data={"is_televisit": "off"},
+    )
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.is_televisit is False
+
+
+def test_televisit_on_clears_address(client):
+    """Toggling televisit ON must clear the appointment address."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117", user_id)
+    storage.set_appt_contact("1234567890", "555-1234", "555-5678", user_id)
+    resp = test_client.put(
+        "/provider/1234567890/televisit",
+        data={"is_televisit": "on"},
+    )
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.is_televisit is True
+    assert provider.appt_address is None
+    assert provider.appt_phone is None
+    assert provider.appt_fax is None
+
+
+def test_appt_contact_put(client):
+    """PUT /provider/{npi}/appt-contact saves phone and fax."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    resp = test_client.put(
+        "/provider/1234567890/appt-contact",
+        data={"phone": "(555) 123-4567", "fax": "(555) 987-6543"},
+    )
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_phone == "(555) 123-4567"
+    assert provider.appt_fax == "(555) 987-6543"
+
+
+def test_appt_contact_put_empty_clears(client):
+    """PUT with empty phone/fax clears them."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_contact("1234567890", "555-1234", "555-5678", user_id)
+    resp = test_client.put(
+        "/provider/1234567890/appt-contact",
+        data={"phone": "", "fax": ""},
+    )
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_phone is None
+    assert provider.appt_fax is None
+
+
+def test_appt_address_post_with_phone(client):
+    """POST /provider/{npi}/appt-address with phone auto-populates appt_phone."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    resp = test_client.post(
+        "/provider/1234567890/appt-address",
+        data={"address": "UTMB Galveston", "phone": "(409) 772-1234"},
+    )
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_address == "UTMB Galveston"
+    assert provider.appt_phone == "(409) 772-1234"
+
+
+def test_appt_address_post_with_phone_preserves_fax(client):
+    """POI phone auto-fill must not overwrite an existing fax."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_contact("1234567890", None, "555-FAX", user_id)
+    resp = test_client.post(
+        "/provider/1234567890/appt-address",
+        data={"address": "New Clinic", "phone": "555-NEW"},
+    )
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_phone == "555-NEW"
+    assert provider.appt_fax == "555-FAX"
+
+
 def test_saved_page_renders_search_input(client):
     """Saved page includes the client-side search input when providers exist."""
     test_client, storage, mock_client, user_id = client

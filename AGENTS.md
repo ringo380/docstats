@@ -35,7 +35,9 @@
 - User profile fields: `first_name`, `last_name`, `middle_name`, `date_of_birth` on users table; `update_user_profile()` method on both storage backends; also sets `display_name` to "First Last" during onboarding
 - Terms acceptance: `terms_accepted_at` (UTC), `terms_version`, `terms_ip` (proxy-aware via X-Forwarded-For), `terms_user_agent` stored per-user; `record_terms_acceptance()` method; `terms_accepted_at` is the onboarding completion gate (replaces old `pcp_npi` gate)
 - Profile dropdown: navbar shows user initials avatar (inline SVG) + name + chevron; dropdown with Profile/Sign Out; click-outside closes; CSS class `.profile-menu.open` toggles visibility
-- `appt_address` stored per `SavedProvider` in SQLite; rendered as an editable chip in the saved list; appended to referral export
+- Appointment location: `appt_address` (Mapbox geocoded or manual) + `appt_suite` (free-text suite/room/office) + `appt_phone` + `appt_fax` (location-specific contact info) stored on `saved_providers`; `_appt_address.html` partial handles all; suite/phone/fax inputs appear after address is set; `DELETE /provider/{npi}/appt-address` clears all four; `PUT /provider/{npi}/appt-suite` edits suite independently; `PUT /provider/{npi}/appt-contact` edits phone+fax together
+- Televisit: `is_televisit` boolean on `saved_providers`; `PUT /provider/{npi}/televisit` toggles the flag; when enabled, hides address section and shows a "Televisit" chip; toggling ON clears address/suite/phone/fax
+- Appointment address Mapbox search includes `types=poi,address,place,postcode` — POI enables facility/business name lookup; phone from `f.properties.tel` auto-populates `appt_phone` on POI selection
 - Favicon is a data-URI SVG in `base.html` `<head>`; static files (CSS, JS) served from `src/docstats/static/` via FastAPI `StaticFiles` mount at `/static`
 - CSS in `static/style.css` (external, browser-cacheable); JS in `static/app.js` (htmx error handler, profile menu, note editor); `base.html` is layout + nav only (~69 lines)
 - `base.html` provides `{% block head_extra %}` for page-specific CSS/JS in `<head>`
@@ -88,6 +90,10 @@
 - `saved_providers` migration: `_migrate_saved_providers()` checks `PRAGMA table_info` for `user_id`; if absent, drops and recreates with composite PK — existing data is lost (acceptable on Railway due to ephemeral filesystem)
 - All full-page routes must pass `user=current_user` in template context for `base.html` nav to render correctly
 - Test auth override: `app.dependency_overrides[get_current_user] = lambda: fake_user_dict` — `require_user` inherits this automatically since it depends on `get_current_user`
+- Adding a column to `saved_providers` requires updates in: (1) `storage_base.py` abstract method (if new public API), (2) `storage.py` migration + `save_provider` INSERT + `_row_to_provider`, (3) `pg_storage.py` `_row_to_provider` + `save_provider` upsert dict + preserve-on-conflict fetch, (4) `models.py` `SavedProvider` field + `export_fields()`, (5) `routes/saved.py` `_CSV_FIELDNAMES` + all relevant route template contexts
+- `saved.html` includes `_appt_address.html` via `{% set npi %}{% set appt_address %}{% set appt_suite %}{% set appt_phone %}{% set appt_fax %}{% set is_televisit %}{% include %}` — any new context variable for that partial must be added to the `{% set %}` chain AND to all `render("_appt_address.html", {...})` calls in `routes/providers.py`
+- `pg_storage.py` has no auto-migration — new columns must be added to Supabase manually via Management API SQL endpoint before deploying code that references them
+- Any new keys added to `SavedProvider.export_fields()` must also be added to `_CSV_FIELDNAMES` in `routes/saved.py` — `DictWriter` raises `ValueError` on extra keys by default
 - `passlib[bcrypt]` is incompatible with `bcrypt>=4.0.0` — pin `bcrypt>=3.2.0,<4.0.0` in both `requirements.txt` and `pyproject.toml` web extras; bcrypt 4.x raises `ValueError` on passwords >72 bytes instead of silently truncating
 - `python-multipart` must be explicit in `requirements.txt` — FastAPI requires it for any form POST route; Railpack won't install it as a transitive dep
 - CSS input styles in `base.html` must enumerate `input[type="email"]` and `input[type="password"]` explicitly — they don't inherit from `input[type="text"]` rules

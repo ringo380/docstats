@@ -20,7 +20,8 @@ router = APIRouter(tags=["saved"])
 
 _CSV_FIELDNAMES = [
     "NPI", "Name", "Entity Type", "Specialty", "Phone", "Fax",
-    "Address", "City", "State", "ZIP", "Notes", "Appointment Address", "Appointment Suite", "Saved At",
+    "Address", "City", "State", "ZIP", "Notes", "Appointment Address", "Appointment Suite",
+    "Appointment Phone", "Appointment Fax", "Televisit", "Saved At",
     "OIG Excluded", "Medicare Enrolled", "Industry Payments ($)",
 ]
 

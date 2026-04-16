@@ -15,12 +15,34 @@ from docstats.storage_base import StorageBase
 router = APIRouter(prefix="/provider", tags=["providers"])
 
 
-def _render_appt(request: Request, npi: str, appt_address: str | None, appt_suite: str | None):
+def _render_appt(
+    request: Request,
+    npi: str,
+    appt_address: str | None,
+    appt_suite: str | None,
+    appt_phone: str | None = None,
+    appt_fax: str | None = None,
+    is_televisit: bool = False,
+):
     return render("_appt_address.html", {
         "request": request, "npi": npi,
         "appt_address": appt_address, "appt_suite": appt_suite,
+        "appt_phone": appt_phone, "appt_fax": appt_fax,
+        "is_televisit": is_televisit,
         "mapbox_token": MAPBOX_TOKEN,
     })
+
+
+def _render_appt_from_provider(request: Request, npi: str, provider):
+    """Render _appt_address.html from a SavedProvider (or None)."""
+    return _render_appt(
+        request, npi,
+        provider.appt_address if provider else None,
+        provider.appt_suite if provider else None,
+        appt_phone=provider.appt_phone if provider else None,
+        appt_fax=provider.appt_fax if provider else None,
+        is_televisit=provider.is_televisit if provider else False,
+    )
 
 
 @router.get("/{npi}/export/text")
@@ -36,6 +58,9 @@ async def export_text(
         result = saved.to_npi_result()
         appt_address = saved.appt_address
         appt_suite = saved.appt_suite
+        appt_phone = saved.appt_phone
+        appt_fax = saved.appt_fax
+        is_televisit = saved.is_televisit
     else:
         try:
             result = await client.async_lookup(npi)
@@ -45,8 +70,14 @@ async def export_text(
             return PlainTextResponse(content=f"No provider found for NPI {npi}.", status_code=404)
         appt_address = None
         appt_suite = None
+        appt_phone = None
+        appt_fax = None
+        is_televisit = False
 
-    text = referral_export(result, appt_address=appt_address, appt_suite=appt_suite)
+    text = referral_export(
+        result, appt_address=appt_address, appt_suite=appt_suite,
+        appt_phone=appt_phone, appt_fax=appt_fax, is_televisit=is_televisit,
+    )
     return PlainTextResponse(
         content=text,
         headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
@@ -75,7 +106,13 @@ async def export_view(
 
     appt_address = saved.appt_address if saved else None
     appt_suite = saved.appt_suite if saved else None
-    export_text = referral_export(result, appt_address=appt_address, appt_suite=appt_suite)
+    appt_phone = saved.appt_phone if saved else None
+    appt_fax = saved.appt_fax if saved else None
+    is_televisit = saved.is_televisit if saved else False
+    export_text = referral_export(
+        result, appt_address=appt_address, appt_suite=appt_suite,
+        appt_phone=appt_phone, appt_fax=appt_fax, is_televisit=is_televisit,
+    )
 
     return render("export.html", {
         "request": request,
@@ -188,6 +225,7 @@ async def set_appt_address(
     request: Request,
     npi: str,
     address: str = Form(""),
+    phone: str = Form(""),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -199,8 +237,12 @@ async def set_appt_address(
             return HTMLResponse(
                 '<span class="appt-error">Provider must be saved before adding an appointment address.</span>'
             )
+        phone = phone.strip()
+        if phone:
+            existing = storage.get_provider(npi, user_id)
+            storage.set_appt_contact(npi, phone, existing.appt_fax if existing else None, user_id)
     provider = storage.get_provider(npi, user_id)
-    return _render_appt(request, npi, provider.appt_address if provider else None, provider.appt_suite if provider else None)
+    return _render_appt_from_provider(request, npi, provider)
 
 
 @router.put("/{npi}/appt-suite", response_class=HTMLResponse)
@@ -215,7 +257,7 @@ async def update_appt_suite(
     suite = suite.strip()
     storage.set_appt_suite(npi, suite or None, user_id)
     provider = storage.get_provider(npi, user_id)
-    return _render_appt(request, npi, provider.appt_address if provider else None, provider.appt_suite if provider else None)
+    return _render_appt_from_provider(request, npi, provider)
 
 
 @router.delete("/{npi}/appt-address", response_class=HTMLResponse)
@@ -227,7 +269,45 @@ async def clear_appt_address(
 ):
     user_id = current_user["id"]
     storage.clear_appt_address(npi, user_id)
-    return _render_appt(request, npi, None, None)
+    provider = storage.get_provider(npi, user_id)
+    return _render_appt_from_provider(request, npi, provider)
+
+
+@router.put("/{npi}/televisit", response_class=HTMLResponse)
+async def toggle_televisit(
+    request: Request,
+    npi: str,
+    is_televisit: str = Form("off"),
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    user_id = current_user["id"]
+    turning_on = is_televisit == "on"
+    storage.set_televisit(npi, turning_on, user_id)
+    if turning_on:
+        storage.clear_appt_address(npi, user_id)
+    provider = storage.get_provider(npi, user_id)
+    return _render_appt_from_provider(request, npi, provider)
+
+
+@router.put("/{npi}/appt-contact", response_class=HTMLResponse)
+async def update_appt_contact(
+    request: Request,
+    npi: str,
+    phone: str = Form(""),
+    fax: str = Form(""),
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    user_id = current_user["id"]
+    storage.set_appt_contact(
+        npi,
+        phone.strip() or None,
+        fax.strip() or None,
+        user_id,
+    )
+    provider = storage.get_provider(npi, user_id)
+    return _render_appt_from_provider(request, npi, provider)
 
 
 @router.put("/{npi}/notes", response_class=HTMLResponse)

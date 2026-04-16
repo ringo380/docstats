@@ -195,6 +195,94 @@ def test_save_provider_preserves_appt_suite(storage: Storage, user_id: int):
     assert provider.appt_suite == "Rm 100-B"
 
 
+# --- televisit tests ---
+
+
+def test_is_televisit_column_exists(storage: Storage):
+    """is_televisit column should exist after init."""
+    cols = [r[1] for r in storage._conn.execute("PRAGMA table_info(saved_providers)")]
+    assert "is_televisit" in cols
+
+
+def test_set_televisit(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_televisit("1234567890", True, user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.is_televisit is True
+
+
+def test_set_televisit_off(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_televisit("1234567890", True, user_id)
+    storage.set_televisit("1234567890", False, user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.is_televisit is False
+
+
+def test_save_provider_preserves_televisit(storage: Storage, user_id: int):
+    """Re-saving a provider must not reset its is_televisit flag."""
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_televisit("1234567890", True, user_id)
+    storage.save_provider(result, user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.is_televisit is True
+
+
+# --- appt_phone / appt_fax tests ---
+
+
+def test_appt_phone_fax_columns_exist(storage: Storage):
+    """appt_phone and appt_fax columns should exist after init."""
+    cols = [r[1] for r in storage._conn.execute("PRAGMA table_info(saved_providers)")]
+    assert "appt_phone" in cols
+    assert "appt_fax" in cols
+
+
+def test_set_appt_contact(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_contact("1234567890", "(555) 123-4567", "(555) 987-6543", user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_phone == "(555) 123-4567"
+    assert provider.appt_fax == "(555) 987-6543"
+
+
+def test_set_appt_contact_strips_whitespace(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_contact("1234567890", "  555-1234  ", "  555-5678  ", user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_phone == "555-1234"
+    assert provider.appt_fax == "555-5678"
+
+
+def test_clear_appt_address_clears_phone_fax(storage: Storage, user_id: int):
+    """Clearing the address must also clear phone and fax."""
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_address("1234567890", "123 Main St", user_id)
+    storage.set_appt_contact("1234567890", "555-1234", "555-5678", user_id)
+    storage.clear_appt_address("1234567890", user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_address is None
+    assert provider.appt_phone is None
+    assert provider.appt_fax is None
+
+
+def test_save_provider_preserves_appt_contact(storage: Storage, user_id: int):
+    """Re-saving a provider must not reset its appt_phone/appt_fax."""
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_appt_contact("1234567890", "555-1234", "555-5678", user_id)
+    storage.save_provider(result, user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_phone == "555-1234"
+    assert provider.appt_fax == "555-5678"
+
+
 # --- search_providers tests ---
 
 
