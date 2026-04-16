@@ -15,8 +15,46 @@ from docstats.storage_base import StorageBase
 router = APIRouter(prefix="/provider", tags=["providers"])
 
 
-@router.get("/{npi}", response_class=HTMLResponse)
-async def provider_detail(
+def _render_appt(request: Request, npi: str, appt_address: str | None, appt_suite: str | None):
+    return render("_appt_address.html", {
+        "request": request, "npi": npi,
+        "appt_address": appt_address, "appt_suite": appt_suite,
+        "mapbox_token": MAPBOX_TOKEN,
+    })
+
+
+@router.get("/{npi}/export/text")
+async def export_text(
+    npi: str,
+    current_user: dict | None = Depends(get_current_user),
+    storage: StorageBase = Depends(get_storage),
+    client: NPPESClient = Depends(get_client),
+):
+    user_id = current_user["id"] if current_user else None
+    saved = storage.get_provider(npi, user_id)
+    if saved:
+        result = saved.to_npi_result()
+        appt_address = saved.appt_address
+        appt_suite = saved.appt_suite
+    else:
+        try:
+            result = await client.async_lookup(npi)
+        except NPPESError as e:
+            return PlainTextResponse(content=f"Error: {e}", status_code=500)
+        if result is None:
+            return PlainTextResponse(content=f"No provider found for NPI {npi}.", status_code=404)
+        appt_address = None
+        appt_suite = None
+
+    text = referral_export(result, appt_address=appt_address, appt_suite=appt_suite)
+    return PlainTextResponse(
+        content=text,
+        headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
+    )
+
+
+@router.get("/{npi}/export", response_class=HTMLResponse)
+async def export_view(
     request: Request,
     npi: str,
     current_user: dict | None = Depends(get_current_user),
@@ -25,39 +63,27 @@ async def provider_detail(
 ):
     user_id = current_user["id"] if current_user else None
     saved = storage.get_provider(npi, user_id)
-    saved_notes = None
-
     if saved:
         result = saved.to_npi_result()
-        saved_notes = saved.notes
     else:
         try:
             result = await client.async_lookup(npi)
         except NPPESError as e:
-            return render("detail.html", {
-                "request": request,
-                "active_page": "search",
-                "result": None,
-                "error": str(e),
-                "is_saved": False,
-                "saved_notes": None,
-                "saved_count": saved_count(storage, user_id),
-                "user": current_user,
-            })
+            return HTMLResponse(content=f"<p>Error: {e}</p>", status_code=500)
         if result is None:
-            return HTMLResponse(
-                content=f"<main class='container'><p>No provider found for NPI {npi}.</p>"
-                        f"<a href='/'>Back to Search</a></main>",
-                status_code=404,
-            )
+            return HTMLResponse(content=f"<p>No provider found for NPI {npi}.</p>", status_code=404)
 
-    return render("detail.html", {
+    appt_address = saved.appt_address if saved else None
+    appt_suite = saved.appt_suite if saved else None
+    export_text = referral_export(result, appt_address=appt_address, appt_suite=appt_suite)
+
+    return render("export.html", {
         "request": request,
-        "active_page": "search",
+        "active_page": "saved",
         "result": result,
-        "is_saved": saved is not None,
-        "npi": npi,
-        "saved_notes": saved_notes,
+        "export_text": export_text,
+        "appt_address": appt_address,
+        "appt_suite": appt_suite,
         "saved_count": saved_count(storage, user_id),
         "user": current_user,
     })
@@ -174,13 +200,7 @@ async def set_appt_address(
                 '<span class="appt-error">Provider must be saved before adding an appointment address.</span>'
             )
     provider = storage.get_provider(npi, user_id)
-    return render("_appt_address.html", {
-        "request": request,
-        "npi": npi,
-        "appt_address": provider.appt_address if provider else None,
-        "appt_suite": provider.appt_suite if provider else None,
-        "mapbox_token": MAPBOX_TOKEN,
-    })
+    return _render_appt(request, npi, provider.appt_address if provider else None, provider.appt_suite if provider else None)
 
 
 @router.put("/{npi}/appt-suite", response_class=HTMLResponse)
@@ -195,13 +215,7 @@ async def update_appt_suite(
     suite = suite.strip()
     storage.set_appt_suite(npi, suite or None, user_id)
     provider = storage.get_provider(npi, user_id)
-    return render("_appt_address.html", {
-        "request": request,
-        "npi": npi,
-        "appt_address": provider.appt_address if provider else None,
-        "appt_suite": provider.appt_suite if provider else None,
-        "mapbox_token": MAPBOX_TOKEN,
-    })
+    return _render_appt(request, npi, provider.appt_address if provider else None, provider.appt_suite if provider else None)
 
 
 @router.delete("/{npi}/appt-address", response_class=HTMLResponse)
@@ -213,13 +227,7 @@ async def clear_appt_address(
 ):
     user_id = current_user["id"]
     storage.clear_appt_address(npi, user_id)
-    return render("_appt_address.html", {
-        "request": request,
-        "npi": npi,
-        "appt_address": None,
-        "appt_suite": None,
-        "mapbox_token": MAPBOX_TOKEN,
-    })
+    return _render_appt(request, npi, None, None)
 
 
 @router.put("/{npi}/notes", response_class=HTMLResponse)
@@ -241,8 +249,8 @@ async def update_notes(
     })
 
 
-@router.get("/{npi}/export", response_class=HTMLResponse)
-async def export_view(
+@router.get("/{npi}", response_class=HTMLResponse)
+async def provider_detail(
     request: Request,
     npi: str,
     current_user: dict | None = Depends(get_current_user),
@@ -251,57 +259,39 @@ async def export_view(
 ):
     user_id = current_user["id"] if current_user else None
     saved = storage.get_provider(npi, user_id)
+    saved_notes = None
+
     if saved:
         result = saved.to_npi_result()
+        saved_notes = saved.notes
     else:
         try:
             result = await client.async_lookup(npi)
         except NPPESError as e:
-            return HTMLResponse(content=f"<p>Error: {e}</p>", status_code=500)
+            return render("detail.html", {
+                "request": request,
+                "active_page": "search",
+                "result": None,
+                "error": str(e),
+                "is_saved": False,
+                "saved_notes": None,
+                "saved_count": saved_count(storage, user_id),
+                "user": current_user,
+            })
         if result is None:
-            return HTMLResponse(content=f"<p>No provider found for NPI {npi}.</p>", status_code=404)
+            return HTMLResponse(
+                content=f"<main class='container'><p>No provider found for NPI {npi}.</p>"
+                        f"<a href='/'>Back to Search</a></main>",
+                status_code=404,
+            )
 
-    appt_address = saved.appt_address if saved else None
-    appt_suite = saved.appt_suite if saved else None
-    export_text = referral_export(result, appt_address=appt_address, appt_suite=appt_suite)
-
-    return render("export.html", {
+    return render("detail.html", {
         "request": request,
-        "active_page": "saved",
+        "active_page": "search",
         "result": result,
-        "export_text": export_text,
-        "appt_address": appt_address,
-        "appt_suite": appt_suite,
+        "is_saved": saved is not None,
+        "npi": npi,
+        "saved_notes": saved_notes,
         "saved_count": saved_count(storage, user_id),
         "user": current_user,
     })
-
-
-@router.get("/{npi}/export/text")
-async def export_text(
-    npi: str,
-    current_user: dict | None = Depends(get_current_user),
-    storage: StorageBase = Depends(get_storage),
-    client: NPPESClient = Depends(get_client),
-):
-    user_id = current_user["id"] if current_user else None
-    saved = storage.get_provider(npi, user_id)
-    if saved:
-        result = saved.to_npi_result()
-        appt_address = saved.appt_address
-        appt_suite = saved.appt_suite
-    else:
-        try:
-            result = await client.async_lookup(npi)
-        except NPPESError as e:
-            return PlainTextResponse(content=f"Error: {e}", status_code=500)
-        if result is None:
-            return PlainTextResponse(content=f"No provider found for NPI {npi}.", status_code=404)
-        appt_address = None
-        appt_suite = None
-
-    text = referral_export(result, appt_address=appt_address, appt_suite=appt_suite)
-    return PlainTextResponse(
-        content=text,
-        headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
-    )

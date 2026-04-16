@@ -9,7 +9,6 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_BACKOFF_BASE = 2.0
 DEFAULT_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
