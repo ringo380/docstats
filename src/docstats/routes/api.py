@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from docstats.client import NPPESClient, NPPESError
+from docstats.models import BasicIndividual, BasicOrganization
 from docstats.normalize import format_name
 from docstats.routes._common import get_client, render
 from docstats.storage import get_storage
@@ -50,10 +51,10 @@ async def suggest_names(
     q_lower = q.lower()
     for r in response.results:
         basic = r.parsed_basic()
-        if field == "organization_name" and r.is_organization:
+        if field == "organization_name" and isinstance(basic, BasicOrganization):
             value = format_name(basic.organization_name)
             extra = {}
-        elif field in ("last_name", "first_name") and r.is_individual:
+        elif field in ("last_name", "first_name") and isinstance(basic, BasicIndividual):
             value = format_name(getattr(basic, field))
             extra = {
                 "name": format_name(basic.last_name),

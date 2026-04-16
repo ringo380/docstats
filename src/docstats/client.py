@@ -252,4 +252,4 @@ class NPPESClient:
                     return max(float(retry_after), 0.5)
                 except (ValueError, TypeError):
                     pass
-        return RETRY_BACKOFF_BASE * (2**attempt)
+        return float(RETRY_BACKOFF_BASE * (2**attempt))

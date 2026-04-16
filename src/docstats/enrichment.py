@@ -14,7 +14,7 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -220,7 +220,7 @@ async def _fetch_oig(npi: str, cache: EnrichmentCache) -> dict | None:
     # Check cache first (SQLite is fast, no executor needed)
     cached = cache.get("oig", npi)
     if cached is not None:
-        return json.loads(cached)
+        return cast("dict | None", json.loads(cached))
 
     def _sync_fetch() -> dict | None:
         from docstats.oig_client import OIGClient
@@ -243,7 +243,7 @@ async def _fetch_medicare(npi: str, cache: EnrichmentCache) -> dict | None:
     """Fetch Medicare enrollment and facility affiliation data from CMS."""
     cached = cache.get("medicare", npi)
     if cached is not None:
-        return json.loads(cached)
+        return cast("dict | None", json.loads(cached))
 
     def _sync_fetch() -> dict | None:
         from docstats.cms_client import CMSClient
@@ -270,7 +270,7 @@ async def _fetch_open_payments(npi: str, cache: EnrichmentCache) -> dict | None:
     """Fetch industry payment data from CMS Open Payments."""
     cached = cache.get("open_payments", npi)
     if cached is not None:
-        return json.loads(cached)
+        return cast("dict | None", json.loads(cached))
 
     def _sync_fetch() -> dict | None:
         from docstats.open_payments_client import OpenPaymentsClient

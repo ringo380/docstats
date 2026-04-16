@@ -263,7 +263,7 @@ class Storage(StorageBase):
                 (github_login, display_name, existing["id"]),
             )
             self._conn.commit()
-            return existing["id"]
+            return int(existing["id"])
         # Email may match an account created via email/password — link them
         if email:
             existing_email = self.get_user_by_email(email)
@@ -273,7 +273,7 @@ class Storage(StorageBase):
                     (github_id, github_login, existing_email["id"]),
                 )
                 self._conn.commit()
-                return existing_email["id"]
+                return int(existing_email["id"])
         # Completely new user
         safe_email = normalize_email(email) if email else f"github_{github_id}@noemail.invalid"
         cursor = self._conn.execute(

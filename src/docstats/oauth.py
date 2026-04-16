@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import urllib.parse
+from typing import cast
 
 import httpx
 
@@ -40,7 +41,7 @@ async def github_exchange_code(code: str, client: httpx.AsyncClient) -> dict:
         headers={"Accept": "application/json"},
     )
     response.raise_for_status()
-    return response.json()
+    return cast(dict, response.json())
 
 
 async def github_get_user(token: str, client: httpx.AsyncClient) -> dict:
@@ -53,7 +54,7 @@ async def github_get_user(token: str, client: httpx.AsyncClient) -> dict:
         },
     )
     response.raise_for_status()
-    return response.json()
+    return cast(dict, response.json())
 
 
 async def github_get_emails(token: str, client: httpx.AsyncClient) -> list[dict]:
@@ -66,15 +67,15 @@ async def github_get_emails(token: str, client: httpx.AsyncClient) -> list[dict]
         },
     )
     response.raise_for_status()
-    return response.json()
+    return cast(list, response.json())
 
 
 def primary_github_email(emails: list[dict]) -> str | None:
     """Extract the primary verified email from GitHub's email list."""
     for e in emails:
         if e.get("primary") and e.get("verified"):
-            return e["email"]
+            return cast(str, e["email"])
     for e in emails:
         if e.get("verified"):
-            return e["email"]
+            return cast(str, e["email"])
     return None

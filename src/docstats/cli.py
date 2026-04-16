@@ -50,7 +50,7 @@ def _get_cli_user_id() -> int:
     storage = _get_storage()
     user = storage.get_user_by_email(_CLI_USER_EMAIL)
     if user:
-        return user["id"]
+        return int(user["id"])
     return storage.create_user(_CLI_USER_EMAIL, "")
 
 
@@ -160,8 +160,7 @@ def show(
     storage = _get_storage()
     saved = storage.get_provider(npi, _get_cli_user_id())
     if saved:
-        result = saved.to_npi_result()
-        console.print(provider_detail(result))
+        console.print(provider_detail(saved.to_npi_result()))
         if saved.notes:
             console.print(f"\n[dim]Notes: {saved.notes}[/dim]")
         return
@@ -253,14 +252,15 @@ def export(
     else:
         client = _get_client(use_cache=not no_cache)
         try:
-            result = client.lookup(npi, use_cache=not no_cache)
+            fetched = client.lookup(npi, use_cache=not no_cache)
         except NPPESError as e:
             console.print(f"[red]Error: {e}[/red]")
             raise typer.Exit(1)
 
-        if result is None:
+        if fetched is None:
             console.print(f"[yellow]No provider found for NPI {npi}.[/yellow]")
             raise typer.Exit(1)
+        result = fetched
 
     if fmt == "json":
         print(result.model_dump_json(indent=2))

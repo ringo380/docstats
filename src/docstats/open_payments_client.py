@@ -13,6 +13,7 @@ Queries the most recent program year first, falls back to prior year.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import httpx
 
@@ -121,7 +122,7 @@ class OpenPaymentsClient:
             label="Open Payments API",
             error_class=OpenPaymentsError,
         )
-        return resp.json().get("results", [])
+        return cast("list[dict]", resp.json().get("results", []))
 
     def close(self) -> None:
         self._http.close()

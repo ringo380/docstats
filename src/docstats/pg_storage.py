@@ -81,7 +81,7 @@ class PostgresStorage(StorageBase):
             .insert({"email": normalize_email(email), "password_hash": password_hash})
             .execute()
         )
-        return result.data[0]["id"]
+        return int(result.data[0]["id"])
 
     def get_user_by_id(self, user_id: int) -> dict | None:
         result = self._t("users").select("*").eq("id", user_id).execute()
@@ -110,14 +110,14 @@ class PostgresStorage(StorageBase):
             if display_name is not None:
                 updates["display_name"] = display_name
             self._t("users").update(updates).eq("id", existing["id"]).execute()
-            return existing["id"]
+            return int(existing["id"])
         if email:
             existing_email = self.get_user_by_email(email)
             if existing_email:
                 self._t("users").update(
                     {"github_id": github_id, "github_login": github_login, "last_login_at": now}
                 ).eq("id", existing_email["id"]).execute()
-                return existing_email["id"]
+                return int(existing_email["id"])
         safe_email = normalize_email(email) if email else f"github_{github_id}@noemail.invalid"
         result = (
             self._t("users")
@@ -132,7 +132,7 @@ class PostgresStorage(StorageBase):
             )
             .execute()
         )
-        return result.data[0]["id"]
+        return int(result.data[0]["id"])
 
     def update_last_login(self, user_id: int) -> None:
         self._t("users").update({"last_login_at": _now_iso()}).eq("id", user_id).execute()

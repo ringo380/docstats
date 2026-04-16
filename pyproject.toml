@@ -34,6 +34,9 @@ python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 exclude = ["tests/"]
+# Pydantic v2 @computed_field stacked on @property is the documented pattern;
+# mypy's prop-decorator check does not understand it. See pydantic/pydantic#3644.
+disable_error_code = ["prop-decorator"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

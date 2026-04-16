@@ -15,6 +15,7 @@ API pattern (POST):
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import httpx
 
@@ -128,7 +129,7 @@ class CMSClient:
             label=f"CMS API ({dataset_id})",
             error_class=CMSError,
         )
-        return resp.json().get("results", [])
+        return cast("list[dict]", resp.json().get("results", []))
 
     async def async_lookup_clinician(self, npi: str) -> dict | None:
         """Async wrapper for lookup_clinician."""

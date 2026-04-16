@@ -71,11 +71,12 @@ async def export_text(
         is_televisit = saved.is_televisit
     else:
         try:
-            result = await client.async_lookup(npi)
+            fetched = await client.async_lookup(npi)
         except NPPESError as e:
             return PlainTextResponse(content=f"Error: {e}", status_code=500)
-        if result is None:
+        if fetched is None:
             return PlainTextResponse(content=f"No provider found for NPI {npi}.", status_code=404)
+        result = fetched
         appt_address = None
         appt_suite = None
         appt_phone = None
@@ -110,11 +111,12 @@ async def export_view(
         result = saved.to_npi_result()
     else:
         try:
-            result = await client.async_lookup(npi)
+            fetched = await client.async_lookup(npi)
         except NPPESError as e:
             return HTMLResponse(content=f"<p>Error: {e}</p>", status_code=500)
-        if result is None:
+        if fetched is None:
             return HTMLResponse(content=f"<p>No provider found for NPI {npi}.</p>", status_code=404)
+        result = fetched
 
     appt_address = saved.appt_address if saved else None
     appt_suite = saved.appt_suite if saved else None
@@ -380,7 +382,7 @@ async def provider_detail(
         saved_notes = saved.notes
     else:
         try:
-            result = await client.async_lookup(npi)
+            fetched = await client.async_lookup(npi)
         except NPPESError as e:
             return render(
                 "detail.html",
@@ -395,12 +397,13 @@ async def provider_detail(
                     "user": current_user,
                 },
             )
-        if result is None:
+        if fetched is None:
             return HTMLResponse(
                 content=f"<main class='container'><p>No provider found for NPI {npi}.</p>"
                 f"<a href='/'>Back to Search</a></main>",
                 status_code=404,
             )
+        result = fetched
 
     return render(
         "detail.html",
