@@ -1,13 +1,15 @@
-"""Shared service logic for CLI and web layers.
+"""Shared service logic used by the CLI.
 
-Encapsulates search, lookup, and save workflows so both interfaces
-use the same business logic (including scoring and history logging).
+Encapsulates search and save workflows with scoring and history logging.
+The web layer uses its own async paths in routes/ and does not call these
+functions directly (NPPESClient is synchronous — web routes must use
+async_search/async_lookup via run_in_executor).
 """
 
 from __future__ import annotations
 
 from docstats.client import NPPESClient
-from docstats.models import NPIResponse, NPIResult, SavedProvider
+from docstats.models import NPIResponse, SavedProvider
 from docstats.scoring import SearchQuery, rank_results
 from docstats.storage_base import StorageBase
 
@@ -27,13 +29,10 @@ def search_providers(
     limit: int = 10,
     use_cache: bool = True,
     user_id: int | None = None,
-    sync: bool = False,
 ) -> NPIResponse:
     """Search NPPES, rank results, and log to history.
 
-    Set sync=True for CLI (uses synchronous httpx); False for web (must
-    call async_search via run_in_executor separately).
-
+    Uses synchronous httpx — call from CLI only, not from async web routes.
     Returns the full NPIResponse with results re-ordered by score.
     """
     response = client.search(
@@ -75,16 +74,6 @@ def search_providers(
     storage.log_search(params, response.result_count, user_id=user_id)
 
     return response
-
-
-def lookup_provider(
-    client: NPPESClient,
-    npi: str,
-    *,
-    use_cache: bool = True,
-) -> NPIResult | None:
-    """Look up a single provider by NPI. Returns None if not found."""
-    return client.lookup(npi, use_cache=use_cache)
 
 
 def save_provider(

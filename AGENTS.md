@@ -68,7 +68,7 @@
 - Don't use `pip freeze` on this machine for generating `requirements.txt` — global env has 500+ unrelated packages
 - `httpx.TimeoutException` is a subclass of `RequestError` — catch it first or it's dead code
 - Templates must guard against `None` models — routes pass `result=None` on `NPPESError`
-- `scoring.py` result ranking is currently only integrated into the Web UI (`web.py`), not the CLI (`cli.py`)
+- `scoring.py` result ranking is integrated into both the Web UI (via `routes/search.py`) and the CLI (via `services.py` `search_providers`)
 - `querySelectorAll('input')` does not match `<select>` elements — when clearing a form section, reset selects explicitly (e.g. `el.value = ''`) in addition to iterating inputs
 - Use `clearSuggestions(id)` to clear suggestion lists in `index.html` — do not set `.innerHTML = ''` directly
 - To trigger `initAutocomplete`'s `activeIdx` reset for a non-htmx list, dispatch `new Event('htmx:afterSwap')` on the list element after populating it

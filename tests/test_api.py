@@ -26,14 +26,13 @@ def api_client(tmp_path: Path):
 
 def test_zip_lookup_found(api_client):
     tc, storage = api_client
-    # Ensure ZIP table is loaded
-    result = storage.lookup_zip("94110")
-    if result:
-        resp = tc.get("/api/zip/94110")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["city"] is not None
-        assert data["state"] is not None
+    # ZIP data is lazy-loaded from src/docstats/data/zipcodes.json on first lookup
+    assert storage.lookup_zip("94110") is not None, "ZIP data file missing — cannot test"
+    resp = tc.get("/api/zip/94110")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["city"] is not None
+    assert data["state"] is not None
 
 
 def test_zip_lookup_not_found(api_client):
