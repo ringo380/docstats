@@ -19,15 +19,13 @@ from typing import cast
 
 import httpx
 
-from docstats.http_retry import request_with_retry
+from docstats.http_retry import get_default_timeout, request_with_retry
 
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://data.cms.gov/provider-data/api/1/datastore/query"
 DATASET_CLINICIAN = "mj5m-pzi6"
 DATASET_FACILITY = "27ea-46a8"
-
-REQUEST_TIMEOUT = 30.0
 
 
 class CMSError(Exception):
@@ -41,7 +39,7 @@ class CMSClient:
     """
 
     def __init__(self) -> None:
-        self._http = httpx.Client(timeout=REQUEST_TIMEOUT)
+        self._http = httpx.Client(timeout=get_default_timeout())
 
     def lookup_clinician(self, npi: str) -> dict | None:
         """Fetch clinician enrollment data from the National Downloadable File.

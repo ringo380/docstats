@@ -17,7 +17,7 @@ from typing import cast
 
 import httpx
 
-from docstats.http_retry import request_with_retry
+from docstats.http_retry import get_default_timeout, request_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,6 @@ PROPERTIES = [
     "program_year",
 ]
 
-REQUEST_TIMEOUT = 30.0
 MAX_ROWS = 200  # Enough to aggregate; very few providers exceed this
 
 
@@ -55,7 +54,7 @@ class OpenPaymentsClient:
     """
 
     def __init__(self) -> None:
-        self._http = httpx.Client(timeout=REQUEST_TIMEOUT)
+        self._http = httpx.Client(timeout=get_default_timeout())
 
     def lookup_payments(self, npi: str) -> dict | None:
         """Fetch and aggregate payment data for a provider NPI.

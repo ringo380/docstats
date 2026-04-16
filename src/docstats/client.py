@@ -6,11 +6,12 @@ import asyncio
 import functools
 import logging
 import re
-import time
 
 import httpx
 
 from docstats.cache import ResponseCache
+from docstats.concurrency import async_limiter
+from docstats.http_retry import get_default_timeout, request_with_retry
 from docstats.models import NPIResponse, NPIResult
 
 logger = logging.getLogger(__name__)
@@ -19,14 +20,14 @@ API_BASE = "https://npiregistry.cms.hhs.gov/api/"
 API_VERSION = "2.1"
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 1200
-REQUEST_TIMEOUT = 30.0
-MAX_RETRIES = 3
-RETRY_BACKOFF_BASE = 1.0  # seconds — delays: 1s, 2s, 4s
-RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 class NPPESError(Exception):
     """Raised when the NPPES API returns an error."""
+
+
+class _NPPESRetryExhausted(Exception):
+    """Internal marker raised by request_with_retry; translated to NPPESError below."""
 
 
 # Translate cryptic API errors into user-friendly messages
@@ -55,7 +56,7 @@ class NPPESClient:
     """Synchronous client for the CMS NPPES NPI Registry API v2.1."""
 
     def __init__(self, cache: ResponseCache | None = None) -> None:
-        self._http = httpx.Client(timeout=REQUEST_TIMEOUT)
+        self._http = httpx.Client(timeout=get_default_timeout())
         self._cache = cache
 
     def close(self) -> None:
@@ -150,6 +151,26 @@ class NPPESClient:
             functools.partial(self.lookup, npi, **kwargs),
         )
 
+    async def async_lookup_many(
+        self,
+        npis: list[str],
+        *,
+        limiter: asyncio.Semaphore | None = None,
+        use_cache: bool = True,
+    ) -> list[NPIResult | None]:
+        """Concurrently look up many NPIs, capped by ``limiter`` (or the env default).
+
+        Results are returned in input order. Entries are ``None`` when an NPI is not
+        found; ``NPPESError`` is re-raised from any worker that fails.
+        """
+        sem = limiter if limiter is not None else async_limiter()
+
+        async def _one(npi: str) -> NPIResult | None:
+            async with sem:
+                return await self.async_lookup(npi, use_cache=use_cache)
+
+        return await asyncio.gather(*(_one(npi) for npi in npis))
+
     def _execute(self, params: dict[str, str], *, use_cache: bool = True) -> NPIResponse:
         """Execute an API request with optional caching and automatic retry.
 
@@ -166,90 +187,45 @@ class NPPESClient:
 
         logger.debug("Requesting NPPES API: %s", params)
 
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                resp = self._http.get(API_BASE, params=params)
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES:
-                    raise NPPESError(
-                        "The NPI Registry is temporarily unavailable. Please try again."
-                    ) from e
-                delay = self._retry_delay(attempt, e.response)
-                logger.warning(
-                    "NPPES API returned %s, retrying in %.1fs (retry %d/%d)",
-                    e.response.status_code,
-                    delay,
-                    attempt + 1,
-                    MAX_RETRIES,
-                )
-                time.sleep(delay)
-                continue
-            except httpx.TimeoutException as e:
-                if attempt == MAX_RETRIES:
-                    raise NPPESError(
-                        "The NPI Registry took too long to respond. Please try again."
-                    ) from e
-                delay = self._retry_delay(attempt)
-                logger.warning(
-                    "NPPES API timed out, retrying in %.1fs (retry %d/%d)",
-                    delay,
-                    attempt + 1,
-                    MAX_RETRIES,
-                )
-                time.sleep(delay)
-                continue
-            except httpx.RequestError as e:
-                if attempt == MAX_RETRIES:
-                    raise NPPESError(
-                        "Could not reach the NPI Registry. Check your internet connection and try again."
-                    ) from e
-                delay = self._retry_delay(attempt)
-                logger.warning(
-                    "NPPES API request failed, retrying in %.1fs (retry %d/%d)",
-                    delay,
-                    attempt + 1,
-                    MAX_RETRIES,
-                )
-                time.sleep(delay)
-                continue
+        try:
+            resp = request_with_retry(
+                self._http,
+                "GET",
+                API_BASE,
+                label="NPPES API",
+                error_class=_NPPESRetryExhausted,
+                params=params,
+            )
+        except _NPPESRetryExhausted as e:
+            raise NPPESError(_friendly_transport_error(e)) from e
 
-            # Success — process the response
-            data = resp.json()
+        data = resp.json()
 
-            # The API returns errors in an "Errors" field instead of HTTP status codes
-            if "Errors" in data:
-                errors = data["Errors"]
-                if isinstance(errors, list):
-                    msgs = [e.get("description", str(e)) for e in errors]
-                    raw = "; ".join(msgs)
-                else:
-                    raw = str(errors)
-                raise NPPESError(_translate_error(raw))
+        # The API returns errors in an "Errors" field instead of HTTP status codes
+        if "Errors" in data:
+            errors = data["Errors"]
+            if isinstance(errors, list):
+                msgs = [e.get("description", str(e)) for e in errors]
+                raw = "; ".join(msgs)
+            else:
+                raw = str(errors)
+            raise NPPESError(_translate_error(raw))
 
-            response = NPIResponse.model_validate(data)
+        response = NPIResponse.model_validate(data)
 
-            # Cache successful responses
-            if use_cache and self._cache:
-                self._cache.set(params, response)
+        if use_cache and self._cache:
+            self._cache.set(params, response)
 
-            return response
+        return response
 
-        # Unreachable: loop always returns on success or raises on final failure.
-        # Explicit raise satisfies the type checker.
-        raise NPPESError(
-            "The NPI Registry is temporarily unavailable. Please try again."
-        )  # pragma: no cover
 
-    @staticmethod
-    def _retry_delay(attempt: int, response: httpx.Response | None = None) -> float:
-        """Return backoff delay in seconds.  Only called when attempt < MAX_RETRIES."""
-        # Honor Retry-After header if present (429 responses)
-        if response is not None:
-            retry_after = response.headers.get("retry-after")
-            if retry_after:
-                try:
-                    return max(float(retry_after), 0.5)
-                except (ValueError, TypeError):
-                    pass
-        return float(RETRY_BACKOFF_BASE * (2**attempt))
+def _friendly_transport_error(err: _NPPESRetryExhausted) -> str:
+    """Map the low-level cause to a user-facing NPPES error message."""
+    cause = err.__cause__
+    # TimeoutException is a subclass of RequestError — check it first.
+    if isinstance(cause, httpx.TimeoutException):
+        return "The NPI Registry took too long to respond. Please try again."
+    if isinstance(cause, httpx.RequestError):
+        return "Could not reach the NPI Registry. Check your internet connection and try again."
+    # Status-code exhaustion (no cause attached) falls through to the generic message.
+    return "The NPI Registry is temporarily unavailable. Please try again."
