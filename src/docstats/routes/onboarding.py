@@ -11,6 +11,7 @@ from docstats.auth import require_user
 from docstats.routes._common import MAPBOX_TOKEN, render, saved_count
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
+from docstats.validators import require_valid_npi
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
@@ -49,9 +50,9 @@ async def onboarding(
 @router.post("/save-name")
 async def onboarding_save_name(
     request: Request,
-    first_name: str = Form(...),
-    last_name: str = Form(...),
-    middle_name: str = Form(""),
+    first_name: str = Form(..., max_length=100),
+    last_name: str = Form(..., max_length=100),
+    middle_name: str = Form("", max_length=100),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -73,7 +74,7 @@ async def onboarding_save_name(
 @router.post("/save-dob")
 async def onboarding_save_dob(
     request: Request,
-    date_of_birth: str = Form(...),
+    date_of_birth: str = Form(..., max_length=10),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -91,8 +92,8 @@ async def onboarding_save_dob(
 
 @router.post("/select-pcp/{npi}", response_class=HTMLResponse)
 async def onboarding_select_pcp(
-    npi: str,
     request: Request,
+    npi: str = Depends(require_valid_npi),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -117,7 +118,7 @@ async def onboarding_skip_pcp(
 @router.post("/accept-terms")
 async def onboarding_accept_terms(
     request: Request,
-    terms_version: str = Form(...),
+    terms_version: str = Form(..., max_length=32),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):

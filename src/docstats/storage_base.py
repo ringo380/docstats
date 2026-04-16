@@ -9,8 +9,13 @@ from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 
 
 def normalize_email(email: str) -> str:
-    """Normalize an email address for storage and lookup."""
-    return email.strip().lower()
+    """Normalize an email address for storage and lookup.
+
+    Lowercases and strips whitespace. Does not validate format — callers that
+    handle untrusted input should use ``docstats.validators.validate_email``
+    first to reject malformed addresses with a friendly error.
+    """
+    return (email or "").strip().lower()
 
 
 def fuzzy_score(provider: SavedProvider, query: str) -> float:

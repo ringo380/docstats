@@ -45,6 +45,7 @@ app.add_middleware(
     secret_key=_SESSION_SECRET,
     max_age=604800,  # 7 days
     https_only=os.environ.get("RAILWAY_ENVIRONMENT") == "production",
+    same_site="lax",
 )
 
 
