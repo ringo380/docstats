@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -14,7 +13,6 @@ from rich.console import Console
 from docstats.cache import ResponseCache
 from docstats.client import NPPESClient, NPPESError
 from docstats.formatting import (
-    console as fmt_console,
     history_table,
     provider_detail,
     referral_export,
@@ -117,8 +115,8 @@ def search(
 
     console.print(results_table(response))
     console.print(
-        f"\n[dim]Use [cyan]docstats show <NPI>[/cyan] for details or "
-        f"[cyan]docstats save <NPI>[/cyan] to save a provider.[/dim]"
+        "\n[dim]Use [cyan]docstats show <NPI>[/cyan] for details or "
+        "[cyan]docstats save <NPI>[/cyan] to save a provider.[/dim]"
     )
 
 

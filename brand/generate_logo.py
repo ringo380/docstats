@@ -99,13 +99,13 @@ if __name__ == "__main__":
     svg_path = os.path.join(out_dir, "logo.svg")
     with open(svg_path, "w") as f:
         f.write(generate_svg())
-    print(f"  logo.svg")
+    print("  logo.svg")
 
     # Favicon mark
     fav_path = os.path.join(out_dir, "favicon.svg")
     with open(fav_path, "w") as f:
         f.write(generate_mark_only())
-    print(f"  favicon.svg")
+    print("  favicon.svg")
 
     # PNG previews
     for name, src in [("logo.png", svg_path), ("favicon.png", fav_path)]:
@@ -134,4 +134,4 @@ body {{ background: {BG_DARK}; display: flex; align-items: center; justify-conte
     preview_path = os.path.join(out_dir, "preview.html")
     with open(preview_path, "w") as f:
         f.write(preview_html)
-    print(f"  preview.html (open in browser to review)")
+    print("  preview.html (open in browser to review)")

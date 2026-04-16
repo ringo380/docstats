@@ -1,13 +1,11 @@
 """Tests for the NPPES API client."""
 
-import json
 import pytest
 import httpx
 from unittest.mock import MagicMock, patch
 
 from docstats.client import NPPESClient, NPPESError
-from docstats.models import NPIResponse
-from tests.conftest import SAMPLE_API_RESPONSE, SAMPLE_NPI1_RESULT
+from tests.conftest import SAMPLE_API_RESPONSE
 
 
 @pytest.fixture
