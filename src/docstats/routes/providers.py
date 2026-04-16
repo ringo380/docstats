@@ -11,6 +11,7 @@ from docstats.formatting import referral_export
 from docstats.routes._common import MAPBOX_TOKEN, get_client, render, saved_count
 from docstats.storage import get_db_path, get_storage
 from docstats.storage_base import StorageBase
+from docstats.validators import require_valid_npi
 
 router = APIRouter(prefix="/provider", tags=["providers"])
 
@@ -47,7 +48,7 @@ def _render_appt_from_provider(request: Request, npi: str, provider):
 
 @router.get("/{npi}/export/text")
 async def export_text(
-    npi: str,
+    npi: str = Depends(require_valid_npi),
     current_user: dict | None = Depends(get_current_user),
     storage: StorageBase = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
@@ -87,7 +88,7 @@ async def export_text(
 @router.get("/{npi}/export", response_class=HTMLResponse)
 async def export_view(
     request: Request,
-    npi: str,
+    npi: str = Depends(require_valid_npi),
     current_user: dict | None = Depends(get_current_user),
     storage: StorageBase = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
@@ -129,7 +130,7 @@ async def export_view(
 @router.get("/{npi}/enrichment", response_class=HTMLResponse)
 async def provider_enrichment(
     request: Request,
-    npi: str,
+    npi: str = Depends(require_valid_npi),
     current_user: dict | None = Depends(get_current_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -157,7 +158,7 @@ async def provider_enrichment(
 @router.post("/{npi}/save", response_class=HTMLResponse)
 async def save_provider(
     request: Request,
-    npi: str,
+    npi: str = Depends(require_valid_npi),
     current_user: dict | None = Depends(get_current_user),
     storage: StorageBase = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
@@ -200,7 +201,7 @@ async def save_provider(
 @router.delete("/{npi}/save", response_class=HTMLResponse)
 async def remove_provider(
     request: Request,
-    npi: str,
+    npi: str = Depends(require_valid_npi),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -223,9 +224,9 @@ async def remove_provider(
 @router.post("/{npi}/appt-address", response_class=HTMLResponse)
 async def set_appt_address(
     request: Request,
-    npi: str,
-    address: str = Form(""),
-    phone: str = Form(""),
+    npi: str = Depends(require_valid_npi),
+    address: str = Form("", max_length=300),
+    phone: str = Form("", max_length=40),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -248,8 +249,8 @@ async def set_appt_address(
 @router.put("/{npi}/appt-suite", response_class=HTMLResponse)
 async def update_appt_suite(
     request: Request,
-    npi: str,
-    suite: str = Form(""),
+    npi: str = Depends(require_valid_npi),
+    suite: str = Form("", max_length=100),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -263,7 +264,7 @@ async def update_appt_suite(
 @router.delete("/{npi}/appt-address", response_class=HTMLResponse)
 async def clear_appt_address(
     request: Request,
-    npi: str,
+    npi: str = Depends(require_valid_npi),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -276,8 +277,8 @@ async def clear_appt_address(
 @router.put("/{npi}/televisit", response_class=HTMLResponse)
 async def toggle_televisit(
     request: Request,
-    npi: str,
-    is_televisit: str = Form("off"),
+    npi: str = Depends(require_valid_npi),
+    is_televisit: str = Form("off", max_length=8),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -293,9 +294,9 @@ async def toggle_televisit(
 @router.put("/{npi}/appt-contact", response_class=HTMLResponse)
 async def update_appt_contact(
     request: Request,
-    npi: str,
-    phone: str = Form(""),
-    fax: str = Form(""),
+    npi: str = Depends(require_valid_npi),
+    phone: str = Form("", max_length=40),
+    fax: str = Form("", max_length=40),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -313,8 +314,8 @@ async def update_appt_contact(
 @router.put("/{npi}/notes", response_class=HTMLResponse)
 async def update_notes(
     request: Request,
-    npi: str,
-    notes: str = Form(""),
+    npi: str = Depends(require_valid_npi),
+    notes: str = Form("", max_length=2000),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -332,7 +333,7 @@ async def update_notes(
 @router.get("/{npi}", response_class=HTMLResponse)
 async def provider_detail(
     request: Request,
-    npi: str,
+    npi: str = Depends(require_valid_npi),
     current_user: dict | None = Depends(get_current_user),
     storage: StorageBase = Depends(get_storage),
     client: NPPESClient = Depends(get_client),

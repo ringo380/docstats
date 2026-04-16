@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Path, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from docstats.client import NPPESClient, NPPESError
@@ -16,7 +16,10 @@ router = APIRouter(prefix="/api", tags=["api"])
 
 
 @router.get("/zip/{code}")
-async def zip_lookup(code: str, storage: StorageBase = Depends(get_storage)):
+async def zip_lookup(
+    code: str = Path(..., min_length=3, max_length=10),
+    storage: StorageBase = Depends(get_storage),
+):
     result = storage.lookup_zip(code)
     if result:
         return JSONResponse({"city": result["city"], "state": result["state"]})
@@ -29,8 +32,8 @@ _SUGGEST_FIELDS = {"last_name", "first_name", "organization_name"}
 @router.get("/suggest/names", response_class=HTMLResponse)
 async def suggest_names(
     request: Request,
-    q: str = Query(""),
-    field: str = Query("last_name"),
+    q: str = Query("", max_length=200),
+    field: str = Query("last_name", max_length=32),
     client: NPPESClient = Depends(get_client),
 ):
     q = q.strip()

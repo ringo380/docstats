@@ -53,6 +53,7 @@
 - `taxonomies.py` has 883 NUCC taxonomy descriptions for client-side specialty autocomplete
 
 ## Gotchas
+- All `/provider/{npi}/...`, `/onboarding/select-pcp/{npi}`, `/profile/pcp/{npi}` routes must use `npi: str = Depends(require_valid_npi)` (from `docstats.validators`) — never raw `npi: str`; keeps malformed input at the boundary (422). Same for new Form/Query fields: add `max_length=` per the caps in `docs/security-audit.md`
 - SQLite connections need `check_same_thread=False` for FastAPI/uvicorn
 - SQLite WAL mode (`PRAGMA journal_mode=WAL`) required for concurrent CLI+web access
 - SQLite FK enforcement is off by default — `PRAGMA foreign_keys = ON` must be set per-connection (after WAL pragma in `Storage.__init__`)

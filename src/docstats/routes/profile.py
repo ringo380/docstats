@@ -10,6 +10,7 @@ from docstats.client import NPPESClient, NPPESError
 from docstats.routes._common import MAPBOX_TOKEN, get_client, render, saved_count
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
+from docstats.validators import require_valid_npi
 
 router = APIRouter(tags=["profile"])
 
@@ -41,8 +42,8 @@ async def profile(
 
 @router.post("/profile/pcp/{npi}", response_class=HTMLResponse)
 async def profile_set_pcp(
-    npi: str,
     request: Request,
+    npi: str = Depends(require_valid_npi),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):

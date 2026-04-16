@@ -21,6 +21,12 @@ from docstats.oauth import (
 from docstats.routes._common import render
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase, normalize_email
+from docstats.validators import (
+    EMAIL_MAX_LENGTH,
+    PASSWORD_MAX_LENGTH,
+    ValidationError,
+    validate_email,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +53,8 @@ async def login_page(
 @router.post("/login", response_class=HTMLResponse)
 async def login_post(
     request: Request,
-    email: str = Form(""),
-    password: str = Form(""),
+    email: str = Form("", max_length=EMAIL_MAX_LENGTH),
+    password: str = Form("", max_length=PASSWORD_MAX_LENGTH),
     storage: StorageBase = Depends(get_storage),
 ):
     email = normalize_email(email)
@@ -99,13 +105,11 @@ async def signup_page(
 @router.post("/signup", response_class=HTMLResponse)
 async def signup_post(
     request: Request,
-    email: str = Form(""),
-    password: str = Form(""),
-    confirm_password: str = Form(""),
+    email: str = Form("", max_length=EMAIL_MAX_LENGTH),
+    password: str = Form("", max_length=PASSWORD_MAX_LENGTH),
+    confirm_password: str = Form("", max_length=PASSWORD_MAX_LENGTH),
     storage: StorageBase = Depends(get_storage),
 ):
-    email = normalize_email(email)
-
     def _err(msg: str):
         return render("signup.html", {
             "request": request,
@@ -116,8 +120,12 @@ async def signup_post(
             "github_enabled": GITHUB_ENABLED,
         })
 
-    if not email or not password:
+    if not email.strip() or not password:
         return _err("Email and password are required.")
+    try:
+        email = validate_email(email)
+    except ValidationError as exc:
+        return _err(str(exc))
     if len(password) < 8:
         return _err("Password must be at least 8 characters.")
     if password != confirm_password:
