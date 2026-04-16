@@ -65,8 +65,10 @@
 - Starlette 0.50+ changed `TemplateResponse` signature — use `render()` from `routes/_common.py` instead of calling `templates.TemplateResponse()` directly
 - When adding new storage methods, add the abstract method to `StorageBase` first — both `Storage` and `PostgresStorage` inherit from it and must implement all abstract methods
 - `normalize_email()` and `fuzzy_score()` live in `storage_base.py` — use these instead of inline `email.strip().lower()` or reimplementing fuzzy matching
-- All three enrichment API clients use `request_with_retry()` from `http_retry.py` for exponential backoff retry
-- Enrichment client retry tests must patch `client._http.request` (not `.post`) and `docstats.http_retry.time.sleep` — retry logic is in `http_retry.py`, not in each client module
+- All HTTP clients (NPPES, OIG, CMS, Open Payments) use `request_with_retry()` from `http_retry.py` for exponential backoff retry — NPPES translates `_NPPESRetryExhausted` into user-facing `NPPESError` in `client._friendly_transport_error`
+- Retry tests must patch `client._http.request` (not `.get`/`.post`) and `docstats.http_retry.time.sleep` — retry logic is in `http_retry.py`, not in each client module
+- HTTP timeout/retry knobs come from env vars (read at call time, not import): `DOCSTATS_HTTP_TIMEOUT` (default 30.0s) for httpx client timeout; `DOCSTATS_HTTP_MAX_RETRIES` (default 3) for retries on 429/5xx/timeout; `DOCSTATS_HTTP_CONCURRENCY` (default 5) for the semaphore size returned by `docstats.concurrency.async_limiter()` for batch callers. New httpx clients should read `get_default_timeout()` at `__init__`; new batch paths should consume `async_limiter()` instead of unbounded `asyncio.gather`
+- `request_with_retry()` honors integer-seconds `Retry-After` headers on retryable statuses (≥ 0.5s); HTTP-date form is not supported
 - New routes go in the appropriate `routes/*.py` file, not in `web.py` — only app-level middleware, exception handlers, and router includes belong in `web.py`
 - Don't use `pip freeze` on this machine for generating `requirements.txt` — global env has 500+ unrelated packages
 - `httpx.TimeoutException` is a subclass of `RequestError` — catch it first or it's dead code
