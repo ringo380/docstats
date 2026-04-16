@@ -29,5 +29,11 @@ dev = ["pytest>=8.0", "pytest-httpx>=0.30", "ruff>=0.4"]
 target-version = "py312"
 line-length = 100
 
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+exclude = ["tests/"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
