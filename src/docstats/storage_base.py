@@ -115,6 +115,14 @@ class StorageBase(ABC):
     def clear_appt_address(self, npi: str, user_id: int) -> bool: ...
 
     @abstractmethod
+    def set_televisit(self, npi: str, is_televisit: bool, user_id: int) -> bool: ...
+
+    @abstractmethod
+    def set_appt_contact(
+        self, npi: str, phone: str | None, fax: str | None, user_id: int
+    ) -> bool: ...
+
+    @abstractmethod
     def update_enrichment(self, npi: str, enrichment_json: str, user_id: int) -> bool: ...
 
     # --- Search history ---

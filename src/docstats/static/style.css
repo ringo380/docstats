@@ -465,7 +465,7 @@
     font-family: inherit;
   }
   .appt-address-link:hover { color: var(--green); }
-  .appt-input-row { display: flex; gap: 6px; align-items: center; }
+  .appt-input-row { display: flex; gap: 6px; align-items: center; position: relative; }
   .appt-input-row input {
     flex: 1;
     font-size: 0.8rem;
@@ -492,6 +492,50 @@
     line-height: 1;
   }
   .appt-chip button:hover { color: var(--red); }
+  .televisit-chip {
+    background: #1e2a3f;
+    border-color: #3b5998;
+    color: #90b8f8;
+  }
+  .televisit-icon { font-size: 0.8rem; }
+  .appt-details-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-top: 4px;
+  }
+  .appt-inline-form {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .appt-field-sm {
+    font-size: 0.75rem;
+    width: 130px;
+    padding: 2px 6px;
+  }
+  .appt-btn {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+  }
+  .televisit-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 6px;
+    padding: 2px 10px;
+    font-size: 0.7rem;
+    font-family: inherit;
+    background: none;
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .televisit-toggle-btn:hover {
+    color: #90b8f8;
+    border-color: #3b5998;
+  }
   .add-provider-row {
     border: 1.5px dashed var(--border);
     border-radius: var(--radius);

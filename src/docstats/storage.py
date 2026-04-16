@@ -105,6 +105,8 @@ class Storage(StorageBase):
         self._migrate_users_profile_fields()
         self._migrate_enrichment_json()
         self._migrate_appt_suite()
+        self._migrate_is_televisit()
+        self._migrate_appt_phone_fax()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -198,6 +200,23 @@ class Storage(StorageBase):
             self._conn.commit()
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+    def _migrate_is_televisit(self) -> None:
+        """Add is_televisit column to saved_providers if not present."""
+        try:
+            self._conn.execute("ALTER TABLE saved_providers ADD COLUMN is_televisit INTEGER DEFAULT 0")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+    def _migrate_appt_phone_fax(self) -> None:
+        """Add appt_phone and appt_fax columns to saved_providers if not present."""
+        for col in ("appt_phone", "appt_fax"):
+            try:
+                self._conn.execute(f"ALTER TABLE saved_providers ADD COLUMN {col} TEXT")
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
     # --- User CRUD ---
 
@@ -337,8 +356,9 @@ class Storage(StorageBase):
             INSERT INTO saved_providers
                 (user_id, npi, display_name, entity_type, specialty, phone, fax,
                  address_line1, address_city, address_state, address_zip,
-                 raw_json, notes, appt_address, appt_suite, saved_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 raw_json, notes, appt_address, appt_suite, appt_phone, appt_fax,
+                 is_televisit, saved_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, npi) DO UPDATE SET
                 display_name=excluded.display_name,
                 entity_type=excluded.entity_type,
@@ -369,6 +389,9 @@ class Storage(StorageBase):
                 provider.notes,
                 None,  # appt_address: always NULL on initial save; preserved on conflict
                 None,  # appt_suite: always NULL on initial save; preserved on conflict
+                None,  # appt_phone: always NULL on initial save; preserved on conflict
+                None,  # appt_fax: always NULL on initial save; preserved on conflict
+                0,     # is_televisit: always 0 on initial save; preserved on conflict
                 provider.saved_at.isoformat() if provider.saved_at else datetime.now().isoformat(),
                 provider.updated_at.isoformat() if provider.updated_at else datetime.now().isoformat(),
             ),
@@ -458,10 +481,30 @@ class Storage(StorageBase):
         return cursor.rowcount > 0
 
     def clear_appt_address(self, npi: str, user_id: int) -> bool:
-        """Clear the appointment address and suite for a saved provider."""
+        """Clear the appointment address, suite, phone, and fax for a saved provider."""
         cursor = self._conn.execute(
-            "UPDATE saved_providers SET appt_address = NULL, appt_suite = NULL WHERE npi = ? AND user_id = ?",
+            "UPDATE saved_providers SET appt_address = NULL, appt_suite = NULL, appt_phone = NULL, appt_fax = NULL WHERE npi = ? AND user_id = ?",
             (npi, user_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def set_televisit(self, npi: str, is_televisit: bool, user_id: int) -> bool:
+        """Set or clear the televisit flag for a saved provider."""
+        cursor = self._conn.execute(
+            "UPDATE saved_providers SET is_televisit = ? WHERE npi = ? AND user_id = ?",
+            (int(is_televisit), npi, user_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def set_appt_contact(
+        self, npi: str, phone: str | None, fax: str | None, user_id: int
+    ) -> bool:
+        """Set or clear the appointment phone and fax for a saved provider."""
+        cursor = self._conn.execute(
+            "UPDATE saved_providers SET appt_phone = ?, appt_fax = ? WHERE npi = ? AND user_id = ?",
+            (phone.strip() if phone else None, fax.strip() if fax else None, npi, user_id),
         )
         self._conn.commit()
         return cursor.rowcount > 0
@@ -557,6 +600,9 @@ class Storage(StorageBase):
             notes=row["notes"],
             appt_address=row["appt_address"],
             appt_suite=row["appt_suite"] if "appt_suite" in row.keys() else None,
+            appt_phone=row["appt_phone"] if "appt_phone" in row.keys() else None,
+            appt_fax=row["appt_fax"] if "appt_fax" in row.keys() else None,
+            is_televisit=bool(row["is_televisit"]) if "is_televisit" in row.keys() else False,
             enrichment_json=row["enrichment_json"] if "enrichment_json" in row.keys() else None,
             saved_at=datetime.fromisoformat(row["saved_at"]) if row["saved_at"] else None,
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,

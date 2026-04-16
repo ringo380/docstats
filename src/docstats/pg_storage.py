@@ -65,6 +65,9 @@ class PostgresStorage(StorageBase):
             notes=row.get("notes"),
             appt_address=row.get("appt_address"),
             appt_suite=row.get("appt_suite"),
+            appt_phone=row.get("appt_phone"),
+            appt_fax=row.get("appt_fax"),
+            is_televisit=bool(row.get("is_televisit", False)),
             enrichment_json=row.get("enrichment_json"),
             saved_at=_parse_ts(row.get("saved_at")),
             updated_at=_parse_ts(row.get("updated_at")),
@@ -182,10 +185,13 @@ class PostgresStorage(StorageBase):
         provider = SavedProvider.from_npi_result(result, notes=notes)
         now = _now_iso()
 
-        # Fetch existing to preserve appt_address, appt_suite, enrichment, and merge notes (matches SQLite behavior)
+        # Fetch existing to preserve appt_address, appt_suite, appt_phone, appt_fax, is_televisit, enrichment, and merge notes (matches SQLite behavior)
         existing = self.get_provider(provider.npi, user_id)
         appt_address = existing.appt_address if existing else None
         appt_suite = existing.appt_suite if existing else None
+        appt_phone = existing.appt_phone if existing else None
+        appt_fax = existing.appt_fax if existing else None
+        is_televisit = existing.is_televisit if existing else False
         enrichment_json = existing.enrichment_json if existing else None
         merged_notes = provider.notes if provider.notes is not None else (existing.notes if existing else None)
 
@@ -206,6 +212,9 @@ class PostgresStorage(StorageBase):
                 "notes": merged_notes,
                 "appt_address": appt_address,
                 "appt_suite": appt_suite,
+                "appt_phone": appt_phone,
+                "appt_fax": appt_fax,
+                "is_televisit": is_televisit,
                 "enrichment_json": enrichment_json,
                 "saved_at": provider.saved_at.isoformat() if provider.saved_at else now,
                 "updated_at": now,
@@ -288,7 +297,37 @@ class PostgresStorage(StorageBase):
     def clear_appt_address(self, npi: str, user_id: int) -> bool:
         result = (
             self._t("saved_providers")
-            .update({"appt_address": None, "appt_suite": None})
+            .update({"appt_address": None, "appt_suite": None, "appt_phone": None, "appt_fax": None})
+            .eq("npi", npi)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return len(result.data) > 0
+
+    def set_televisit(self, npi: str, is_televisit: bool, user_id: int) -> bool:
+        # Requires manual Supabase migration before deploy:
+        # ALTER TABLE docstats_saved_providers ADD COLUMN IF NOT EXISTS is_televisit BOOLEAN DEFAULT FALSE;
+        result = (
+            self._t("saved_providers")
+            .update({"is_televisit": is_televisit})
+            .eq("npi", npi)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return len(result.data) > 0
+
+    def set_appt_contact(
+        self, npi: str, phone: str | None, fax: str | None, user_id: int
+    ) -> bool:
+        # Requires manual Supabase migration before deploy:
+        # ALTER TABLE docstats_saved_providers ADD COLUMN IF NOT EXISTS appt_phone TEXT;
+        # ALTER TABLE docstats_saved_providers ADD COLUMN IF NOT EXISTS appt_fax TEXT;
+        result = (
+            self._t("saved_providers")
+            .update({
+                "appt_phone": phone.strip() if phone else None,
+                "appt_fax": fax.strip() if fax else None,
+            })
             .eq("npi", npi)
             .eq("user_id", user_id)
             .execute()

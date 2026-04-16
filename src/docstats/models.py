@@ -294,6 +294,9 @@ class SavedProvider(BaseModel):
     notes: str | None = None
     appt_address: str | None = None
     appt_suite: str | None = None
+    appt_phone: str | None = None
+    appt_fax: str | None = None
+    is_televisit: bool = False
     enrichment_json: str | None = None  # serialized EnrichmentData
     saved_at: datetime | None = None
     updated_at: datetime | None = None
@@ -340,6 +343,9 @@ class SavedProvider(BaseModel):
             "Notes": self.notes or "",
             "Appointment Address": self.appt_address or "",
             "Appointment Suite": self.appt_suite or "",
+            "Appointment Phone": self.appt_phone or "",
+            "Appointment Fax": self.appt_fax or "",
+            "Televisit": "Yes" if self.is_televisit else "",
             "Saved At": self.saved_at.isoformat() if self.saved_at else "",
         }
         # Enrichment fields (when available)

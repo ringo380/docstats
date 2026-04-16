@@ -1,44 +1,69 @@
 <div class="appt-address-wrap" id="appt-{{ npi }}">
-  {% if appt_address %}
+  {% if is_televisit %}
+    <div class="appt-chip televisit-chip">
+      <span class="televisit-icon">&#x1f4f9;</span> Televisit
+      <button
+        hx-put="/provider/{{ npi }}/televisit"
+        hx-vals='{"is_televisit": "off"}'
+        hx-target="#appt-{{ npi }}"
+        hx-swap="outerHTML"
+        title="Switch to in-person">&#x2715;</button>
+    </div>
+  {% elif appt_address %}
     <div class="appt-chip">
-      📍 {{ appt_address }}{% if appt_suite %} · {{ appt_suite }}{% endif %}
+      &#x1f4cd; {{ appt_address }}{% if appt_suite %} &middot; {{ appt_suite }}{% endif %}
       <button
         hx-delete="/provider/{{ npi }}/appt-address"
         hx-target="#appt-{{ npi }}"
         hx-swap="outerHTML"
-        title="Remove appointment address">✕</button>
+        title="Remove appointment address">&#x2715;</button>
     </div>
-    <form class="appt-suite-row"
-          hx-put="/provider/{{ npi }}/appt-suite"
-          hx-target="#appt-{{ npi }}"
-          hx-swap="outerHTML"
-          style="display:flex; gap:4px; margin-top:4px; align-items:center;">
-      <input type="text" name="suite" value="{{ appt_suite or '' }}"
-             placeholder="Suite, Rm, Office #…"
-             style="font-size:0.75rem; width:140px; padding:2px 6px;">
-      <button type="submit" class="btn btn-secondary btn-sm"
-              style="font-size:0.7rem; padding:2px 8px;">
-        {% if appt_suite %}Update{% else %}Add{% endif %}
-      </button>
-    </form>
+    <div class="appt-details-row">
+      <form class="appt-inline-form"
+            hx-put="/provider/{{ npi }}/appt-suite"
+            hx-target="#appt-{{ npi }}"
+            hx-swap="outerHTML">
+        <input type="text" name="suite" value="{{ appt_suite or '' }}"
+               placeholder="Suite, Rm, Office #&hellip;"
+               class="appt-field appt-field-sm">
+        <button type="submit" class="btn btn-secondary btn-sm appt-btn">
+          {% if appt_suite %}Update{% else %}Add{% endif %}
+        </button>
+      </form>
+      <form class="appt-inline-form"
+            hx-put="/provider/{{ npi }}/appt-contact"
+            hx-target="#appt-{{ npi }}"
+            hx-swap="outerHTML">
+        <input type="tel" name="phone" value="{{ appt_phone or '' }}"
+               placeholder="Office phone&hellip;"
+               class="appt-field appt-field-sm">
+        <input type="tel" name="fax" value="{{ appt_fax or '' }}"
+               placeholder="Office fax&hellip;"
+               class="appt-field appt-field-sm">
+        <button type="submit" class="btn btn-secondary btn-sm appt-btn">
+          {% if appt_phone or appt_fax %}Update{% else %}Add{% endif %}
+        </button>
+      </form>
+    </div>
   {% else %}
     {% if mapbox_token %}
       <div class="appt-input-row">
-        <span style="color: var(--text-dim); font-size: 0.9rem;">📍</span>
+        <span style="color: var(--text-dim); font-size: 0.9rem;">&#x1f4cd;</span>
         <input
           type="text"
           id="mapbox-appt-{{ npi }}"
-          placeholder="Appointment address (if different)…"
+          placeholder="Address or facility name&hellip;"
           autocomplete="off"
           hx-post="/provider/{{ npi }}/appt-address"
           hx-trigger="mapbox-select"
           hx-target="#appt-{{ npi }}"
           hx-swap="outerHTML"
-          hx-include="[name='address'][data-npi='{{ npi }}']"
+          hx-include="[data-appt-field='{{ npi }}']"
           style="font-size:0.8rem;"
         >
-        <input type="hidden" name="address" data-npi="{{ npi }}" id="appt-val-{{ npi }}" value="">
-        <ul id="appt-sugg-{{ npi }}" class="suggestions-list" style="display:none; top:36px;"></ul>
+        <input type="hidden" name="address" data-appt-field="{{ npi }}" id="appt-val-{{ npi }}" value="">
+        <input type="hidden" name="phone" data-appt-field="{{ npi }}" id="appt-phone-val-{{ npi }}" value="">
+        <ul id="appt-sugg-{{ npi }}" class="suggestions-list" style="display:none;"></ul>
       </div>
       <script>
         (function() {
@@ -46,6 +71,7 @@
           var input = document.getElementById('mapbox-appt-{{ npi }}');
           var list = document.getElementById('appt-sugg-{{ npi }}');
           var hidden = document.getElementById('appt-val-{{ npi }}');
+          var hiddenPhone = document.getElementById('appt-phone-val-{{ npi }}');
           if (!input || !MAPBOX_TOKEN) return;
           var t;
           input.addEventListener('input', function() {
@@ -54,16 +80,29 @@
             if (q.length < 3) { list.style.display='none'; return; }
             t = setTimeout(function() {
               fetch('https://api.mapbox.com/geocoding/v5/mapbox.places/' +
-                encodeURIComponent(q) + '.json?country=US&types=address,place,postcode&access_token=' + MAPBOX_TOKEN)
+                encodeURIComponent(q) + '.json?country=US&types=poi,address,place,postcode&access_token=' + MAPBOX_TOKEN)
               .then(function(r){return r.json();}).then(function(data){
-                list.innerHTML = '';
+                while (list.firstChild) list.removeChild(list.firstChild);
                 if (!data.features||!data.features.length){list.style.display='none';return;}
                 data.features.forEach(function(f){
                   var li = document.createElement('li');
-                  li.textContent = f.place_name;
+                  var isPoi = f.place_type && f.place_type.indexOf('poi') !== -1;
+                  if (isPoi && f.text) {
+                    var name = document.createElement('strong');
+                    name.textContent = f.text;
+                    li.appendChild(name);
+                    var addr = document.createElement('span');
+                    addr.textContent = ' \u2014 ' + f.place_name.replace(f.text + ', ', '');
+                    addr.style.color = 'var(--text-dim)';
+                    addr.style.fontSize = '0.75rem';
+                    li.appendChild(addr);
+                  } else {
+                    li.textContent = f.place_name;
+                  }
                   li.addEventListener('click', function(){
                     input.value = f.place_name;
                     hidden.value = f.place_name;
+                    hiddenPhone.value = (f.properties && f.properties.tel) ? f.properties.tel : '';
                     list.style.display = 'none';
                     htmx.trigger(input, 'mapbox-select');
                   });
@@ -88,12 +127,19 @@
         <input
           type="text"
           name="address"
-          placeholder="Appointment address (if different)…"
+          placeholder="Address or facility name&hellip;"
           style="font-size:0.8rem;"
           autocomplete="off"
         >
         <button type="submit" class="btn btn-secondary btn-sm">Save</button>
       </form>
     {% endif %}
+    <button class="televisit-toggle-btn"
+            hx-put="/provider/{{ npi }}/televisit"
+            hx-vals='{"is_televisit": "on"}'
+            hx-target="#appt-{{ npi }}"
+            hx-swap="outerHTML">
+      &#x1f4f9; Televisit
+    </button>
   {% endif %}
 </div>
