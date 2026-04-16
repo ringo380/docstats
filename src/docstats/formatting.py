@@ -49,7 +49,9 @@ def provider_detail(result: NPIResult) -> Panel:
     lines: list[str] = []
 
     # Header
-    entity_tag = "[green]Individual[/green]" if result.is_individual else "[blue]Organization[/blue]"
+    entity_tag = (
+        "[green]Individual[/green]" if result.is_individual else "[blue]Organization[/blue]"
+    )
     lines.append(f"[bold]{result.display_name}[/bold]  {entity_tag}")
     lines.append(f"NPI: [cyan]{result.number}[/cyan]")
     if result.enumeration_date:
@@ -146,7 +148,8 @@ def history_table(entries: list[SearchHistoryEntry]) -> Table:
 
     for entry in entries:
         params_str = ", ".join(
-            f"{k}={v}" for k, v in entry.query_params.items()
+            f"{k}={v}"
+            for k, v in entry.query_params.items()
             if k not in ("version", "limit", "skip")
         )
         date_str = entry.searched_at.strftime("%Y-%m-%d %H:%M") if entry.searched_at else ""

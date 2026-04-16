@@ -89,9 +89,7 @@ class TestErrorHandling:
     def test_api_error_field(self, client_no_cache):
         resp = MagicMock(spec=httpx.Response)
         resp.status_code = 200
-        resp.json.return_value = {
-            "Errors": [{"description": "Invalid search criteria"}]
-        }
+        resp.json.return_value = {"Errors": [{"description": "Invalid search criteria"}]}
         resp.raise_for_status = MagicMock()
 
         with patch.object(client_no_cache._http, "get", return_value=resp):
@@ -99,10 +97,14 @@ class TestErrorHandling:
                 client_no_cache.search(last_name="X")
 
     def test_network_error(self, client_no_cache):
-        with patch.object(
-            client_no_cache._http, "get",
-            side_effect=httpx.ConnectError("Connection refused"),
-        ), patch("docstats.client.time.sleep"):
+        with (
+            patch.object(
+                client_no_cache._http,
+                "get",
+                side_effect=httpx.ConnectError("Connection refused"),
+            ),
+            patch("docstats.client.time.sleep"),
+        ):
             with pytest.raises(NPPESError, match="Could not reach the NPI Registry"):
                 client_no_cache.search(last_name="Smith")
 
@@ -111,7 +113,9 @@ class TestErrorHandling:
         resp_400 = MagicMock(spec=httpx.Response)
         resp_400.status_code = 400
         resp_400.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Bad Request", request=MagicMock(), response=resp_400,
+            "Bad Request",
+            request=MagicMock(),
+            response=resp_400,
         )
 
         with patch.object(client_no_cache._http, "get", return_value=resp_400) as mock_get:
@@ -127,14 +131,20 @@ class TestRetry:
         resp_500.status_code = 500
         resp_500.headers = {}
         resp_500.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Server Error", request=MagicMock(), response=resp_500,
+            "Server Error",
+            request=MagicMock(),
+            response=resp_500,
         )
 
         # Fail twice, succeed on third attempt
-        with patch.object(
-            client_no_cache._http, "get",
-            side_effect=[resp_500, resp_500, mock_response],
-        ) as mock_get, patch("docstats.client.time.sleep") as mock_sleep:
+        with (
+            patch.object(
+                client_no_cache._http,
+                "get",
+                side_effect=[resp_500, resp_500, mock_response],
+            ) as mock_get,
+            patch("docstats.client.time.sleep") as mock_sleep,
+        ):
             result = client_no_cache.search(last_name="Smith")
             assert result.result_count == 2
             assert mock_get.call_count == 3
@@ -146,22 +156,33 @@ class TestRetry:
         resp_500.status_code = 500
         resp_500.headers = {}
         resp_500.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Server Error", request=MagicMock(), response=resp_500,
+            "Server Error",
+            request=MagicMock(),
+            response=resp_500,
         )
 
-        with patch.object(
-            client_no_cache._http, "get", return_value=resp_500,
-        ) as mock_get, patch("docstats.client.time.sleep"):
+        with (
+            patch.object(
+                client_no_cache._http,
+                "get",
+                return_value=resp_500,
+            ) as mock_get,
+            patch("docstats.client.time.sleep"),
+        ):
             with pytest.raises(NPPESError, match="temporarily unavailable"):
                 client_no_cache.search(last_name="Smith")
             assert mock_get.call_count == 4  # 1 initial + 3 retries
 
     def test_retries_on_timeout(self, client_no_cache, mock_response):
         """Timeout errors should be retried."""
-        with patch.object(
-            client_no_cache._http, "get",
-            side_effect=[httpx.ReadTimeout("timeout"), mock_response],
-        ) as mock_get, patch("docstats.client.time.sleep") as mock_sleep:
+        with (
+            patch.object(
+                client_no_cache._http,
+                "get",
+                side_effect=[httpx.ReadTimeout("timeout"), mock_response],
+            ) as mock_get,
+            patch("docstats.client.time.sleep") as mock_sleep,
+        ):
             result = client_no_cache.search(last_name="Smith")
             assert result.result_count == 2
             assert mock_get.call_count == 2
@@ -173,13 +194,19 @@ class TestRetry:
         resp_429.status_code = 429
         resp_429.headers = {"retry-after": "5"}
         resp_429.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Too Many Requests", request=MagicMock(), response=resp_429,
+            "Too Many Requests",
+            request=MagicMock(),
+            response=resp_429,
         )
 
-        with patch.object(
-            client_no_cache._http, "get",
-            side_effect=[resp_429, mock_response],
-        ), patch("docstats.client.time.sleep") as mock_sleep:
+        with (
+            patch.object(
+                client_no_cache._http,
+                "get",
+                side_effect=[resp_429, mock_response],
+            ),
+            patch("docstats.client.time.sleep") as mock_sleep,
+        ):
             result = client_no_cache.search(last_name="Smith")
             assert result.result_count == 2
             mock_sleep.assert_called_once_with(5.0)
@@ -190,12 +217,19 @@ class TestRetry:
         resp_503.status_code = 503
         resp_503.headers = {}
         resp_503.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Service Unavailable", request=MagicMock(), response=resp_503,
+            "Service Unavailable",
+            request=MagicMock(),
+            response=resp_503,
         )
 
-        with patch.object(
-            client_no_cache._http, "get", return_value=resp_503,
-        ), patch("docstats.client.time.sleep") as mock_sleep:
+        with (
+            patch.object(
+                client_no_cache._http,
+                "get",
+                return_value=resp_503,
+            ),
+            patch("docstats.client.time.sleep") as mock_sleep,
+        ):
             with pytest.raises(NPPESError):
                 client_no_cache.search(last_name="Smith")
             delays = [call.args[0] for call in mock_sleep.call_args_list]

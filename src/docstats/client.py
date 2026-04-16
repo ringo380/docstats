@@ -35,9 +35,7 @@ _ERROR_TRANSLATIONS = {
         "Cannot search by individual name and organization name at the same time. "
         "Use the Individual or Organization tab to search one at a time."
     ),
-    "at least two characters": (
-        "Name fields require at least 2 characters."
-    ),
+    "at least two characters": ("Name fields require at least 2 characters."),
     "cannot be the only criteria": (
         "State alone is not enough to search. Add a name, specialty, or other filter."
     ),
@@ -141,13 +139,15 @@ class NPPESClient:
     async def async_search(self, **kwargs) -> NPIResponse:
         """Async wrapper for search() — runs in a thread to avoid blocking the event loop."""
         return await asyncio.get_event_loop().run_in_executor(
-            None, functools.partial(self.search, **kwargs),
+            None,
+            functools.partial(self.search, **kwargs),
         )
 
     async def async_lookup(self, npi: str, **kwargs) -> NPIResult | None:
         """Async wrapper for lookup() — runs in a thread to avoid blocking the event loop."""
         return await asyncio.get_event_loop().run_in_executor(
-            None, functools.partial(self.lookup, npi, **kwargs),
+            None,
+            functools.partial(self.lookup, npi, **kwargs),
         )
 
     def _execute(self, params: dict[str, str], *, use_cache: bool = True) -> NPIResponse:
@@ -178,7 +178,10 @@ class NPPESClient:
                 delay = self._retry_delay(attempt, e.response)
                 logger.warning(
                     "NPPES API returned %s, retrying in %.1fs (retry %d/%d)",
-                    e.response.status_code, delay, attempt + 1, MAX_RETRIES,
+                    e.response.status_code,
+                    delay,
+                    attempt + 1,
+                    MAX_RETRIES,
                 )
                 time.sleep(delay)
                 continue
@@ -190,7 +193,9 @@ class NPPESClient:
                 delay = self._retry_delay(attempt)
                 logger.warning(
                     "NPPES API timed out, retrying in %.1fs (retry %d/%d)",
-                    delay, attempt + 1, MAX_RETRIES,
+                    delay,
+                    attempt + 1,
+                    MAX_RETRIES,
                 )
                 time.sleep(delay)
                 continue
@@ -202,7 +207,9 @@ class NPPESClient:
                 delay = self._retry_delay(attempt)
                 logger.warning(
                     "NPPES API request failed, retrying in %.1fs (retry %d/%d)",
-                    delay, attempt + 1, MAX_RETRIES,
+                    delay,
+                    attempt + 1,
+                    MAX_RETRIES,
                 )
                 time.sleep(delay)
                 continue
@@ -230,7 +237,9 @@ class NPPESClient:
 
         # Unreachable: loop always returns on success or raises on final failure.
         # Explicit raise satisfies the type checker.
-        raise NPPESError("The NPI Registry is temporarily unavailable. Please try again.")  # pragma: no cover
+        raise NPPESError(
+            "The NPI Registry is temporarily unavailable. Please try again."
+        )  # pragma: no cover
 
     @staticmethod
     def _retry_delay(attempt: int, response: httpx.Response | None = None) -> float:
@@ -243,4 +252,4 @@ class NPPESClient:
                     return max(float(retry_after), 0.5)
                 except (ValueError, TypeError):
                     pass
-        return RETRY_BACKOFF_BASE * (2 ** attempt)
+        return RETRY_BACKOFF_BASE * (2**attempt)

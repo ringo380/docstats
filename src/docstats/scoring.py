@@ -111,7 +111,12 @@ def score_result(
                 score += 10
 
     # Geolocation proximity boost (only when user didn't manually filter by location)
-    if query.geo_lat is not None and query.geo_lon is not None and not query.state and not query.postal_code:
+    if (
+        query.geo_lat is not None
+        and query.geo_lon is not None
+        and not query.state
+        and not query.postal_code
+    ):
         addr = result.location_address
         if addr and addr.postal_code:
             provider_coords = zip_to_coords(addr.postal_code)

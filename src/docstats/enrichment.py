@@ -21,8 +21,8 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 # Cache TTLs (seconds)
-TTL_OIG = 30 * 86400       # 30 days (monthly CSV release)
-TTL_MEDICARE = 7 * 86400   # 7 days (quarterly releases)
+TTL_OIG = 30 * 86400  # 30 days (monthly CSV release)
+TTL_MEDICARE = 7 * 86400  # 7 days (quarterly releases)
 TTL_OPEN_PAYMENTS = 30 * 86400  # 30 days (annual release)
 
 
@@ -154,6 +154,7 @@ async def enrich_provider(npi: str, cache: EnrichmentCache) -> EnrichmentData:
 
     try:
         from docstats.oig_client import OIGClient  # noqa: F401
+
         task = asyncio.create_task(_fetch_oig(npi, cache))
         tasks.append(("oig", task))
     except ImportError:
@@ -161,6 +162,7 @@ async def enrich_provider(npi: str, cache: EnrichmentCache) -> EnrichmentData:
 
     try:
         from docstats.cms_client import CMSClient  # noqa: F401
+
         task = asyncio.create_task(_fetch_medicare(npi, cache))
         tasks.append(("medicare", task))
     except ImportError:
@@ -168,6 +170,7 @@ async def enrich_provider(npi: str, cache: EnrichmentCache) -> EnrichmentData:
 
     try:
         from docstats.open_payments_client import OpenPaymentsClient  # noqa: F401
+
         task = asyncio.create_task(_fetch_open_payments(npi, cache))
         tasks.append(("open_payments", task))
     except ImportError:
@@ -221,6 +224,7 @@ async def _fetch_oig(npi: str, cache: EnrichmentCache) -> dict | None:
 
     def _sync_fetch() -> dict | None:
         from docstats.oig_client import OIGClient
+
         client = OIGClient()
         try:
             return client.check_exclusion(npi)
@@ -243,6 +247,7 @@ async def _fetch_medicare(npi: str, cache: EnrichmentCache) -> dict | None:
 
     def _sync_fetch() -> dict | None:
         from docstats.cms_client import CMSClient
+
         client = CMSClient()
         try:
             clinician = client.lookup_clinician(npi)
@@ -269,6 +274,7 @@ async def _fetch_open_payments(npi: str, cache: EnrichmentCache) -> dict | None:
 
     def _sync_fetch() -> dict | None:
         from docstats.open_payments_client import OpenPaymentsClient
+
         client = OpenPaymentsClient()
         try:
             return client.lookup_payments(npi)

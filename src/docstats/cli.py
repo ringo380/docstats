@@ -72,27 +72,37 @@ def _get_client(use_cache: bool = True) -> NPPESClient:
 
 @app.command()
 def search(
-    name: Annotated[Optional[str], typer.Option("--name", "-n", help="Last name (individual)")] = None,
+    name: Annotated[
+        Optional[str], typer.Option("--name", "-n", help="Last name (individual)")
+    ] = None,
     first: Annotated[Optional[str], typer.Option("--first", "-f", help="First name")] = None,
     org: Annotated[Optional[str], typer.Option("--org", "-o", help="Organization name")] = None,
-    specialty: Annotated[Optional[str], typer.Option("--specialty", "-s", help="Taxonomy/specialty")] = None,
+    specialty: Annotated[
+        Optional[str], typer.Option("--specialty", "-s", help="Taxonomy/specialty")
+    ] = None,
     state: Annotated[Optional[str], typer.Option("--state", help="2-letter state code")] = None,
     city: Annotated[Optional[str], typer.Option("--city", help="City")] = None,
     zip_code: Annotated[Optional[str], typer.Option("--zip", "-z", help="Postal/ZIP code")] = None,
-    entity_type: Annotated[Optional[str], typer.Option("--type", "-t", help="NPI-1 (individual) or NPI-2 (organization)")] = None,
+    entity_type: Annotated[
+        Optional[str],
+        typer.Option("--type", "-t", help="NPI-1 (individual) or NPI-2 (organization)"),
+    ] = None,
     limit: Annotated[int, typer.Option("--limit", "-l", help="Max results")] = 10,
     no_cache: Annotated[bool, typer.Option("--no-cache", help="Bypass response cache")] = False,
 ) -> None:
     """Search providers by name, specialty, or location."""
     if not any([name, first, org, specialty, city, zip_code]):
-        console.print("[red]Provide at least one search parameter (--name, --first, --org, --specialty, --city, or --zip).[/red]")
+        console.print(
+            "[red]Provide at least one search parameter (--name, --first, --org, --specialty, --city, or --zip).[/red]"
+        )
         raise typer.Exit(1)
 
     client = _get_client(use_cache=not no_cache)
     storage = _get_storage()
     try:
         response = svc_search(
-            client, storage,
+            client,
+            storage,
             last_name=name,
             first_name=first,
             organization_name=org,
@@ -174,14 +184,18 @@ def show(
 @app.command()
 def save(
     npi: Annotated[str, typer.Argument(help="10-digit NPI number")],
-    notes: Annotated[Optional[str], typer.Option("--notes", help="Notes about this provider")] = None,
+    notes: Annotated[
+        Optional[str], typer.Option("--notes", help="Notes about this provider")
+    ] = None,
     no_cache: Annotated[bool, typer.Option("--no-cache", help="Bypass response cache")] = False,
 ) -> None:
     """Save a provider to local database for future reference."""
     client = _get_client(use_cache=not no_cache)
     storage = _get_storage()
     try:
-        provider = svc_save(client, storage, npi, _get_cli_user_id(), notes=notes, use_cache=not no_cache)
+        provider = svc_save(
+            client, storage, npi, _get_cli_user_id(), notes=notes, use_cache=not no_cache
+        )
     except NPPESError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
@@ -195,7 +209,12 @@ def save(
 @app.command()
 def saved(
     # Named 'saved' instead of 'list' to avoid Python builtin shadowing
-    search: Annotated[Optional[str], typer.Option("--search", "-s", help="Filter saved providers by name, NPI, specialty, or notes")] = None,
+    search: Annotated[
+        Optional[str],
+        typer.Option(
+            "--search", "-s", help="Filter saved providers by name, NPI, specialty, or notes"
+        ),
+    ] = None,
 ) -> None:
     """List all saved providers."""
     storage = _get_storage()
@@ -210,7 +229,9 @@ def saved(
         if search:
             console.print(f"[yellow]No saved providers matching [cyan]{search}[/cyan].[/yellow]")
         else:
-            console.print("[yellow]No saved providers. Use [cyan]docstats save <NPI>[/cyan] to save one.[/yellow]")
+            console.print(
+                "[yellow]No saved providers. Use [cyan]docstats save <NPI>[/cyan] to save one.[/yellow]"
+            )
         raise typer.Exit(0)
 
     console.print(saved_table(providers))
@@ -294,7 +315,9 @@ def remove(
 @app.command(name="export-all")
 def export_all(
     fmt: Annotated[str, typer.Option("--format", "-f", help="Output format: csv or json")] = "csv",
-    output: Annotated[Optional[str], typer.Option("--output", "-o", help="Output file (default: stdout)")] = None,
+    output: Annotated[
+        Optional[str], typer.Option("--output", "-o", help="Output file (default: stdout)")
+    ] = None,
 ) -> None:
     """Export all saved providers as CSV or JSON."""
     import csv

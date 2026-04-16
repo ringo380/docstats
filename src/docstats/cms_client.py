@@ -80,11 +80,13 @@ class CMSClient:
             pac_id = (row.get("org_pac_id") or "").strip()
             if name and name not in seen_groups:
                 seen_groups.add(name)
-                result["group_affiliations"].append({
-                    "name": name,
-                    "pac_id": pac_id,
-                    "num_members": row.get("num_org_mem", ""),
-                })
+                result["group_affiliations"].append(
+                    {
+                        "name": name,
+                        "pac_id": pac_id,
+                        "num_members": row.get("num_org_mem", ""),
+                    }
+                )
 
         return result
 
@@ -102,10 +104,12 @@ class CMSClient:
             ftype = (row.get("facility_type") or "").strip()
             if ccn and ccn not in seen:
                 seen.add(ccn)
-                facilities.append({
-                    "ccn": ccn,
-                    "type": ftype,
-                })
+                facilities.append(
+                    {
+                        "ccn": ccn,
+                        "type": ftype,
+                    }
+                )
 
         return facilities
 
@@ -113,13 +117,13 @@ class CMSClient:
         """Execute a DKAN datastore query filtered by NPI."""
         url = f"{API_BASE}/{dataset_id}/0"
         body = {
-            "conditions": [
-                {"property": "npi", "value": npi, "operator": "="}
-            ],
+            "conditions": [{"property": "npi", "value": npi, "operator": "="}],
             "limit": 50,
         }
         resp = request_with_retry(
-            self._http, "POST", url,
+            self._http,
+            "POST",
+            url,
             json=body,
             label=f"CMS API ({dataset_id})",
             error_class=CMSError,
@@ -129,12 +133,14 @@ class CMSClient:
     async def async_lookup_clinician(self, npi: str) -> dict | None:
         """Async wrapper for lookup_clinician."""
         import asyncio
+
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.lookup_clinician, npi)
 
     async def async_lookup_facilities(self, npi: str) -> list[dict]:
         """Async wrapper for lookup_facility_affiliations."""
         import asyncio
+
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.lookup_facility_affiliations, npi)
 

@@ -30,14 +30,17 @@ async def profile(
             pcp_provider = await client.async_lookup(pcp_npi)
         except NPPESError:
             pass
-    return render("profile.html", {
-        "request": request,
-        "active_page": "profile",
-        "saved_count": saved_count(storage, user_id),
-        "user": current_user,
-        "pcp_provider": pcp_provider,
-        "mapbox_token": MAPBOX_TOKEN,
-    })
+    return render(
+        "profile.html",
+        {
+            "request": request,
+            "active_page": "profile",
+            "saved_count": saved_count(storage, user_id),
+            "user": current_user,
+            "pcp_provider": pcp_provider,
+            "mapbox_token": MAPBOX_TOKEN,
+        },
+    )
 
 
 @router.post("/profile/pcp/{npi}", response_class=HTMLResponse)
@@ -61,8 +64,11 @@ async def profile_clear_pcp(
     storage: StorageBase = Depends(get_storage),
 ):
     storage.clear_user_pcp(current_user["id"])
-    return render("_pcp_section.html", {
-        "request": request,
-        "pcp_provider": None,
-        "mapbox_token": MAPBOX_TOKEN,
-    })
+    return render(
+        "_pcp_section.html",
+        {
+            "request": request,
+            "pcp_provider": None,
+            "mapbox_token": MAPBOX_TOKEN,
+        },
+    )

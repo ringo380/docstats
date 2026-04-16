@@ -75,12 +75,14 @@ async def suggest_names(
         if addr:
             sublabel += f" — {format_name(addr.city)}, {addr.state}"
 
-        suggestions.append({
-            "value": value,
-            "label": display,
-            "sublabel": sublabel,
-            "extra": extra,
-        })
+        suggestions.append(
+            {
+                "value": value,
+                "label": display,
+                "sublabel": sublabel,
+                "extra": extra,
+            }
+        )
         if len(suggestions) >= 8:
             break
 

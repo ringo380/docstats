@@ -36,15 +36,20 @@ async def onboarding(
     if current_user.get("terms_accepted_at") or request.session.get("onboarding_done"):
         return RedirectResponse("/", status_code=303)
     user_id = current_user["id"]
-    return render("onboarding.html", {
-        "request": request,
-        "active_page": None,
-        "saved_count": saved_count(storage, user_id),
-        "mapbox_token": MAPBOX_TOKEN,
-        "user": current_user,
-        "initial_step": _onboarding_step(current_user, pcp_skipped=request.session.get("pcp_skipped", False)),
-        "today": date.today().isoformat(),
-    })
+    return render(
+        "onboarding.html",
+        {
+            "request": request,
+            "active_page": None,
+            "saved_count": saved_count(storage, user_id),
+            "mapbox_token": MAPBOX_TOKEN,
+            "user": current_user,
+            "initial_step": _onboarding_step(
+                current_user, pcp_skipped=request.session.get("pcp_skipped", False)
+            ),
+            "today": date.today().isoformat(),
+        },
+    )
 
 
 @router.post("/save-name")
@@ -123,7 +128,11 @@ async def onboarding_accept_terms(
     storage: StorageBase = Depends(get_storage),
 ):
     forwarded = request.headers.get("x-forwarded-for", "")
-    ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    ip = (
+        forwarded.split(",")[0].strip()
+        if forwarded
+        else (request.client.host if request.client else "unknown")
+    )
     ua = request.headers.get("user-agent", "unknown")
     storage.record_terms_acceptance(
         current_user["id"],

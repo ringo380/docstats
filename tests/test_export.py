@@ -24,9 +24,14 @@ def export_client(tmp_path: Path):
     storage = Storage(db_path=tmp_path / "test.db")
     user_id = storage.create_user("export@test.com", "hashed_pw")
     fake_user = {
-        "id": user_id, "email": "export@test.com",
-        "display_name": None, "github_id": None, "github_login": None,
-        "password_hash": "hashed_pw", "created_at": "2026-01-01", "last_login_at": None,
+        "id": user_id,
+        "email": "export@test.com",
+        "display_name": None,
+        "github_id": None,
+        "github_login": None,
+        "password_hash": "hashed_pw",
+        "created_at": "2026-01-01",
+        "last_login_at": None,
     }
     mock_nppes = MagicMock()
     mock_nppes.async_search = AsyncMock()

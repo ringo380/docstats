@@ -45,19 +45,21 @@ def auth_client(tmp_path: Path):
 
 # --- NPI validation at route boundary -------------------------------------
 
+
 class TestNpiPathValidation:
-    @pytest.mark.parametrize("bad_npi", [
-        "abc123",
-        "123",
-        "12345678901",       # 11 digits
-        "1234567890 ",       # trailing space
-        "12345abcde",
-    ])
+    @pytest.mark.parametrize(
+        "bad_npi",
+        [
+            "abc123",
+            "123",
+            "12345678901",  # 11 digits
+            "1234567890 ",  # trailing space
+            "12345abcde",
+        ],
+    )
     def test_rejects_malformed_npi_detail(self, anon_client, bad_npi):
         resp = anon_client.get(f"/provider/{bad_npi}", follow_redirects=False)
-        assert resp.status_code == 422, (
-            f"Expected 422 for NPI '{bad_npi}', got {resp.status_code}"
-        )
+        assert resp.status_code == 422, f"Expected 422 for NPI '{bad_npi}', got {resp.status_code}"
 
     def test_accepts_well_formed_npi(self, anon_client):
         # Route will return a 404-ish HTML (mock lookup returns None), but NOT 422.
@@ -81,43 +83,56 @@ class TestNpiPathValidation:
 
 # --- Signup / login field caps -------------------------------------------
 
+
 class TestSignupValidation:
     def test_rejects_invalid_email_format(self, anon_client):
-        resp = anon_client.post("/auth/signup", data={
-            "email": "notanemail",
-            "password": "password123",
-            "confirm_password": "password123",
-        })
+        resp = anon_client.post(
+            "/auth/signup",
+            data={
+                "email": "notanemail",
+                "password": "password123",
+                "confirm_password": "password123",
+            },
+        )
         assert resp.status_code == 200
         assert b"valid email" in resp.content.lower() or b"invalid" in resp.content.lower()
 
     def test_rejects_oversize_password(self, anon_client):
         long_pw = "a" * 100  # > 72-byte bcrypt limit
-        resp = anon_client.post("/auth/signup", data={
-            "email": "new@example.com",
-            "password": long_pw,
-            "confirm_password": long_pw,
-        })
+        resp = anon_client.post(
+            "/auth/signup",
+            data={
+                "email": "new@example.com",
+                "password": long_pw,
+                "confirm_password": long_pw,
+            },
+        )
         # FastAPI rejects at the Form boundary with 422
         assert resp.status_code == 422
 
     def test_rejects_oversize_email(self, anon_client):
         long_email = "a" * 300 + "@example.com"
-        resp = anon_client.post("/auth/signup", data={
-            "email": long_email,
-            "password": "password123",
-            "confirm_password": "password123",
-        })
+        resp = anon_client.post(
+            "/auth/signup",
+            data={
+                "email": long_email,
+                "password": "password123",
+                "confirm_password": "password123",
+            },
+        )
         assert resp.status_code == 422
 
     def test_login_with_malformed_email_returns_generic_error(self, anon_client):
         # Format failure must not leak as a distinct error — enumeration
         # resistance means the response should match a plain "wrong
         # password" outcome.
-        resp = anon_client.post("/auth/login", data={
-            "email": "notanemail",
-            "password": "password123",
-        })
+        resp = anon_client.post(
+            "/auth/login",
+            data={
+                "email": "notanemail",
+                "password": "password123",
+            },
+        )
         assert resp.status_code == 200
         body = resp.content.lower()
         assert b"invalid email or password" in body
@@ -138,6 +153,7 @@ class TestSignupValidation:
 
 # --- Search param caps ---------------------------------------------------
 
+
 class TestSearchQueryCaps:
     def test_rejects_oversize_query(self, anon_client):
         resp = anon_client.get("/search", params={"query": "a" * 1000})
@@ -150,6 +166,7 @@ class TestSearchQueryCaps:
 
 # --- Session cookie posture ---------------------------------------------
 
+
 def test_session_cookie_is_httponly_and_samesite_lax(anon_client):
     # Starlette only emits Set-Cookie when the session is mutated. The
     # anonymous-search counter writes to `request.session`, so hit that.
@@ -157,6 +174,7 @@ def test_session_cookie_is_httponly_and_samesite_lax(anon_client):
 
     # Find the mocked client through the dependency override and set a response.
     from docstats.web import get_client
+
     app.dependency_overrides[get_client]().async_search.return_value = NPIResponse(
         result_count=0, results=[]
     )

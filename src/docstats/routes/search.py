@@ -67,35 +67,46 @@ async def search(
 
     def _error(msg: str):
         if context in ("onboarding", "profile"):
-            return render("_pcp_results.html", {
+            return render(
+                "_pcp_results.html",
+                {
+                    "request": request,
+                    "error": msg,
+                    "results": None,
+                    "result_count": 0,
+                    "interp_desc": None,
+                    "pcp_action_url": "/onboarding/select-pcp"
+                    if context == "onboarding"
+                    else "/profile/pcp",
+                },
+            )
+        return render(
+            "_results.html",
+            {
                 "request": request,
                 "error": msg,
                 "results": None,
                 "result_count": 0,
                 "interp_desc": None,
-                "pcp_action_url": "/onboarding/select-pcp" if context == "onboarding" else "/profile/pcp",
-            })
-        return render("_results.html", {
-            "request": request,
-            "error": msg,
-            "results": None,
-            "result_count": 0,
-            "interp_desc": None,
-            "anon_limit_reached": False,
-        })
+                "anon_limit_reached": False,
+            },
+        )
 
     # Anonymous search limit
     if current_user is None:
         count = get_anon_search_count(request)
         if count >= ANON_SEARCH_LIMIT:
-            return render("_results.html", {
-                "request": request,
-                "error": None,
-                "results": None,
-                "result_count": 0,
-                "interp_desc": None,
-                "anon_limit_reached": True,
-            })
+            return render(
+                "_results.html",
+                {
+                    "request": request,
+                    "error": None,
+                    "results": None,
+                    "result_count": 0,
+                    "interp_desc": None,
+                    "anon_limit_reached": True,
+                },
+            )
 
     response = None
     interp_desc: str | None = None
@@ -122,7 +133,9 @@ async def search(
                 if zip:
                     search_kwargs["postal_code"] = zip
                 has_location = city or state or zip
-                geo_limit = limit * 5 if (parsed_geo_lat is not None and not has_location) else limit
+                geo_limit = (
+                    limit * 5 if (parsed_geo_lat is not None and not has_location) else limit
+                )
                 result = await client.async_search(**search_kwargs, limit=geo_limit)
                 if result.result_count == 0 and (has_location or geo_state):
                     fallback_kwargs = dict(interp)
@@ -168,7 +181,9 @@ async def search(
                 "Cannot search by individual name and organization name at the same time."
             )
         struct_has_location = city or state or zip
-        struct_geo_limit = limit * 5 if (parsed_geo_lat is not None and not struct_has_location) else limit
+        struct_geo_limit = (
+            limit * 5 if (parsed_geo_lat is not None and not struct_has_location) else limit
+        )
         try:
             response = await client.async_search(
                 last_name=name or None,
@@ -185,9 +200,16 @@ async def search(
             return _error(str(e))
 
         params: dict[str, str] = {}
-        for k, v in [("name", name), ("first", first), ("org", org),
-                     ("specialty", specialty), ("state", state),
-                     ("city", city), ("zip", zip), ("type", type)]:
+        for k, v in [
+            ("name", name),
+            ("first", first),
+            ("org", org),
+            ("specialty", specialty),
+            ("state", state),
+            ("city", city),
+            ("zip", zip),
+            ("type", type),
+        ]:
             if v:
                 params[k] = v
         storage.log_search(params, response.result_count, user_id=user_id)
@@ -225,20 +247,26 @@ async def search(
 
     if context in ("onboarding", "profile"):
         pcp_action_url = "/onboarding/select-pcp" if context == "onboarding" else "/profile/pcp"
-        return render("_pcp_results.html", {
+        return render(
+            "_pcp_results.html",
+            {
+                "request": request,
+                "results": ranked,
+                "result_count": response.result_count,
+                "error": None,
+                "interp_desc": interp_desc,
+                "pcp_action_url": pcp_action_url,
+            },
+        )
+
+    return render(
+        "_results.html",
+        {
             "request": request,
             "results": ranked,
             "result_count": response.result_count,
             "error": None,
             "interp_desc": interp_desc,
-            "pcp_action_url": pcp_action_url,
-        })
-
-    return render("_results.html", {
-        "request": request,
-        "results": ranked,
-        "result_count": response.result_count,
-        "error": None,
-        "interp_desc": interp_desc,
-        "anon_limit_reached": False,
-    })
+            "anon_limit_reached": False,
+        },
+    )

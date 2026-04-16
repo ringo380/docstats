@@ -118,7 +118,10 @@ class TestOpenPaymentsAggregate:
         """Should only return top 10 payers."""
         client = OpenPaymentsClient()
         rows = [
-            {**SAMPLE_PAYMENT_ROW_1, "applicable_manufacturer_or_applicable_gpo_making_payment_name": f"Company {i}"}
+            {
+                **SAMPLE_PAYMENT_ROW_1,
+                "applicable_manufacturer_or_applicable_gpo_making_payment_name": f"Company {i}",
+            }
             for i in range(15)
         ]
         result = client._aggregate(rows, 2023)

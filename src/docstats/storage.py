@@ -111,8 +111,7 @@ class Storage(StorageBase):
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
         cols = {
-            row[1]
-            for row in self._conn.execute("PRAGMA table_info(saved_providers)").fetchall()
+            row[1] for row in self._conn.execute("PRAGMA table_info(saved_providers)").fetchall()
         }
         if "user_id" in cols:
             return  # already migrated
@@ -204,7 +203,9 @@ class Storage(StorageBase):
     def _migrate_is_televisit(self) -> None:
         """Add is_televisit column to saved_providers if not present."""
         try:
-            self._conn.execute("ALTER TABLE saved_providers ADD COLUMN is_televisit INTEGER DEFAULT 0")
+            self._conn.execute(
+                "ALTER TABLE saved_providers ADD COLUMN is_televisit INTEGER DEFAULT 0"
+            )
             self._conn.commit()
         except sqlite3.OperationalError:
             pass  # Column already exists
@@ -283,21 +284,15 @@ class Storage(StorageBase):
         return cursor.lastrowid  # type: ignore[return-value]
 
     def update_last_login(self, user_id: int) -> None:
-        self._conn.execute(
-            "UPDATE users SET last_login_at=datetime('now') WHERE id=?", (user_id,)
-        )
+        self._conn.execute("UPDATE users SET last_login_at=datetime('now') WHERE id=?", (user_id,))
         self._conn.commit()
 
     def set_user_pcp(self, user_id: int, pcp_npi: str) -> None:
-        self._conn.execute(
-            "UPDATE users SET pcp_npi=? WHERE id=?", (pcp_npi, user_id)
-        )
+        self._conn.execute("UPDATE users SET pcp_npi=? WHERE id=?", (pcp_npi, user_id))
         self._conn.commit()
 
     def clear_user_pcp(self, user_id: int) -> None:
-        self._conn.execute(
-            "UPDATE users SET pcp_npi=NULL WHERE id=?", (user_id,)
-        )
+        self._conn.execute("UPDATE users SET pcp_npi=NULL WHERE id=?", (user_id,))
         self._conn.commit()
 
     def update_user_profile(
@@ -391,9 +386,11 @@ class Storage(StorageBase):
                 None,  # appt_suite: always NULL on initial save; preserved on conflict
                 None,  # appt_phone: always NULL on initial save; preserved on conflict
                 None,  # appt_fax: always NULL on initial save; preserved on conflict
-                0,     # is_televisit: always 0 on initial save; preserved on conflict
+                0,  # is_televisit: always 0 on initial save; preserved on conflict
                 provider.saved_at.isoformat() if provider.saved_at else datetime.now().isoformat(),
-                provider.updated_at.isoformat() if provider.updated_at else datetime.now().isoformat(),
+                provider.updated_at.isoformat()
+                if provider.updated_at
+                else datetime.now().isoformat(),
             ),
         )
         self._conn.commit()
@@ -498,9 +495,7 @@ class Storage(StorageBase):
         self._conn.commit()
         return cursor.rowcount > 0
 
-    def set_appt_contact(
-        self, npi: str, phone: str | None, fax: str | None, user_id: int
-    ) -> bool:
+    def set_appt_contact(self, npi: str, phone: str | None, fax: str | None, user_id: int) -> bool:
         """Set or clear the appointment phone and fax for a saved provider."""
         cursor = self._conn.execute(
             "UPDATE saved_providers SET appt_phone = ?, appt_fax = ? WHERE npi = ? AND user_id = ?",

@@ -67,18 +67,28 @@ def test_signup_page_renders(anon_client):
 
 def test_signup_password_too_short(anon_client):
     tc, _ = anon_client
-    resp = tc.post("/auth/signup", data={
-        "email": "new@test.com", "password": "short", "confirm_password": "short",
-    })
+    resp = tc.post(
+        "/auth/signup",
+        data={
+            "email": "new@test.com",
+            "password": "short",
+            "confirm_password": "short",
+        },
+    )
     assert resp.status_code == 200
     assert "8 characters" in resp.text
 
 
 def test_signup_password_mismatch(anon_client):
     tc, _ = anon_client
-    resp = tc.post("/auth/signup", data={
-        "email": "new@test.com", "password": "longpassword", "confirm_password": "different",
-    })
+    resp = tc.post(
+        "/auth/signup",
+        data={
+            "email": "new@test.com",
+            "password": "longpassword",
+            "confirm_password": "different",
+        },
+    )
     assert resp.status_code == 200
     assert "do not match" in resp.text.lower() or "mismatch" in resp.text.lower()
 
@@ -86,9 +96,14 @@ def test_signup_password_mismatch(anon_client):
 def test_signup_duplicate_email(anon_client):
     tc, storage = anon_client
     storage.create_user("taken@test.com", hash_password("password123"))
-    resp = tc.post("/auth/signup", data={
-        "email": "taken@test.com", "password": "password123", "confirm_password": "password123",
-    })
+    resp = tc.post(
+        "/auth/signup",
+        data={
+            "email": "taken@test.com",
+            "password": "password123",
+            "confirm_password": "password123",
+        },
+    )
     assert resp.status_code == 200
     assert "already exists" in resp.text.lower()
 
@@ -97,7 +112,11 @@ def test_signup_success_redirects_to_onboarding(anon_client):
     tc, _ = anon_client
     resp = tc.post(
         "/auth/signup",
-        data={"email": "new@test.com", "password": "password123", "confirm_password": "password123"},
+        data={
+            "email": "new@test.com",
+            "password": "password123",
+            "confirm_password": "password123",
+        },
         follow_redirects=False,
     )
     assert resp.status_code == 303

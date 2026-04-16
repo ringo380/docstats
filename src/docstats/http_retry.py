@@ -39,9 +39,12 @@ def request_with_retry(
             if resp.status_code == 200:
                 return resp
             if resp.status_code in retryable_status and attempt < max_retries:
-                delay = backoff_base ** attempt
+                delay = backoff_base**attempt
                 logger.warning(
-                    "%s returned %d, retrying in %.0fs", label, resp.status_code, delay,
+                    "%s returned %d, retrying in %.0fs",
+                    label,
+                    resp.status_code,
+                    delay,
                 )
                 time.sleep(delay)
                 continue
@@ -49,14 +52,14 @@ def request_with_retry(
         except httpx.TimeoutException as e:
             last_error = e
             if attempt < max_retries:
-                delay = backoff_base ** attempt
+                delay = backoff_base**attempt
                 logger.warning("%s timed out, retrying in %.0fs", label, delay)
                 time.sleep(delay)
                 continue
         except httpx.RequestError as e:
             last_error = e
             if attempt < max_retries:
-                delay = backoff_base ** attempt
+                delay = backoff_base**attempt
                 logger.warning("%s error: %s, retrying in %.0fs", label, e, delay)
                 time.sleep(delay)
                 continue

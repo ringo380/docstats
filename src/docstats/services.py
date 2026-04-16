@@ -64,9 +64,13 @@ def search_providers(
     # Log to history
     params: dict[str, str] = {}
     for k, v in [
-        ("last_name", last_name), ("first_name", first_name),
-        ("organization_name", organization_name), ("taxonomy_description", taxonomy_description),
-        ("state", state), ("city", city), ("postal_code", postal_code),
+        ("last_name", last_name),
+        ("first_name", first_name),
+        ("organization_name", organization_name),
+        ("taxonomy_description", taxonomy_description),
+        ("state", state),
+        ("city", city),
+        ("postal_code", postal_code),
         ("enumeration_type", enumeration_type),
     ]:
         if v:

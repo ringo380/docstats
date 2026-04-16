@@ -40,14 +40,17 @@ async def login_page(
 ):
     if current_user:
         return RedirectResponse("/", status_code=303)
-    return render("login.html", {
-        "request": request,
-        "active_page": None,
-        "saved_count": 0,
-        "user": None,
-        "error": request.session.pop("flash_error", None),
-        "github_enabled": GITHUB_ENABLED,
-    })
+    return render(
+        "login.html",
+        {
+            "request": request,
+            "active_page": None,
+            "saved_count": 0,
+            "user": None,
+            "error": request.session.pop("flash_error", None),
+            "github_enabled": GITHUB_ENABLED,
+        },
+    )
 
 
 @router.post("/login", response_class=HTMLResponse)
@@ -58,23 +61,29 @@ async def login_post(
     storage: StorageBase = Depends(get_storage),
 ):
     if not email.strip() or not password:
-        return render("login.html", {
+        return render(
+            "login.html",
+            {
+                "request": request,
+                "active_page": None,
+                "saved_count": 0,
+                "user": None,
+                "error": "Email and password are required.",
+                "github_enabled": GITHUB_ENABLED,
+            },
+        )
+
+    generic_error = render(
+        "login.html",
+        {
             "request": request,
             "active_page": None,
             "saved_count": 0,
             "user": None,
-            "error": "Email and password are required.",
+            "error": "Invalid email or password.",
             "github_enabled": GITHUB_ENABLED,
-        })
-
-    generic_error = render("login.html", {
-        "request": request,
-        "active_page": None,
-        "saved_count": 0,
-        "user": None,
-        "error": "Invalid email or password.",
-        "github_enabled": GITHUB_ENABLED,
-    })
+        },
+    )
 
     # Validate format before the storage lookup. Collapse format errors
     # into the generic "invalid email or password" response so malformed
@@ -86,7 +95,11 @@ async def login_post(
         return generic_error
 
     user = storage.get_user_by_email(email)
-    if not user or not user.get("password_hash") or not verify_password(password, user["password_hash"]):
+    if (
+        not user
+        or not user.get("password_hash")
+        or not verify_password(password, user["password_hash"])
+    ):
         return generic_error
 
     request.session["user_id"] = user["id"]
@@ -102,14 +115,17 @@ async def signup_page(
 ):
     if current_user:
         return RedirectResponse("/", status_code=303)
-    return render("signup.html", {
-        "request": request,
-        "active_page": None,
-        "saved_count": 0,
-        "user": None,
-        "error": None,
-        "github_enabled": GITHUB_ENABLED,
-    })
+    return render(
+        "signup.html",
+        {
+            "request": request,
+            "active_page": None,
+            "saved_count": 0,
+            "user": None,
+            "error": None,
+            "github_enabled": GITHUB_ENABLED,
+        },
+    )
 
 
 @router.post("/signup", response_class=HTMLResponse)
@@ -121,14 +137,17 @@ async def signup_post(
     storage: StorageBase = Depends(get_storage),
 ):
     def _err(msg: str):
-        return render("signup.html", {
-            "request": request,
-            "active_page": None,
-            "saved_count": 0,
-            "user": None,
-            "error": msg,
-            "github_enabled": GITHUB_ENABLED,
-        })
+        return render(
+            "signup.html",
+            {
+                "request": request,
+                "active_page": None,
+                "saved_count": 0,
+                "user": None,
+                "error": msg,
+                "github_enabled": GITHUB_ENABLED,
+            },
+        )
 
     if not email.strip() or not password:
         return _err("Email and password are required.")
