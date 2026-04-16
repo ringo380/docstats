@@ -164,8 +164,8 @@ class TestCMSClientQuery:
         mock_resp_200.status_code = 200
         mock_resp_200.json.return_value = {"results": [SAMPLE_CLINICIAN_ROW]}
 
-        with patch.object(client._http, "post", side_effect=[mock_resp_500, mock_resp_200]):
-            with patch("docstats.cms_client.time.sleep"):  # skip actual sleep
+        with patch.object(client._http, "request", side_effect=[mock_resp_500, mock_resp_200]):
+            with patch("docstats.http_retry.time.sleep"):  # skip actual sleep
                 result = client._query("mj5m-pzi6", "1003000126")
 
         assert len(result) == 1
@@ -178,8 +178,8 @@ class TestCMSClientQuery:
         mock_resp = MagicMock()
         mock_resp.status_code = 500
 
-        with patch.object(client._http, "post", return_value=mock_resp):
-            with patch("docstats.cms_client.time.sleep"):
+        with patch.object(client._http, "request", return_value=mock_resp):
+            with patch("docstats.http_retry.time.sleep"):
                 with pytest.raises(CMSError):
                     client._query("mj5m-pzi6", "1003000126")
         client.close()

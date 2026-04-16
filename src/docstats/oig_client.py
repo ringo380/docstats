@@ -23,6 +23,8 @@ from pathlib import Path
 
 import httpx
 
+from docstats.http_retry import request_with_retry
+
 logger = logging.getLogger(__name__)
 
 LEIE_CSV_URL = "https://oig.hhs.gov/exclusions/downloadables/UPDATED.csv"
@@ -31,9 +33,6 @@ LEIE_CACHE_FILE = LEIE_CACHE_DIR / "leie.csv"
 LEIE_MAX_AGE = 30 * 86400  # 30 days
 
 REQUEST_TIMEOUT = 60.0  # CSV download can be large
-MAX_RETRIES = 2
-RETRY_BACKOFF_BASE = 2.0
-RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
 class OIGError(Exception):
@@ -112,47 +111,23 @@ class OIGClient:
 
     def _download_csv(self) -> str:
         """Download the LEIE CSV with retry logic."""
-        last_error: Exception | None = None
-
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                resp = self._http.get(LEIE_CSV_URL)
-                if resp.status_code == 200:
-                    text = resp.text
-                    # Cache to disk
-                    self._cache_dir.mkdir(parents=True, exist_ok=True)
-                    self._cache_file.write_text(text, encoding="utf-8-sig")
-                    logger.info("Downloaded LEIE CSV (%d bytes)", len(text))
-                    return text
-                if resp.status_code in RETRYABLE_STATUS and attempt < MAX_RETRIES:
-                    delay = RETRY_BACKOFF_BASE ** attempt
-                    logger.warning(
-                        "LEIE download returned %d, retrying in %.0fs", resp.status_code, delay
-                    )
-                    time.sleep(delay)
-                    continue
-                raise OIGError(f"LEIE download failed with status {resp.status_code}")
-            except httpx.TimeoutException as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_BACKOFF_BASE ** attempt
-                    logger.warning("LEIE download timed out, retrying in %.0fs", delay)
-                    time.sleep(delay)
-                    continue
-            except httpx.RequestError as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_BACKOFF_BASE ** attempt
-                    logger.warning("LEIE download error: %s, retrying in %.0fs", e, delay)
-                    time.sleep(delay)
-                    continue
-
-        # If download fails but we have stale cache, use it
-        if self._cache_file.exists():
-            logger.warning("Using stale LEIE cache after download failure")
-            return self._cache_file.read_text(encoding="utf-8-sig")
-
-        raise OIGError(f"Failed to download LEIE CSV after {MAX_RETRIES + 1} attempts: {last_error}")
+        try:
+            resp = request_with_retry(
+                self._http, "GET", LEIE_CSV_URL,
+                label="LEIE download",
+                error_class=OIGError,
+            )
+            text = resp.text
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+            self._cache_file.write_text(text, encoding="utf-8-sig")
+            logger.info("Downloaded LEIE CSV (%d bytes)", len(text))
+            return text
+        except OIGError:
+            # If download fails but we have stale cache, use it
+            if self._cache_file.exists():
+                logger.warning("Using stale LEIE cache after download failure")
+                return self._cache_file.read_text(encoding="utf-8-sig")
+            raise
 
     def close(self) -> None:
         self._http.close()

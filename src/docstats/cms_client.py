@@ -15,9 +15,10 @@ API pattern (POST):
 from __future__ import annotations
 
 import logging
-import time
 
 import httpx
+
+from docstats.http_retry import request_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +27,6 @@ DATASET_CLINICIAN = "mj5m-pzi6"
 DATASET_FACILITY = "27ea-46a8"
 
 REQUEST_TIMEOUT = 30.0
-MAX_RETRIES = 2
-RETRY_BACKOFF_BASE = 2.0
-RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
 class CMSError(Exception):
@@ -120,39 +118,13 @@ class CMSClient:
             ],
             "limit": 50,
         }
-
-        last_error: Exception | None = None
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                resp = self._http.post(url, json=body)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return data.get("results", [])
-                if resp.status_code in RETRYABLE_STATUS and attempt < MAX_RETRIES:
-                    delay = RETRY_BACKOFF_BASE ** attempt
-                    logger.warning(
-                        "CMS API returned %d for %s, retrying in %.0fs",
-                        resp.status_code, dataset_id, delay,
-                    )
-                    time.sleep(delay)
-                    continue
-                raise CMSError(f"CMS API returned {resp.status_code} for dataset {dataset_id}")
-            except httpx.TimeoutException as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_BACKOFF_BASE ** attempt
-                    logger.warning("CMS API timeout for %s, retrying in %.0fs", dataset_id, delay)
-                    time.sleep(delay)
-                    continue
-            except httpx.RequestError as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_BACKOFF_BASE ** attempt
-                    logger.warning("CMS API error: %s, retrying in %.0fs", e, delay)
-                    time.sleep(delay)
-                    continue
-
-        raise CMSError(f"CMS API failed after {MAX_RETRIES + 1} attempts: {last_error}")
+        resp = request_with_retry(
+            self._http, "POST", url,
+            json=body,
+            label=f"CMS API ({dataset_id})",
+            error_class=CMSError,
+        )
+        return resp.json().get("results", [])
 
     async def async_lookup_clinician(self, npi: str) -> dict | None:
         """Async wrapper for lookup_clinician."""

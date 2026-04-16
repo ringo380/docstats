@@ -12,11 +12,11 @@ import logging
 import os
 import sqlite3
 from datetime import datetime
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
+from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
 
 if TYPE_CHECKING:
     from docstats.pg_storage import PostgresStorage
@@ -30,18 +30,6 @@ def _escape_like(query: str) -> str:
     """Escape SQL LIKE wildcard characters in a search query."""
     return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
-
-def _fuzzy_score(provider: SavedProvider, query: str) -> float:
-    """Score a saved provider against a search query for result ranking."""
-    best = 0.0
-    for field in (provider.display_name, provider.specialty, provider.notes):
-        if field:
-            ratio = SequenceMatcher(None, query, field.lower()).ratio()
-            if ratio > best:
-                best = ratio
-    if provider.npi.startswith(query):
-        best = max(best, 1.0)
-    return best
 
 _storage: "Storage | PostgresStorage | None" = None
 
@@ -73,7 +61,7 @@ def get_storage() -> "Storage | PostgresStorage":
     return _storage
 
 
-class Storage:
+class Storage(StorageBase):
     """SQLite storage for saved providers and search history."""
 
     def __init__(self, db_path: Path | None = None) -> None:
@@ -165,7 +153,7 @@ class Storage:
                 "CREATE INDEX IF NOT EXISTS idx_history_user ON search_history(user_id)"
             )
             self._conn.commit()
-        except Exception:
+        except sqlite3.OperationalError:
             pass  # Column already exists
 
     def _migrate_users_pcp_npi(self) -> None:
@@ -173,7 +161,7 @@ class Storage:
         try:
             self._conn.execute("ALTER TABLE users ADD COLUMN pcp_npi TEXT")
             self._conn.commit()
-        except Exception:
+        except sqlite3.OperationalError:
             pass  # Column already exists
 
     def _migrate_users_profile_fields(self) -> None:
@@ -191,8 +179,8 @@ class Storage:
         for col in cols:
             try:
                 self._conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
-            except Exception:
-                pass
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         self._conn.commit()
 
     def _migrate_enrichment_json(self) -> None:
@@ -200,7 +188,7 @@ class Storage:
         try:
             self._conn.execute("ALTER TABLE saved_providers ADD COLUMN enrichment_json TEXT")
             self._conn.commit()
-        except Exception:
+        except sqlite3.OperationalError:
             pass  # Column already exists
 
     def _migrate_appt_suite(self) -> None:
@@ -208,7 +196,7 @@ class Storage:
         try:
             self._conn.execute("ALTER TABLE saved_providers ADD COLUMN appt_suite TEXT")
             self._conn.commit()
-        except Exception:
+        except sqlite3.OperationalError:
             pass  # Column already exists
 
     # --- User CRUD ---
@@ -217,7 +205,7 @@ class Storage:
         """Create a new email/password user. Returns the new user id."""
         cursor = self._conn.execute(
             "INSERT INTO users (email, password_hash) VALUES (?, ?)",
-            (email.strip().lower(), password_hash),
+            (normalize_email(email), password_hash),
         )
         self._conn.commit()
         return cursor.lastrowid  # type: ignore[return-value]
@@ -228,7 +216,7 @@ class Storage:
 
     def get_user_by_email(self, email: str) -> dict | None:
         row = self._conn.execute(
-            "SELECT * FROM users WHERE email = ?", (email.strip().lower(),)
+            "SELECT * FROM users WHERE email = ?", (normalize_email(email),)
         ).fetchone()
         return dict(row) if row else None
 
@@ -267,7 +255,7 @@ class Storage:
                 self._conn.commit()
                 return existing_email["id"]
         # Completely new user
-        safe_email = email.strip().lower() if email else f"github_{github_id}@noemail.invalid"
+        safe_email = normalize_email(email) if email else f"github_{github_id}@noemail.invalid"
         cursor = self._conn.execute(
             "INSERT INTO users (email, github_id, github_login, display_name) VALUES (?, ?, ?, ?)",
             (safe_email, github_id, github_login, display_name),
@@ -423,7 +411,7 @@ class Storage:
         ).fetchall()
         providers = [self._row_to_provider(r) for r in rows]
         query_lower = query.lower()
-        return sorted(providers, key=lambda p: _fuzzy_score(p, query_lower), reverse=True)
+        return sorted(providers, key=lambda p: fuzzy_score(p, query_lower), reverse=True)
 
     def delete_provider(self, npi: str, user_id: int) -> bool:
         """Delete a saved provider. Returns True if it existed."""
