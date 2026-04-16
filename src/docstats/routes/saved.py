@@ -19,10 +19,26 @@ from docstats.storage_base import StorageBase
 router = APIRouter(tags=["saved"])
 
 _CSV_FIELDNAMES = [
-    "NPI", "Name", "Entity Type", "Specialty", "Phone", "Fax",
-    "Address", "City", "State", "ZIP", "Notes", "Appointment Address", "Appointment Suite",
-    "Appointment Phone", "Appointment Fax", "Televisit", "Saved At",
-    "OIG Excluded", "Medicare Enrolled", "Industry Payments ($)",
+    "NPI",
+    "Name",
+    "Entity Type",
+    "Specialty",
+    "Phone",
+    "Fax",
+    "Address",
+    "City",
+    "State",
+    "ZIP",
+    "Notes",
+    "Appointment Address",
+    "Appointment Suite",
+    "Appointment Phone",
+    "Appointment Fax",
+    "Televisit",
+    "Saved At",
+    "OIG Excluded",
+    "Medicare Enrolled",
+    "Industry Payments ($)",
 ]
 
 
@@ -34,14 +50,17 @@ async def saved_list(
 ):
     user_id = current_user["id"]
     providers = storage.list_providers(user_id)
-    return render("saved.html", {
-        "request": request,
-        "active_page": "saved",
-        "providers": providers,
-        "saved_count": len(providers),
-        "mapbox_token": MAPBOX_TOKEN,
-        "user": current_user,
-    })
+    return render(
+        "saved.html",
+        {
+            "request": request,
+            "active_page": "saved",
+            "providers": providers,
+            "saved_count": len(providers),
+            "mapbox_token": MAPBOX_TOKEN,
+            "user": current_user,
+        },
+    )
 
 
 @router.get("/saved/export/csv")
@@ -92,16 +111,21 @@ async def export_all(
     for p in providers:
         result = p.to_npi_result()
         text = referral_export(result, appt_address=p.appt_address, appt_suite=p.appt_suite)
-        referrals.append({
-            "result": result,
-            "export_text": text,
-            "appt_address": p.appt_address,
-            "appt_suite": p.appt_suite,
-        })
-    return render("export_all.html", {
-        "request": request,
-        "active_page": "saved",
-        "referrals": referrals,
-        "saved_count": len(providers),
-        "user": current_user,
-    })
+        referrals.append(
+            {
+                "result": result,
+                "export_text": text,
+                "appt_address": p.appt_address,
+                "appt_suite": p.appt_suite,
+            }
+        )
+    return render(
+        "export_all.html",
+        {
+            "request": request,
+            "active_page": "saved",
+            "referrals": referrals,
+            "saved_count": len(providers),
+            "user": current_user,
+        },
+    )

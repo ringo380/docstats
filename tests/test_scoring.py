@@ -43,22 +43,14 @@ class TestScoring:
 
     def test_middle_name_exact_match(self):
         query = SearchQuery(last_name="SMITH", middle_name="ROBERT")
-        with_mid = _make_result(
-            basic={**SAMPLE_NPI1_RESULT["basic"], "middle_name": "ROBERT"}
-        )
-        without_mid = _make_result(
-            basic={**SAMPLE_NPI1_RESULT["basic"], "middle_name": "JAMES"}
-        )
+        with_mid = _make_result(basic={**SAMPLE_NPI1_RESULT["basic"], "middle_name": "ROBERT"})
+        without_mid = _make_result(basic={**SAMPLE_NPI1_RESULT["basic"], "middle_name": "JAMES"})
         assert score_result(with_mid, query) > score_result(without_mid, query)
 
     def test_middle_initial_match(self):
         query = SearchQuery(last_name="SMITH", middle_name="R")
-        with_r = _make_result(
-            basic={**SAMPLE_NPI1_RESULT["basic"], "middle_name": "ROBERT"}
-        )
-        with_j = _make_result(
-            basic={**SAMPLE_NPI1_RESULT["basic"], "middle_name": "JAMES"}
-        )
+        with_r = _make_result(basic={**SAMPLE_NPI1_RESULT["basic"], "middle_name": "ROBERT"})
+        with_j = _make_result(basic={**SAMPLE_NPI1_RESULT["basic"], "middle_name": "JAMES"})
         assert score_result(with_r, query) > score_result(with_j, query)
 
     def test_zip_match_beats_city_state(self):
@@ -66,11 +58,13 @@ class TestScoring:
         zip_match = NPIResult.model_validate(SAMPLE_NPI1_RESULT)  # has 94110 ZIP
         # Create one with different ZIP -- only gets state match (+10) not ZIP match (+20)
         other_data = {**SAMPLE_NPI1_RESULT}
-        other_data["addresses"] = [{
-            **SAMPLE_NPI1_RESULT["addresses"][0],
-            "postal_code": "90210",
-            "city": "BEVERLY HILLS",
-        }]
+        other_data["addresses"] = [
+            {
+                **SAMPLE_NPI1_RESULT["addresses"][0],
+                "postal_code": "90210",
+                "city": "BEVERLY HILLS",
+            }
+        ]
         other = NPIResult.model_validate(other_data)
         assert score_result(zip_match, query) > score_result(other, query)
 

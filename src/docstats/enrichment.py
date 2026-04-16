@@ -14,15 +14,15 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 # Cache TTLs (seconds)
-TTL_OIG = 30 * 86400       # 30 days (monthly CSV release)
-TTL_MEDICARE = 7 * 86400   # 7 days (quarterly releases)
+TTL_OIG = 30 * 86400  # 30 days (monthly CSV release)
+TTL_MEDICARE = 7 * 86400  # 7 days (quarterly releases)
 TTL_OPEN_PAYMENTS = 30 * 86400  # 30 days (annual release)
 
 
@@ -154,6 +154,7 @@ async def enrich_provider(npi: str, cache: EnrichmentCache) -> EnrichmentData:
 
     try:
         from docstats.oig_client import OIGClient  # noqa: F401
+
         task = asyncio.create_task(_fetch_oig(npi, cache))
         tasks.append(("oig", task))
     except ImportError:
@@ -161,6 +162,7 @@ async def enrich_provider(npi: str, cache: EnrichmentCache) -> EnrichmentData:
 
     try:
         from docstats.cms_client import CMSClient  # noqa: F401
+
         task = asyncio.create_task(_fetch_medicare(npi, cache))
         tasks.append(("medicare", task))
     except ImportError:
@@ -168,6 +170,7 @@ async def enrich_provider(npi: str, cache: EnrichmentCache) -> EnrichmentData:
 
     try:
         from docstats.open_payments_client import OpenPaymentsClient  # noqa: F401
+
         task = asyncio.create_task(_fetch_open_payments(npi, cache))
         tasks.append(("open_payments", task))
     except ImportError:
@@ -217,10 +220,11 @@ async def _fetch_oig(npi: str, cache: EnrichmentCache) -> dict | None:
     # Check cache first (SQLite is fast, no executor needed)
     cached = cache.get("oig", npi)
     if cached is not None:
-        return json.loads(cached)
+        return cast("dict | None", json.loads(cached))
 
     def _sync_fetch() -> dict | None:
         from docstats.oig_client import OIGClient
+
         client = OIGClient()
         try:
             return client.check_exclusion(npi)
@@ -239,10 +243,11 @@ async def _fetch_medicare(npi: str, cache: EnrichmentCache) -> dict | None:
     """Fetch Medicare enrollment and facility affiliation data from CMS."""
     cached = cache.get("medicare", npi)
     if cached is not None:
-        return json.loads(cached)
+        return cast("dict | None", json.loads(cached))
 
     def _sync_fetch() -> dict | None:
         from docstats.cms_client import CMSClient
+
         client = CMSClient()
         try:
             clinician = client.lookup_clinician(npi)
@@ -265,10 +270,11 @@ async def _fetch_open_payments(npi: str, cache: EnrichmentCache) -> dict | None:
     """Fetch industry payment data from CMS Open Payments."""
     cached = cache.get("open_payments", npi)
     if cached is not None:
-        return json.loads(cached)
+        return cast("dict | None", json.loads(cached))
 
     def _sync_fetch() -> dict | None:
         from docstats.open_payments_client import OpenPaymentsClient
+
         client = OpenPaymentsClient()
         try:
             return client.lookup_payments(npi)

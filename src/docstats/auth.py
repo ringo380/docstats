@@ -43,10 +43,10 @@ def require_user(user: dict | None = Depends(get_current_user)) -> dict:
 
 
 def get_anon_search_count(request: Request) -> int:
-    return request.session.get("anon_searches", 0)
+    return int(request.session.get("anon_searches", 0))
 
 
 def increment_anon_search_count(request: Request) -> int:
-    count = request.session.get("anon_searches", 0) + 1
+    count = int(request.session.get("anon_searches", 0)) + 1
     request.session["anon_searches"] = count
     return count

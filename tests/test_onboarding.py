@@ -38,19 +38,44 @@ class TestOnboardingStep:
         assert _onboarding_step({"first_name": "A", "last_name": "B", "date_of_birth": None}) == 2
 
     def test_step3_no_pcp(self):
-        assert _onboarding_step({
-            "first_name": "A", "last_name": "B", "date_of_birth": "2000-01-01", "pcp_npi": None,
-        }) == 3
+        assert (
+            _onboarding_step(
+                {
+                    "first_name": "A",
+                    "last_name": "B",
+                    "date_of_birth": "2000-01-01",
+                    "pcp_npi": None,
+                }
+            )
+            == 3
+        )
 
     def test_step3_pcp_skipped(self):
-        assert _onboarding_step({
-            "first_name": "A", "last_name": "B", "date_of_birth": "2000-01-01", "pcp_npi": None,
-        }, pcp_skipped=True) == 4
+        assert (
+            _onboarding_step(
+                {
+                    "first_name": "A",
+                    "last_name": "B",
+                    "date_of_birth": "2000-01-01",
+                    "pcp_npi": None,
+                },
+                pcp_skipped=True,
+            )
+            == 4
+        )
 
     def test_step4_all_present(self):
-        assert _onboarding_step({
-            "first_name": "A", "last_name": "B", "date_of_birth": "2000-01-01", "pcp_npi": "1234567890",
-        }) == 4
+        assert (
+            _onboarding_step(
+                {
+                    "first_name": "A",
+                    "last_name": "B",
+                    "date_of_birth": "2000-01-01",
+                    "pcp_npi": "1234567890",
+                }
+            )
+            == 4
+        )
 
 
 def test_onboarding_page_renders(onboarding_client):
@@ -63,7 +88,9 @@ def test_onboarding_redirects_when_complete(tmp_path: Path):
     """Users with terms_accepted_at skip onboarding."""
     storage = Storage(db_path=tmp_path / "test.db")
     user_id = storage.create_user("done@test.com", hash_password("pw"))
-    storage.record_terms_acceptance(user_id, terms_version="1.0", ip_address="127.0.0.1", user_agent="test")
+    storage.record_terms_acceptance(
+        user_id, terms_version="1.0", ip_address="127.0.0.1", user_agent="test"
+    )
     user = storage.get_user_by_id(user_id)
     mock_nppes = MagicMock()
     app.dependency_overrides[get_storage] = lambda: storage
@@ -77,9 +104,14 @@ def test_onboarding_redirects_when_complete(tmp_path: Path):
 
 def test_save_name(onboarding_client):
     tc, storage, user_id = onboarding_client
-    resp = tc.post("/onboarding/save-name", data={
-        "first_name": "Jane", "last_name": "Doe", "middle_name": "",
-    })
+    resp = tc.post(
+        "/onboarding/save-name",
+        data={
+            "first_name": "Jane",
+            "last_name": "Doe",
+            "middle_name": "",
+        },
+    )
     assert resp.status_code == 200
     assert resp.headers.get("hx-trigger") == "stepComplete"
     user = storage.get_user_by_id(user_id)

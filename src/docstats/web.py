@@ -59,6 +59,7 @@ async def add_robots_header(request: Request, call_next):
 
 # --- Exception handlers ---
 
+
 @app.exception_handler(AuthRequiredException)
 async def auth_exception_handler(request: Request, exc: AuthRequiredException):
     if request.headers.get("HX-Request"):
@@ -91,6 +92,7 @@ app.include_router(providers_router)
 
 # --- Home and history (kept in web.py — simple, depend on shared state) ---
 
+
 @app.get("/", response_class=HTMLResponse)
 async def index(
     request: Request,
@@ -99,20 +101,22 @@ async def index(
 ):
     user_id = current_user["id"] if current_user else None
     anon_remaining = (
-        None if current_user
-        else max(0, ANON_SEARCH_LIMIT - get_anon_search_count(request))
+        None if current_user else max(0, ANON_SEARCH_LIMIT - get_anon_search_count(request))
     )
-    return render("index.html", {
-        "request": request,
-        "active_page": "search",
-        "states": US_STATES,
-        "q": {},
-        "initial_results": False,
-        "mapbox_token": MAPBOX_TOKEN,
-        "saved_count": saved_count(storage, user_id),
-        "user": current_user,
-        "anon_searches_remaining": anon_remaining,
-    })
+    return render(
+        "index.html",
+        {
+            "request": request,
+            "active_page": "search",
+            "states": US_STATES,
+            "q": {},
+            "initial_results": False,
+            "mapbox_token": MAPBOX_TOKEN,
+            "saved_count": saved_count(storage, user_id),
+            "user": current_user,
+            "anon_searches_remaining": anon_remaining,
+        },
+    )
 
 
 @app.get("/history", response_class=HTMLResponse)
@@ -124,10 +128,13 @@ async def history(
 ):
     user_id = current_user["id"]
     entries = storage.get_history(limit=limit, user_id=user_id)
-    return render("history.html", {
-        "request": request,
-        "active_page": "history",
-        "entries": entries,
-        "saved_count": saved_count(storage, user_id),
-        "user": current_user,
-    })
+    return render(
+        "history.html",
+        {
+            "request": request,
+            "active_page": "history",
+            "entries": entries,
+            "saved_count": saved_count(storage, user_id),
+            "user": current_user,
+        },
+    )

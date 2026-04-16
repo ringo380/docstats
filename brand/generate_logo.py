@@ -22,8 +22,8 @@ def generate_svg():
     # Two nodes: origin (bottom-left), destination (top-right)
     # Connected by a clean bezier curve
     mark_w = 24
-    cx1, cy1 = 4.0, 18.5   # origin node
-    cx2, cy2 = 20.0, 9.5   # destination node
+    cx1, cy1 = 4.0, 18.5  # origin node
+    cx2, cy2 = 20.0, 9.5  # destination node
 
     # Single smooth cubic bezier (gentle arc, not S-curve)
     cp1x, cp1y = 9.0, 8.0
@@ -99,28 +99,27 @@ if __name__ == "__main__":
     svg_path = os.path.join(out_dir, "logo.svg")
     with open(svg_path, "w") as f:
         f.write(generate_svg())
-    print(f"  logo.svg")
+    print("  logo.svg")
 
     # Favicon mark
     fav_path = os.path.join(out_dir, "favicon.svg")
     with open(fav_path, "w") as f:
         f.write(generate_mark_only())
-    print(f"  favicon.svg")
+    print("  favicon.svg")
 
     # PNG previews
     for name, src in [("logo.png", svg_path), ("favicon.png", fav_path)]:
         png_path = os.path.join(out_dir, name)
         try:
             subprocess.run(
-                ["rsvg-convert", "-z", "4", src, "-o", png_path],
-                check=True, capture_output=True
+                ["rsvg-convert", "-z", "4", src, "-o", png_path], check=True, capture_output=True
             )
             print(f"  {name}")
         except (FileNotFoundError, subprocess.CalledProcessError):
             pass
 
     # Dark-background preview
-    preview_html = f'''<!DOCTYPE html>
+    preview_html = f"""<!DOCTYPE html>
 <html><head><style>
 body {{ background: {BG_DARK}; display: flex; align-items: center; justify-content: center; height: 100vh; gap: 40px; }}
 .box {{ padding: 20px 30px; border: 1px solid #2d3748; border-radius: 8px; }}
@@ -129,9 +128,9 @@ body {{ background: {BG_DARK}; display: flex; align-items: center; justify-conte
 <div class="box"><div class="label">navbar size</div><img src="logo.svg" height="28"></div>
 <div class="box"><div class="label">2x</div><img src="logo.svg" height="56"></div>
 <div class="box"><div class="label">favicon</div><img src="favicon.svg" width="32" height="32"> <img src="favicon.svg" width="16" height="16"></div>
-</body></html>'''
+</body></html>"""
 
     preview_path = os.path.join(out_dir, "preview.html")
     with open(preview_path, "w") as f:
         f.write(preview_html)
-    print(f"  preview.html (open in browser to review)")
+    print("  preview.html (open in browser to review)")

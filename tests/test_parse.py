@@ -79,35 +79,65 @@ def test_phd_stripped():
 
 def test_build_interpretations_full():
     """With first, last, and specialty — 4 interpretations in order."""
-    r = ParseResult(first_name="kim", last_name="do", specialty="Orthopedic Surgery",
-                    honorific="dr", credentials=[], is_org=False, org_name="")
+    r = ParseResult(
+        first_name="kim",
+        last_name="do",
+        specialty="Orthopedic Surgery",
+        honorific="dr",
+        credentials=[],
+        is_org=False,
+        org_name="",
+    )
     interps = build_interpretations(r)
     assert len(interps) == 4
-    assert interps[0] == {"first_name": "Kim", "last_name": "Do",
-                          "taxonomy_description": "Orthopedic Surgery"}
+    assert interps[0] == {
+        "first_name": "Kim",
+        "last_name": "Do",
+        "taxonomy_description": "Orthopedic Surgery",
+    }
     assert interps[1] == {"last_name": "Kim", "taxonomy_description": "Orthopedic Surgery"}
     assert interps[2] == {"first_name": "Kim", "last_name": "Do"}
     assert interps[3] == {"last_name": "Kim"}
 
 
 def test_build_interpretations_last_only():
-    r = ParseResult(first_name="", last_name="chen", specialty="",
-                    honorific="", credentials=[], is_org=False, org_name="")
+    r = ParseResult(
+        first_name="",
+        last_name="chen",
+        specialty="",
+        honorific="",
+        credentials=[],
+        is_org=False,
+        org_name="",
+    )
     interps = build_interpretations(r)
     assert interps == [{"last_name": "Chen"}]
 
 
 def test_build_interpretations_org():
-    r = ParseResult(first_name="", last_name="", specialty="",
-                    honorific="", credentials=[], is_org=True, org_name="Kaiser Permanente")
+    r = ParseResult(
+        first_name="",
+        last_name="",
+        specialty="",
+        honorific="",
+        credentials=[],
+        is_org=True,
+        org_name="Kaiser Permanente",
+    )
     interps = build_interpretations(r)
-    assert interps == [{"organization_name": "Kaiser Permanente",
-                        "enumeration_type": "NPI-2"}]
+    assert interps == [{"organization_name": "Kaiser Permanente", "enumeration_type": "NPI-2"}]
 
 
 def test_build_interpretations_last_and_specialty():
-    r = ParseResult(first_name="", last_name="lopez", specialty="Cardiology",
-                    honorific="", credentials=[], is_org=False, org_name="")
+    r = ParseResult(
+        first_name="",
+        last_name="lopez",
+        specialty="Cardiology",
+        honorific="",
+        credentials=[],
+        is_org=False,
+        org_name="",
+    )
     interps = build_interpretations(r)
     assert interps[0] == {"last_name": "Lopez", "taxonomy_description": "Cardiology"}
     assert interps[1] == {"last_name": "Lopez"}

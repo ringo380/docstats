@@ -30,7 +30,9 @@ def test_referral_export_appt_address_after_npi_address():
 
 def test_referral_export_with_suite():
     result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
-    text = referral_export(result, appt_address="1 Shrader St, San Francisco, CA 94117", appt_suite="Suite 6A")
+    text = referral_export(
+        result, appt_address="1 Shrader St, San Francisco, CA 94117", appt_suite="Suite 6A"
+    )
     assert "MY APPOINTMENT LOCATION" in text
     assert "1 Shrader St" in text
     assert "Suite 6A" in text

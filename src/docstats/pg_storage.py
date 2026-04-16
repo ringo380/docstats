@@ -76,10 +76,12 @@ class PostgresStorage(StorageBase):
     # --- User CRUD ---
 
     def create_user(self, email: str, password_hash: str) -> int:
-        result = self._t("users").insert(
-            {"email": normalize_email(email), "password_hash": password_hash}
-        ).execute()
-        return result.data[0]["id"]
+        result = (
+            self._t("users")
+            .insert({"email": normalize_email(email), "password_hash": password_hash})
+            .execute()
+        )
+        return int(result.data[0]["id"])
 
     def get_user_by_id(self, user_id: int) -> dict | None:
         result = self._t("users").select("*").eq("id", user_id).execute()
@@ -108,25 +110,29 @@ class PostgresStorage(StorageBase):
             if display_name is not None:
                 updates["display_name"] = display_name
             self._t("users").update(updates).eq("id", existing["id"]).execute()
-            return existing["id"]
+            return int(existing["id"])
         if email:
             existing_email = self.get_user_by_email(email)
             if existing_email:
                 self._t("users").update(
                     {"github_id": github_id, "github_login": github_login, "last_login_at": now}
                 ).eq("id", existing_email["id"]).execute()
-                return existing_email["id"]
+                return int(existing_email["id"])
         safe_email = normalize_email(email) if email else f"github_{github_id}@noemail.invalid"
-        result = self._t("users").upsert(
-            {
-                "email": safe_email,
-                "github_id": github_id,
-                "github_login": github_login,
-                "display_name": display_name,
-            },
-            on_conflict="github_id",
-        ).execute()
-        return result.data[0]["id"]
+        result = (
+            self._t("users")
+            .upsert(
+                {
+                    "email": safe_email,
+                    "github_id": github_id,
+                    "github_login": github_login,
+                    "display_name": display_name,
+                },
+                on_conflict="github_id",
+            )
+            .execute()
+        )
+        return int(result.data[0]["id"])
 
     def update_last_login(self, user_id: int) -> None:
         self._t("users").update({"last_login_at": _now_iso()}).eq("id", user_id).execute()
@@ -170,12 +176,14 @@ class PostgresStorage(StorageBase):
         ip_address: str,
         user_agent: str,
     ) -> None:
-        self._t("users").update({
-            "terms_accepted_at": _now_iso(),
-            "terms_version": terms_version,
-            "terms_ip": ip_address,
-            "terms_user_agent": user_agent,
-        }).eq("id", user_id).execute()
+        self._t("users").update(
+            {
+                "terms_accepted_at": _now_iso(),
+                "terms_version": terms_version,
+                "terms_ip": ip_address,
+                "terms_user_agent": user_agent,
+            }
+        ).eq("id", user_id).execute()
 
     # --- Provider CRUD ---
 
@@ -193,7 +201,9 @@ class PostgresStorage(StorageBase):
         appt_fax = existing.appt_fax if existing else None
         is_televisit = existing.is_televisit if existing else False
         enrichment_json = existing.enrichment_json if existing else None
-        merged_notes = provider.notes if provider.notes is not None else (existing.notes if existing else None)
+        merged_notes = (
+            provider.notes if provider.notes is not None else (existing.notes if existing else None)
+        )
 
         self._t("saved_providers").upsert(
             {
@@ -228,11 +238,7 @@ class PostgresStorage(StorageBase):
         if user_id is None:
             return None
         result = (
-            self._t("saved_providers")
-            .select("*")
-            .eq("npi", npi)
-            .eq("user_id", user_id)
-            .execute()
+            self._t("saved_providers").select("*").eq("npi", npi).eq("user_id", user_id).execute()
         )
         return self._row_to_provider(result.data[0]) if result.data else None
 
@@ -253,7 +259,8 @@ class PostgresStorage(StorageBase):
         all_providers = self.list_providers(user_id)
         query_lower = query.lower()
         matched = [
-            p for p in all_providers
+            p
+            for p in all_providers
             if query_lower in (p.display_name or "").lower()
             or query_lower in (p.npi or "")
             or query_lower in (p.specialty or "").lower()
@@ -263,13 +270,7 @@ class PostgresStorage(StorageBase):
         return sorted(matched, key=lambda p: fuzzy_score(p, query_lower), reverse=True)
 
     def delete_provider(self, npi: str, user_id: int) -> bool:
-        result = (
-            self._t("saved_providers")
-            .delete()
-            .eq("npi", npi)
-            .eq("user_id", user_id)
-            .execute()
-        )
+        result = self._t("saved_providers").delete().eq("npi", npi).eq("user_id", user_id).execute()
         return len(result.data) > 0
 
     def set_appt_address(self, npi: str, address: str, user_id: int) -> bool:
@@ -297,7 +298,9 @@ class PostgresStorage(StorageBase):
     def clear_appt_address(self, npi: str, user_id: int) -> bool:
         result = (
             self._t("saved_providers")
-            .update({"appt_address": None, "appt_suite": None, "appt_phone": None, "appt_fax": None})
+            .update(
+                {"appt_address": None, "appt_suite": None, "appt_phone": None, "appt_fax": None}
+            )
             .eq("npi", npi)
             .eq("user_id", user_id)
             .execute()
@@ -316,18 +319,18 @@ class PostgresStorage(StorageBase):
         )
         return len(result.data) > 0
 
-    def set_appt_contact(
-        self, npi: str, phone: str | None, fax: str | None, user_id: int
-    ) -> bool:
+    def set_appt_contact(self, npi: str, phone: str | None, fax: str | None, user_id: int) -> bool:
         # Requires manual Supabase migration before deploy:
         # ALTER TABLE docstats_saved_providers ADD COLUMN IF NOT EXISTS appt_phone TEXT;
         # ALTER TABLE docstats_saved_providers ADD COLUMN IF NOT EXISTS appt_fax TEXT;
         result = (
             self._t("saved_providers")
-            .update({
-                "appt_phone": phone.strip() if phone else None,
-                "appt_fax": fax.strip() if fax else None,
-            })
+            .update(
+                {
+                    "appt_phone": phone.strip() if phone else None,
+                    "appt_fax": fax.strip() if fax else None,
+                }
+            )
             .eq("npi", npi)
             .eq("user_id", user_id)
             .execute()
@@ -396,10 +399,7 @@ class PostgresStorage(StorageBase):
     def lookup_zip(self, zip_code: str) -> dict[str, str] | None:
         self._ensure_zip_table()
         result = (
-            self._t("zip_codes")
-            .select("city,state")
-            .eq("zip_code", zip_code.strip()[:5])
-            .execute()
+            self._t("zip_codes").select("city,state").eq("zip_code", zip_code.strip()[:5]).execute()
         )
         if not result.data:
             return None

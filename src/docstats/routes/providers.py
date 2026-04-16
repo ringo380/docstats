@@ -25,19 +25,26 @@ def _render_appt(
     appt_fax: str | None = None,
     is_televisit: bool = False,
 ):
-    return render("_appt_address.html", {
-        "request": request, "npi": npi,
-        "appt_address": appt_address, "appt_suite": appt_suite,
-        "appt_phone": appt_phone, "appt_fax": appt_fax,
-        "is_televisit": is_televisit,
-        "mapbox_token": MAPBOX_TOKEN,
-    })
+    return render(
+        "_appt_address.html",
+        {
+            "request": request,
+            "npi": npi,
+            "appt_address": appt_address,
+            "appt_suite": appt_suite,
+            "appt_phone": appt_phone,
+            "appt_fax": appt_fax,
+            "is_televisit": is_televisit,
+            "mapbox_token": MAPBOX_TOKEN,
+        },
+    )
 
 
 def _render_appt_from_provider(request: Request, npi: str, provider):
     """Render _appt_address.html from a SavedProvider (or None)."""
     return _render_appt(
-        request, npi,
+        request,
+        npi,
         provider.appt_address if provider else None,
         provider.appt_suite if provider else None,
         appt_phone=provider.appt_phone if provider else None,
@@ -64,11 +71,12 @@ async def export_text(
         is_televisit = saved.is_televisit
     else:
         try:
-            result = await client.async_lookup(npi)
+            fetched = await client.async_lookup(npi)
         except NPPESError as e:
             return PlainTextResponse(content=f"Error: {e}", status_code=500)
-        if result is None:
+        if fetched is None:
             return PlainTextResponse(content=f"No provider found for NPI {npi}.", status_code=404)
+        result = fetched
         appt_address = None
         appt_suite = None
         appt_phone = None
@@ -76,8 +84,12 @@ async def export_text(
         is_televisit = False
 
     text = referral_export(
-        result, appt_address=appt_address, appt_suite=appt_suite,
-        appt_phone=appt_phone, appt_fax=appt_fax, is_televisit=is_televisit,
+        result,
+        appt_address=appt_address,
+        appt_suite=appt_suite,
+        appt_phone=appt_phone,
+        appt_fax=appt_fax,
+        is_televisit=is_televisit,
     )
     return PlainTextResponse(
         content=text,
@@ -99,11 +111,12 @@ async def export_view(
         result = saved.to_npi_result()
     else:
         try:
-            result = await client.async_lookup(npi)
+            fetched = await client.async_lookup(npi)
         except NPPESError as e:
             return HTMLResponse(content=f"<p>Error: {e}</p>", status_code=500)
-        if result is None:
+        if fetched is None:
             return HTMLResponse(content=f"<p>No provider found for NPI {npi}.</p>", status_code=404)
+        result = fetched
 
     appt_address = saved.appt_address if saved else None
     appt_suite = saved.appt_suite if saved else None
@@ -111,20 +124,27 @@ async def export_view(
     appt_fax = saved.appt_fax if saved else None
     is_televisit = saved.is_televisit if saved else False
     export_text = referral_export(
-        result, appt_address=appt_address, appt_suite=appt_suite,
-        appt_phone=appt_phone, appt_fax=appt_fax, is_televisit=is_televisit,
+        result,
+        appt_address=appt_address,
+        appt_suite=appt_suite,
+        appt_phone=appt_phone,
+        appt_fax=appt_fax,
+        is_televisit=is_televisit,
     )
 
-    return render("export.html", {
-        "request": request,
-        "active_page": "saved",
-        "result": result,
-        "export_text": export_text,
-        "appt_address": appt_address,
-        "appt_suite": appt_suite,
-        "saved_count": saved_count(storage, user_id),
-        "user": current_user,
-    })
+    return render(
+        "export.html",
+        {
+            "request": request,
+            "active_page": "saved",
+            "result": result,
+            "export_text": export_text,
+            "appt_address": appt_address,
+            "appt_suite": appt_suite,
+            "saved_count": saved_count(storage, user_id),
+            "user": current_user,
+        },
+    )
 
 
 @router.get("/{npi}/enrichment", response_class=HTMLResponse)
@@ -148,11 +168,14 @@ async def provider_enrichment(
         enrichment_json = data.model_dump_json()
         storage.update_enrichment(npi, enrichment_json, user_id)
 
-    return render("_enrichment.html", {
-        "request": request,
-        "enrichment": data,
-        "npi": npi,
-    })
+    return render(
+        "_enrichment.html",
+        {
+            "request": request,
+            "enrichment": data,
+            "npi": npi,
+        },
+    )
 
 
 @router.post("/{npi}/save", response_class=HTMLResponse)
@@ -172,12 +195,15 @@ async def save_provider(
     user_id = current_user["id"]
     saved = storage.get_provider(npi, user_id)
     if saved:
-        return render("_save_button.html", {
-            "request": request,
-            "is_saved": True,
-            "npi": npi,
-            "btn_target": btn_target,
-        })
+        return render(
+            "_save_button.html",
+            {
+                "request": request,
+                "is_saved": True,
+                "npi": npi,
+                "btn_target": btn_target,
+            },
+        )
 
     try:
         result = await client.async_lookup(npi)
@@ -186,12 +212,15 @@ async def save_provider(
 
     if result:
         storage.save_provider(result, user_id)
-        return render("_save_button.html", {
-            "request": request,
-            "is_saved": True,
-            "npi": npi,
-            "btn_target": btn_target,
-        })
+        return render(
+            "_save_button.html",
+            {
+                "request": request,
+                "is_saved": True,
+                "npi": npi,
+                "btn_target": btn_target,
+            },
+        )
 
     return HTMLResponse(
         content='<span style="color: #c62828;">Could not look up this provider. Try again.</span>'
@@ -213,12 +242,15 @@ async def remove_provider(
         return HTMLResponse(content="")
 
     btn_target = hx_target.lstrip("#") if hx_target else "save-btn"
-    return render("_save_button.html", {
-        "request": request,
-        "is_saved": False,
-        "npi": npi,
-        "btn_target": btn_target,
-    })
+    return render(
+        "_save_button.html",
+        {
+            "request": request,
+            "is_saved": False,
+            "npi": npi,
+            "btn_target": btn_target,
+        },
+    )
 
 
 @router.post("/{npi}/appt-address", response_class=HTMLResponse)
@@ -322,12 +354,15 @@ async def update_notes(
     user_id = current_user["id"]
     text = notes.strip() or None
     storage.update_notes(npi, text, user_id)
-    return render("_notes.html", {
-        "request": request,
-        "npi": npi,
-        "saved_notes": text,
-        "is_saved": True,
-    })
+    return render(
+        "_notes.html",
+        {
+            "request": request,
+            "npi": npi,
+            "saved_notes": text,
+            "is_saved": True,
+        },
+    )
 
 
 @router.get("/{npi}", response_class=HTMLResponse)
@@ -347,32 +382,39 @@ async def provider_detail(
         saved_notes = saved.notes
     else:
         try:
-            result = await client.async_lookup(npi)
+            fetched = await client.async_lookup(npi)
         except NPPESError as e:
-            return render("detail.html", {
-                "request": request,
-                "active_page": "search",
-                "result": None,
-                "error": str(e),
-                "is_saved": False,
-                "saved_notes": None,
-                "saved_count": saved_count(storage, user_id),
-                "user": current_user,
-            })
-        if result is None:
+            return render(
+                "detail.html",
+                {
+                    "request": request,
+                    "active_page": "search",
+                    "result": None,
+                    "error": str(e),
+                    "is_saved": False,
+                    "saved_notes": None,
+                    "saved_count": saved_count(storage, user_id),
+                    "user": current_user,
+                },
+            )
+        if fetched is None:
             return HTMLResponse(
                 content=f"<main class='container'><p>No provider found for NPI {npi}.</p>"
-                        f"<a href='/'>Back to Search</a></main>",
+                f"<a href='/'>Back to Search</a></main>",
                 status_code=404,
             )
+        result = fetched
 
-    return render("detail.html", {
-        "request": request,
-        "active_page": "search",
-        "result": result,
-        "is_saved": saved is not None,
-        "npi": npi,
-        "saved_notes": saved_notes,
-        "saved_count": saved_count(storage, user_id),
-        "user": current_user,
-    })
+    return render(
+        "detail.html",
+        {
+            "request": request,
+            "active_page": "search",
+            "result": result,
+            "is_saved": saved is not None,
+            "npi": npi,
+            "saved_notes": saved_notes,
+            "saved_count": saved_count(storage, user_id),
+            "user": current_user,
+        },
+    )

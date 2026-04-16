@@ -187,23 +187,23 @@ class NPIResult(BaseModel):
     def display_name(self) -> str:
         """Human-friendly display name."""
         if self.is_individual:
-            basic = BasicIndividual.model_validate(self.basic)
+            ind = BasicIndividual.model_validate(self.basic)
             parts = []
-            if basic.name_prefix and basic.name_prefix != "--":
-                parts.append(format_name(basic.name_prefix))
-            parts.append(format_name(basic.first_name))
-            if basic.middle_name and basic.middle_name != "--":
-                parts.append(format_name(basic.middle_name))
-            parts.append(format_name(basic.last_name))
+            if ind.name_prefix and ind.name_prefix != "--":
+                parts.append(format_name(ind.name_prefix))
+            parts.append(format_name(ind.first_name))
+            if ind.middle_name and ind.middle_name != "--":
+                parts.append(format_name(ind.middle_name))
+            parts.append(format_name(ind.last_name))
             name = " ".join(parts)
-            if basic.credential:
-                cred = format_credential(basic.credential)
+            if ind.credential:
+                cred = format_credential(ind.credential)
                 if cred:
                     name = f"{name}, {cred}"
             return name
         else:
-            basic = BasicOrganization.model_validate(self.basic)
-            return format_name(basic.organization_name)
+            org = BasicOrganization.model_validate(self.basic)
+            return format_name(org.organization_name)
 
     @computed_field
     @property

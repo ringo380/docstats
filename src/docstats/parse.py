@@ -16,8 +16,21 @@ _HONORIFICS = {"dr", "doctor", "doc", "prof", "professor"}
 # ── Credentials stripped from standalone tokens ──────────────────────────────
 # Tokens that are UNAMBIGUOUSLY credentials (not common surnames)
 _UNAMBIGUOUS_CREDENTIALS = {
-    "md", "phd", "dds", "dvm", "aprn", "dnp", "facp",
-    "facs", "facog", "faad", "mph", "ms", "rn", "np", "pa",
+    "md",
+    "phd",
+    "dds",
+    "dvm",
+    "aprn",
+    "dnp",
+    "facp",
+    "facs",
+    "facog",
+    "faad",
+    "mph",
+    "ms",
+    "rn",
+    "np",
+    "pa",
 }
 # Tokens that are credentials but also common names — keep as name by default,
 # only treat as credential if the name interpretation returns no results.
@@ -25,10 +38,26 @@ _AMBIGUOUS_CREDENTIALS = {"do", "pa-c", "cnp"}
 
 # ── Org signals: any of these words → treat whole input as organization ───────
 _ORG_SIGNALS = {
-    "hospital", "clinic", "medical center", "health system", "urgent care",
-    "institute", "associates", "group", "llc", "inc", "corporation",
-    "foundation", "center", "services", "kaiser", "sutter", "ucsf",
-    "stanford", "cedars", "kaiser permanente",
+    "hospital",
+    "clinic",
+    "medical center",
+    "health system",
+    "urgent care",
+    "institute",
+    "associates",
+    "group",
+    "llc",
+    "inc",
+    "corporation",
+    "foundation",
+    "center",
+    "services",
+    "kaiser",
+    "sutter",
+    "ucsf",
+    "stanford",
+    "cedars",
+    "kaiser permanente",
 }
 
 # ── Specialty keyword → NUCC taxonomy display name ───────────────────────────
@@ -237,10 +266,13 @@ def build_interpretations(result: ParseResult) -> list[dict[str, str]]:
     interps: list[dict[str, str]] = []
 
     if first and last and spec:
-        interps.append({"first_name": first, "last_name": last,
-                        "taxonomy_description": spec})
-        interps.append({"last_name": first,  # treat first as last (ambiguous names)
-                        "taxonomy_description": spec})
+        interps.append({"first_name": first, "last_name": last, "taxonomy_description": spec})
+        interps.append(
+            {
+                "last_name": first,  # treat first as last (ambiguous names)
+                "taxonomy_description": spec,
+            }
+        )
         interps.append({"first_name": first, "last_name": last})
         interps.append({"last_name": first})
     elif first and last:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
-import tempfile
 
 from docstats.storage import Storage
 from docstats.cache import ResponseCache

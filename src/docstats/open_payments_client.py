@@ -13,6 +13,7 @@ Queries the most recent program year first, falls back to prior year.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import httpx
 
@@ -87,7 +88,8 @@ class OpenPaymentsClient:
             total += amount
 
             payer_name = (
-                row.get("applicable_manufacturer_or_applicable_gpo_making_payment_name") or "Unknown"
+                row.get("applicable_manufacturer_or_applicable_gpo_making_payment_name")
+                or "Unknown"
             ).strip()
             payer_totals[payer_name] = payer_totals.get(payer_name, 0.0) + amount
 
@@ -108,19 +110,19 @@ class OpenPaymentsClient:
         """Execute a DKAN datastore query filtered by NPI."""
         url = f"{API_BASE}/{dataset_id}/0"
         body = {
-            "conditions": [
-                {"property": "covered_recipient_npi", "value": npi, "operator": "="}
-            ],
+            "conditions": [{"property": "covered_recipient_npi", "value": npi, "operator": "="}],
             "limit": MAX_ROWS,
             "properties": PROPERTIES,
         }
         resp = request_with_retry(
-            self._http, "POST", url,
+            self._http,
+            "POST",
+            url,
             json=body,
             label="Open Payments API",
             error_class=OpenPaymentsError,
         )
-        return resp.json().get("results", [])
+        return cast("list[dict]", resp.json().get("results", []))
 
     def close(self) -> None:
         self._http.close()

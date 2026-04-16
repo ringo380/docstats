@@ -113,7 +113,9 @@ class OIGClient:
         """Download the LEIE CSV with retry logic."""
         try:
             resp = request_with_retry(
-                self._http, "GET", LEIE_CSV_URL,
+                self._http,
+                "GET",
+                LEIE_CSV_URL,
                 label="LEIE download",
                 error_class=OIGError,
             )

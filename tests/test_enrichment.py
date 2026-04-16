@@ -15,6 +15,7 @@ from tests.conftest import SAMPLE_NPI1_RESULT
 
 # ── OIG date formatting ────────────────────────────────────────────────
 
+
 class TestOIGFormatDate:
     def test_valid_date(self):
         assert _format_date("20200115") == "2020-01-15"
@@ -104,6 +105,7 @@ class TestOIGClient:
 
 # ── Enrichment Cache ───────────────────────────────────────────────────
 
+
 class TestEnrichmentCache:
     def test_set_and_get(self, tmp_path):
         cache = EnrichmentCache(tmp_path / "test.db")
@@ -147,6 +149,7 @@ class TestEnrichmentCache:
 
 # ── EnrichmentData model ──────────────────────────────────────────────
 
+
 class TestEnrichmentData:
     def test_default_values(self):
         data = EnrichmentData(npi="1234567890")
@@ -169,6 +172,7 @@ class TestEnrichmentData:
 
 
 # ── Scoring with enrichment ───────────────────────────────────────────
+
 
 class TestScoringWithEnrichment:
     def test_oig_exclusion_penalty(self):
@@ -214,6 +218,7 @@ class TestScoringWithEnrichment:
 
 # ── SavedProvider enrichment_json ─────────────────────────────────────
 
+
 class TestSavedProviderEnrichment:
     def test_enrichment_json_field(self):
         result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
@@ -245,15 +250,22 @@ class TestSavedProviderEnrichment:
 
 # ── Enrichment orchestrator ───────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_enrich_provider_with_oig(tmp_path):
     """Test the orchestrator calls OIG and returns enrichment data."""
     cache = EnrichmentCache(tmp_path / "test.db")
 
-    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
-         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
-         patch("docstats.enrichment._fetch_open_payments") as mock_op:
-        mock_oig.return_value = {"excluded": True, "exclusion_date": "2020-01-01", "exclusion_type": "1128a"}
+    with (
+        patch("docstats.enrichment._fetch_oig") as mock_oig,
+        patch("docstats.enrichment._fetch_medicare") as mock_cms,
+        patch("docstats.enrichment._fetch_open_payments") as mock_op,
+    ):
+        mock_oig.return_value = {
+            "excluded": True,
+            "exclusion_date": "2020-01-01",
+            "exclusion_type": "1128a",
+        }
         mock_cms.return_value = None
         mock_op.return_value = None
 
@@ -270,9 +282,11 @@ async def test_enrich_provider_clean(tmp_path):
     """Test orchestrator with clean provider (not excluded)."""
     cache = EnrichmentCache(tmp_path / "test.db")
 
-    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
-         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
-         patch("docstats.enrichment._fetch_open_payments") as mock_op:
+    with (
+        patch("docstats.enrichment._fetch_oig") as mock_oig,
+        patch("docstats.enrichment._fetch_medicare") as mock_cms,
+        patch("docstats.enrichment._fetch_open_payments") as mock_op,
+    ):
         mock_oig.return_value = None
         mock_cms.return_value = None
         mock_op.return_value = None
@@ -289,9 +303,11 @@ async def test_enrich_provider_source_failure(tmp_path):
     """Test orchestrator handles source failures gracefully."""
     cache = EnrichmentCache(tmp_path / "test.db")
 
-    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
-         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
-         patch("docstats.enrichment._fetch_open_payments") as mock_op:
+    with (
+        patch("docstats.enrichment._fetch_oig") as mock_oig,
+        patch("docstats.enrichment._fetch_medicare") as mock_cms,
+        patch("docstats.enrichment._fetch_open_payments") as mock_op,
+    ):
         mock_oig.side_effect = Exception("network error")
         mock_cms.return_value = None
         mock_op.return_value = None
@@ -320,9 +336,11 @@ async def test_enrich_provider_with_medicare(tmp_path):
         "hospital_affiliations": [{"ccn": "090012", "type": "Hospital"}],
     }
 
-    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
-         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
-         patch("docstats.enrichment._fetch_open_payments") as mock_op:
+    with (
+        patch("docstats.enrichment._fetch_oig") as mock_oig,
+        patch("docstats.enrichment._fetch_medicare") as mock_cms,
+        patch("docstats.enrichment._fetch_open_payments") as mock_op,
+    ):
         mock_oig.return_value = None
         mock_cms.return_value = mock_medicare
         mock_op.return_value = None
@@ -345,9 +363,11 @@ async def test_enrich_provider_medicare_not_found(tmp_path):
     """Test orchestrator when provider not in Medicare data."""
     cache = EnrichmentCache(tmp_path / "test.db")
 
-    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
-         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
-         patch("docstats.enrichment._fetch_open_payments") as mock_op:
+    with (
+        patch("docstats.enrichment._fetch_oig") as mock_oig,
+        patch("docstats.enrichment._fetch_medicare") as mock_cms,
+        patch("docstats.enrichment._fetch_open_payments") as mock_op,
+    ):
         mock_oig.return_value = None
         mock_cms.return_value = None
         mock_op.return_value = None
@@ -371,9 +391,11 @@ async def test_enrich_provider_with_open_payments(tmp_path):
         "top_payers": [{"name": "Pfizer Inc.", "amount": 150.00}],
     }
 
-    with patch("docstats.enrichment._fetch_oig") as mock_oig, \
-         patch("docstats.enrichment._fetch_medicare") as mock_cms, \
-         patch("docstats.enrichment._fetch_open_payments") as mock_op:
+    with (
+        patch("docstats.enrichment._fetch_oig") as mock_oig,
+        patch("docstats.enrichment._fetch_medicare") as mock_cms,
+        patch("docstats.enrichment._fetch_open_payments") as mock_op,
+    ):
         mock_oig.return_value = None
         mock_cms.return_value = None
         mock_op.return_value = mock_payments

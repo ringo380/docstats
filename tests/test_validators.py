@@ -20,15 +20,18 @@ class TestValidateNpi:
     def test_strips_whitespace(self):
         assert validate_npi("  1234567890  ") == "1234567890"
 
-    @pytest.mark.parametrize("bad", [
-        "",
-        "123",
-        "12345678901",       # 11 digits
-        "123456789a",        # contains letter
-        "123-456-7890",      # hyphens
-        "abcdefghij",
-        "1 234567890",       # internal whitespace
-    ])
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "123",
+            "12345678901",  # 11 digits
+            "123456789a",  # contains letter
+            "123-456-7890",  # hyphens
+            "abcdefghij",
+            "1 234567890",  # internal whitespace
+        ],
+    )
     def test_rejects_invalid(self, bad):
         with pytest.raises(ValidationError):
             validate_npi(bad)
@@ -45,14 +48,17 @@ class TestValidateEmail:
     def test_lowercases_and_strips(self):
         assert validate_email("  Alice@Example.COM  ") == "alice@example.com"
 
-    @pytest.mark.parametrize("bad", [
-        "",
-        "notanemail",
-        "missing-at.com",
-        "two@@example.com",
-        "has spaces@example.com",
-        "no-dot@nodomain",
-    ])
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "notanemail",
+            "missing-at.com",
+            "two@@example.com",
+            "has spaces@example.com",
+            "no-dot@nodomain",
+        ],
+    )
     def test_rejects_invalid(self, bad):
         with pytest.raises(ValidationError):
             validate_email(bad)
