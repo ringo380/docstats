@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
+from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ def _parse_ts(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
-class PostgresStorage:
+class PostgresStorage(StorageBase):
     """Supabase-backed storage using the supabase-py REST client."""
 
     def __init__(self) -> None:
@@ -73,7 +74,7 @@ class PostgresStorage:
 
     def create_user(self, email: str, password_hash: str) -> int:
         result = self._t("users").insert(
-            {"email": email.strip().lower(), "password_hash": password_hash}
+            {"email": normalize_email(email), "password_hash": password_hash}
         ).execute()
         return result.data[0]["id"]
 
@@ -82,7 +83,7 @@ class PostgresStorage:
         return result.data[0] if result.data else None
 
     def get_user_by_email(self, email: str) -> dict | None:
-        result = self._t("users").select("*").eq("email", email.strip().lower()).execute()
+        result = self._t("users").select("*").eq("email", normalize_email(email)).execute()
         return result.data[0] if result.data else None
 
     def get_user_by_github_id(self, github_id: str) -> dict | None:
@@ -112,7 +113,7 @@ class PostgresStorage:
                     {"github_id": github_id, "github_login": github_login, "last_login_at": now}
                 ).eq("id", existing_email["id"]).execute()
                 return existing_email["id"]
-        safe_email = email.strip().lower() if email else f"github_{github_id}@noemail.invalid"
+        safe_email = normalize_email(email) if email else f"github_{github_id}@noemail.invalid"
         result = self._t("users").upsert(
             {
                 "email": safe_email,
@@ -238,8 +239,6 @@ class PostgresStorage:
         return [self._row_to_provider(r) for r in result.data]
 
     def search_providers(self, user_id: int, query: str) -> list[SavedProvider]:
-        from docstats.storage import _fuzzy_score
-
         # Fetch all providers and filter in Python to avoid PostgREST .or_()
         # escaping issues (commas, %, _ in query break the filter DSL string).
         all_providers = self.list_providers(user_id)
@@ -252,7 +251,7 @@ class PostgresStorage:
             or query_lower in (p.notes or "").lower()
             or query_lower in (p.address_city or "").lower()
         ]
-        return sorted(matched, key=lambda p: _fuzzy_score(p, query_lower), reverse=True)
+        return sorted(matched, key=lambda p: fuzzy_score(p, query_lower), reverse=True)
 
     def delete_provider(self, npi: str, user_id: int) -> bool:
         result = (

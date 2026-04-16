@@ -12,13 +12,15 @@
 - `docstats web` — start web UI at http://127.0.0.1:8000
 
 ## Architecture
-- Flat `src/docstats/` layout — one module per concern, each under 300 lines
+- `src/docstats/` layout — one module per concern, each under 300 lines; web routes split into `routes/` subpackage
 - Core modules (client, models, storage, cache, normalize, scoring) have zero dependency on Rich/Typer/FastAPI
 - Web layer imports core modules directly — no wrappers or adapters
 - Dual-backend storage: Supabase Postgres in production (when `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` are set), SQLite locally (default)
 - SQLite DB at `~/.local/share/docstats/docstats.db` (local dev/CLI only)
 - Supabase tables use `docstats_` prefix (e.g. `docstats_users`) to coexist with robworks-software in shared project (ref: `uhnymifvdauzlmaogjfj`)
-- `get_storage()` returns `PostgresStorage` or `Storage` (SQLite) — both implement the same public API; consumers don't need to know which backend is active
+- `get_storage()` returns `PostgresStorage` or `Storage` (SQLite) — both inherit from `StorageBase` ABC in `storage_base.py`; consumers should type-hint `StorageBase`
+- `storage_base.py` contains `StorageBase` ABC + shared helpers (`normalize_email`, `fuzzy_score`); `storage.py` contains `Storage(StorageBase)` (SQLite) and `get_storage()`; `pg_storage.py` contains `PostgresStorage(StorageBase)` (Supabase)
+- Web routes split into `routes/` subpackage: `auth.py`, `onboarding.py`, `profile.py`, `providers.py`, `saved.py`, `search.py`, `api.py`; shared helpers in `routes/_common.py` (`render`, `saved_count`, `get_client`, `MAPBOX_TOKEN`, `US_STATES`); `web.py` is the app shell (middleware, exception handlers, router includes, home + history routes)
 - Typeahead: name/org fields use htmx (server-side NPPES queries), specialty uses client-side filtering from static taxonomy list
 - Location autocomplete uses Mapbox Geocoding API (client-side fetch, 300ms debounce) — reads `MAPBOX_PUBLIC_TOKEN` env var; gracefully absent if unset
 - `initAutocomplete(inputEl, listEl)` in `index.html` is reusable for any field; `data-value=""` + `data-extra='{"field":"val"}'` pattern populates sibling fields on selection without htmx
@@ -34,8 +36,10 @@
 - Terms acceptance: `terms_accepted_at` (UTC), `terms_version`, `terms_ip` (proxy-aware via X-Forwarded-For), `terms_user_agent` stored per-user; `record_terms_acceptance()` method; `terms_accepted_at` is the onboarding completion gate (replaces old `pcp_npi` gate)
 - Profile dropdown: navbar shows user initials avatar (inline SVG) + name + chevron; dropdown with Profile/Sign Out; click-outside closes; CSS class `.profile-menu.open` toggles visibility
 - `appt_address` stored per `SavedProvider` in SQLite; rendered as an editable chip in the saved list; appended to referral export
-- Dark theme CSS in `base.html`: CSS custom properties (`--bg`, `--bg-card`, `--green`, `--blue`, `--text`, `--text-muted`, `--text-dim`, `--border`); no external CSS framework
-- CSS utility classes in `base.html`: `.action-bar` (flex row for primary actions), `.back-link` (muted nav link), `.empty-state` (centered muted placeholder), `.badge`, `.badge-ind`, `.badge-org`, `.badge-active`, `.badge-inactive`, `.btn`, `.btn-primary`, `.btn-secondary`, `.btn-blue`, `.btn-sm`, `.result-card`, `.detail-section`, `.detail-table`
+- Favicon is a data-URI SVG in `base.html` `<head>`; static files (CSS, JS) served from `src/docstats/static/` via FastAPI `StaticFiles` mount at `/static`
+- CSS in `static/style.css` (external, browser-cacheable); JS in `static/app.js` (htmx error handler, profile menu, note editor); `base.html` is layout + nav only (~69 lines)
+- `base.html` provides `{% block head_extra %}` for page-specific CSS/JS in `<head>`
+- Dark theme via CSS custom properties (`--bg`, `--bg-card`, `--green`, `--blue`, `--text`, `--text-muted`, `--text-dim`, `--border`) in `static/style.css`; no external CSS framework
 
 ## NPPES API
 - Endpoint: `https://npiregistry.cms.hhs.gov/api/?version=2.1`
@@ -52,10 +56,15 @@
 - SQLite FK enforcement is off by default — `PRAGMA foreign_keys = ON` must be set per-connection (after WAL pragma in `Storage.__init__`)
 - `INSERT OR REPLACE` triggers FK cascade deletes on the replaced row — use `INSERT ... ON CONFLICT(col) DO UPDATE SET ...` upsert to preserve child rows
 - Same-second SQLite timestamps make `ORDER BY created_at DESC` non-deterministic in tests — always include `id DESC` as a tiebreaker
-- Route ordering in `web.py` matters: specific routes (e.g., `/referral-lists/{id}/export`) must be declared before parameterized routes (`/referral-lists/{id}`) or FastAPI matches the wrong one
+- Route ordering via `app.include_router()` in `web.py` matters: `saved_router` must be included before `providers_router` so `/saved/export/csv` matches before `/provider/{npi}`; within each router, specific routes (e.g., `/{npi}/export`) must be declared before parameterized routes
 - htmx `HX-Target` header includes the `#` prefix from CSS selectors
 - Pydantic `basic` field is a dict (not typed) because NPI-1 and NPI-2 have incompatible schemas — use `parsed_basic()` method
-- Starlette 0.50+ changed `TemplateResponse` signature — use `_render()` helper in `web.py` instead of calling `templates.TemplateResponse()` directly
+- Starlette 0.50+ changed `TemplateResponse` signature — use `render()` from `routes/_common.py` instead of calling `templates.TemplateResponse()` directly
+- When adding new storage methods, add the abstract method to `StorageBase` first — both `Storage` and `PostgresStorage` inherit from it and must implement all abstract methods
+- `normalize_email()` and `fuzzy_score()` live in `storage_base.py` — use these instead of inline `email.strip().lower()` or reimplementing fuzzy matching
+- All three enrichment API clients use `request_with_retry()` from `http_retry.py` for exponential backoff retry
+- Enrichment client retry tests must patch `client._http.request` (not `.post`) and `docstats.http_retry.time.sleep` — retry logic is in `http_retry.py`, not in each client module
+- New routes go in the appropriate `routes/*.py` file, not in `web.py` — only app-level middleware, exception handlers, and router includes belong in `web.py`
 - Don't use `pip freeze` on this machine for generating `requirements.txt` — global env has 500+ unrelated packages
 - `httpx.TimeoutException` is a subclass of `RequestError` — catch it first or it's dead code
 - Templates must guard against `None` models — routes pass `result=None` on `NPPESError`

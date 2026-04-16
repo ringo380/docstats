@@ -135,8 +135,8 @@ class TestOpenPaymentsRetry:
         mock_200.status_code = 200
         mock_200.json.return_value = {"results": [SAMPLE_PAYMENT_ROW_1]}
 
-        with patch.object(client._http, "post", side_effect=[mock_500, mock_200]):
-            with patch("docstats.open_payments_client.time.sleep"):
+        with patch.object(client._http, "request", side_effect=[mock_500, mock_200]):
+            with patch("docstats.http_retry.time.sleep"):
                 result = client._query("test-dataset", "1003000126")
 
         assert len(result) == 1
@@ -147,8 +147,8 @@ class TestOpenPaymentsRetry:
         mock_resp = MagicMock()
         mock_resp.status_code = 500
 
-        with patch.object(client._http, "post", return_value=mock_resp):
-            with patch("docstats.open_payments_client.time.sleep"):
+        with patch.object(client._http, "request", return_value=mock_resp):
+            with patch("docstats.http_retry.time.sleep"):
                 with pytest.raises(OpenPaymentsError):
                     client._query("test-dataset", "1003000126")
         client.close()
