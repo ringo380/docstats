@@ -4,11 +4,33 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, computed_field
 
 from docstats.normalize import format_credential, format_name, format_phone, format_postal_code
+
+
+class UserRecord(TypedDict, total=False):
+    """Shape of user dicts returned by storage backends."""
+
+    id: int
+    email: str
+    password_hash: str | None
+    github_id: str | None
+    github_login: str | None
+    display_name: str | None
+    first_name: str | None
+    last_name: str | None
+    middle_name: str | None
+    date_of_birth: str | None
+    pcp_npi: str | None
+    terms_accepted_at: str | None
+    terms_version: str | None
+    terms_ip: str | None
+    terms_user_agent: str | None
+    created_at: str
+    last_login_at: str | None
 
 
 class Address(BaseModel):

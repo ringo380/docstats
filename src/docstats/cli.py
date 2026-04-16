@@ -21,6 +21,7 @@ from docstats.formatting import (
     results_table,
     saved_table,
 )
+from docstats.services import search_providers as svc_search, save_provider as svc_save
 from docstats.storage import Storage, get_db_path
 
 app = typer.Typer(
@@ -90,8 +91,10 @@ def search(
         raise typer.Exit(1)
 
     client = _get_client(use_cache=not no_cache)
+    storage = _get_storage()
     try:
-        response = client.search(
+        response = svc_search(
+            client, storage,
             last_name=name,
             first_name=first,
             organization_name=org,
@@ -102,6 +105,7 @@ def search(
             enumeration_type=entity_type,
             limit=limit,
             use_cache=not no_cache,
+            user_id=_get_cli_user_id(),
         )
     except NPPESError as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -110,27 +114,6 @@ def search(
     if response.result_count == 0:
         console.print("[yellow]No results found.[/yellow]")
         raise typer.Exit(0)
-
-    # Log search to history
-    storage = _get_storage()
-    params = {}
-    if name:
-        params["last_name"] = name
-    if first:
-        params["first_name"] = first
-    if org:
-        params["organization_name"] = org
-    if specialty:
-        params["taxonomy_description"] = specialty
-    if state:
-        params["state"] = state
-    if city:
-        params["city"] = city
-    if zip_code:
-        params["postal_code"] = zip_code
-    if entity_type:
-        params["enumeration_type"] = entity_type
-    storage.log_search(params, response.result_count)
 
     console.print(results_table(response))
     console.print(
@@ -197,20 +180,17 @@ def save(
     no_cache: Annotated[bool, typer.Option("--no-cache", help="Bypass response cache")] = False,
 ) -> None:
     """Save a provider to local database for future reference."""
-    # Look up the provider first
     client = _get_client(use_cache=not no_cache)
+    storage = _get_storage()
     try:
-        result = client.lookup(npi, use_cache=not no_cache)
+        provider = svc_save(client, storage, npi, _get_cli_user_id(), notes=notes, use_cache=not no_cache)
     except NPPESError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
-
-    if result is None:
-        console.print(f"[yellow]No provider found for NPI {npi}.[/yellow]")
+    except ValueError as e:
+        console.print(f"[yellow]{e}[/yellow]")
         raise typer.Exit(1)
 
-    storage = _get_storage()
-    provider = storage.save_provider(result, _get_cli_user_id(), notes=notes)
     console.print(f"[green]Saved:[/green] {provider.display_name} (NPI: {provider.npi})")
 
 
