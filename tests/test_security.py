@@ -110,6 +110,19 @@ class TestSignupValidation:
         })
         assert resp.status_code == 422
 
+    def test_login_with_malformed_email_returns_generic_error(self, anon_client):
+        # Format failure must not leak as a distinct error — enumeration
+        # resistance means the response should match a plain "wrong
+        # password" outcome.
+        resp = anon_client.post("/auth/login", data={
+            "email": "notanemail",
+            "password": "password123",
+        })
+        assert resp.status_code == 200
+        body = resp.content.lower()
+        assert b"invalid email or password" in body
+        assert b"please enter a valid email" not in body
+
     def test_accepts_valid_signup(self, anon_client):
         resp = anon_client.post(
             "/auth/signup",

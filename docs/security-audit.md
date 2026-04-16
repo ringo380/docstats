@@ -189,7 +189,16 @@ ruff check .
 mypy src/docstats/
 ```
 
-Manual smoke checks documented in `.claude/plans/51-parsed-rossum.md`
-(section "Verification"). Key flows: malformed NPI → 422; oversize query
-→ 422; invalid email at signup → friendly error; 100-char password →
-422; inspect session cookie for `HttpOnly` + `SameSite=Lax`.
+Manual smoke checks:
+
+1. `GET /provider/abc/detail` → **422** (malformed NPI).
+2. `GET /provider/1234567890` for an unknown-but-well-formed NPI → graceful
+   "not found" HTML, **not** 422.
+3. `POST /auth/signup` with a 100-character password → **422** (rejected at
+   the Form boundary before bcrypt truncation).
+4. `POST /auth/signup` with `email=notanemail` → page re-renders with
+   "Please enter a valid email address."
+5. `GET /search?query=<10&nbsp;000&nbsp;chars>` → **422**.
+6. In browser devtools, confirm the session cookie has `HttpOnly` and
+   `SameSite=Lax`; `Secure` appears only when
+   `RAILWAY_ENVIRONMENT=production`.
