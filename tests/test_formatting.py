@@ -56,3 +56,52 @@ def test_export_fields_appt_suite_empty_default():
     provider = SavedProvider.from_npi_result(result)
     fields = provider.export_fields()
     assert fields["Appointment Suite"] == ""
+
+
+def test_referral_export_with_appt_phone_fax():
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    text = referral_export(
+        result,
+        appt_address="123 Main St",
+        appt_phone="(555) 123-4567",
+        appt_fax="(555) 987-6543",
+    )
+    assert "Phone: (555) 123-4567" in text
+    assert "Fax: (555) 987-6543" in text
+
+
+def test_referral_export_televisit():
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    text = referral_export(result, is_televisit=True)
+    assert "TELEVISIT" in text
+    assert "telehealth" in text.lower()
+    assert "MY APPOINTMENT LOCATION" not in text
+
+
+def test_referral_export_televisit_overrides_address():
+    """When is_televisit is True, address section should not appear even if address is set."""
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    text = referral_export(result, appt_address="123 Main St", is_televisit=True)
+    assert "TELEVISIT" in text
+    assert "MY APPOINTMENT LOCATION" not in text
+
+
+def test_export_fields_includes_new_columns():
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    provider = SavedProvider.from_npi_result(result)
+    provider.appt_phone = "(555) 123-4567"
+    provider.appt_fax = "(555) 987-6543"
+    provider.is_televisit = True
+    fields = provider.export_fields()
+    assert fields["Appointment Phone"] == "(555) 123-4567"
+    assert fields["Appointment Fax"] == "(555) 987-6543"
+    assert fields["Televisit"] == "Yes"
+
+
+def test_export_fields_new_columns_defaults():
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    provider = SavedProvider.from_npi_result(result)
+    fields = provider.export_fields()
+    assert fields["Appointment Phone"] == ""
+    assert fields["Appointment Fax"] == ""
+    assert fields["Televisit"] == ""

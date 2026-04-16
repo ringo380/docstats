@@ -155,7 +155,14 @@ def history_table(entries: list[SearchHistoryEntry]) -> Table:
     return table
 
 
-def referral_export(result: NPIResult, appt_address: str | None = None, appt_suite: str | None = None) -> str:
+def referral_export(
+    result: NPIResult,
+    appt_address: str | None = None,
+    appt_suite: str | None = None,
+    appt_phone: str | None = None,
+    appt_fax: str | None = None,
+    is_televisit: bool = False,
+) -> str:
     """Generate a plain-text referral-ready summary.
 
     Suitable for pasting into referral forms or faxing.
@@ -201,7 +208,13 @@ def referral_export(result: NPIResult, appt_address: str | None = None, appt_sui
             lines.append(f"  {mail.address_2}")
         lines.append(f"  {mail.city}, {mail.state} {mail.formatted_postal}")
 
-    if appt_address:
+    if is_televisit:
+        lines.append("")
+        lines.append("-" * 50)
+        lines.append("TELEVISIT")
+        lines.append("-" * 50)
+        lines.append("  This provider is seen via telehealth/virtual visit.")
+    elif appt_address:
         lines.append("")
         lines.append("-" * 50)
         lines.append("MY APPOINTMENT LOCATION")
@@ -209,6 +222,10 @@ def referral_export(result: NPIResult, appt_address: str | None = None, appt_sui
         lines.append(f"  {appt_address}")
         if appt_suite:
             lines.append(f"  {appt_suite}")
+        if appt_phone:
+            lines.append(f"  Phone: {appt_phone}")
+        if appt_fax:
+            lines.append(f"  Fax: {appt_fax}")
         lines.append("  (This location may differ from the NPI registry address above)")
 
     lines.append("")

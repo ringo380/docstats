@@ -58,6 +58,9 @@ async def export_text(
         result = saved.to_npi_result()
         appt_address = saved.appt_address
         appt_suite = saved.appt_suite
+        appt_phone = saved.appt_phone
+        appt_fax = saved.appt_fax
+        is_televisit = saved.is_televisit
     else:
         try:
             result = await client.async_lookup(npi)
@@ -67,8 +70,14 @@ async def export_text(
             return PlainTextResponse(content=f"No provider found for NPI {npi}.", status_code=404)
         appt_address = None
         appt_suite = None
+        appt_phone = None
+        appt_fax = None
+        is_televisit = False
 
-    text = referral_export(result, appt_address=appt_address, appt_suite=appt_suite)
+    text = referral_export(
+        result, appt_address=appt_address, appt_suite=appt_suite,
+        appt_phone=appt_phone, appt_fax=appt_fax, is_televisit=is_televisit,
+    )
     return PlainTextResponse(
         content=text,
         headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
@@ -97,7 +106,13 @@ async def export_view(
 
     appt_address = saved.appt_address if saved else None
     appt_suite = saved.appt_suite if saved else None
-    export_text = referral_export(result, appt_address=appt_address, appt_suite=appt_suite)
+    appt_phone = saved.appt_phone if saved else None
+    appt_fax = saved.appt_fax if saved else None
+    is_televisit = saved.is_televisit if saved else False
+    export_text = referral_export(
+        result, appt_address=appt_address, appt_suite=appt_suite,
+        appt_phone=appt_phone, appt_fax=appt_fax, is_televisit=is_televisit,
+    )
 
     return render("export.html", {
         "request": request,
@@ -224,7 +239,8 @@ async def set_appt_address(
             )
         phone = phone.strip()
         if phone:
-            storage.set_appt_contact(npi, phone, None, user_id)
+            existing = storage.get_provider(npi, user_id)
+            storage.set_appt_contact(npi, phone, existing.appt_fax if existing else None, user_id)
     provider = storage.get_provider(npi, user_id)
     return _render_appt_from_provider(request, npi, provider)
 
@@ -253,7 +269,8 @@ async def clear_appt_address(
 ):
     user_id = current_user["id"]
     storage.clear_appt_address(npi, user_id)
-    return _render_appt(request, npi, None, None)
+    provider = storage.get_provider(npi, user_id)
+    return _render_appt_from_provider(request, npi, provider)
 
 
 @router.put("/{npi}/televisit", response_class=HTMLResponse)
