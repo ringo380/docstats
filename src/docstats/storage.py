@@ -18,8 +18,10 @@ from typing import TYPE_CHECKING, Any
 
 from docstats.domain.audit import AuditEvent
 from docstats.domain.orgs import ROLES, Membership, Organization
+from docstats.domain.patients import Patient
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
+from docstats.scope import Scope, scope_sql_clause
 from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
 from docstats.validators import IP_MAX_LENGTH, USER_AGENT_MAX_LENGTH
 
@@ -85,6 +87,40 @@ def _row_to_membership(row: sqlite3.Row) -> Membership:
         role=row["role"],
         invited_by_user_id=row["invited_by_user_id"],
         joined_at=joined,
+        deleted_at=_parse_sqlite_utc(row["deleted_at"]),
+    )
+
+
+def _row_to_patient(row: sqlite3.Row) -> Patient:
+    """Convert a SQLite patients row into a Patient model."""
+    created = _parse_sqlite_utc(row["created_at"])
+    updated = _parse_sqlite_utc(row["updated_at"])
+    assert created is not None and updated is not None
+    return Patient(
+        id=int(row["id"]),
+        scope_user_id=row["scope_user_id"],
+        scope_organization_id=row["scope_organization_id"],
+        first_name=row["first_name"],
+        last_name=row["last_name"],
+        middle_name=row["middle_name"],
+        date_of_birth=row["date_of_birth"],
+        sex=row["sex"],
+        mrn=row["mrn"],
+        preferred_language=row["preferred_language"],
+        pronouns=row["pronouns"],
+        phone=row["phone"],
+        email=row["email"],
+        address_line1=row["address_line1"],
+        address_line2=row["address_line2"],
+        address_city=row["address_city"],
+        address_state=row["address_state"],
+        address_zip=row["address_zip"],
+        emergency_contact_name=row["emergency_contact_name"],
+        emergency_contact_phone=row["emergency_contact_phone"],
+        notes=row["notes"],
+        created_by_user_id=row["created_by_user_id"],
+        created_at=created,
+        updated_at=updated,
         deleted_at=_parse_sqlite_utc(row["deleted_at"]),
     )
 
@@ -209,6 +245,7 @@ class Storage(StorageBase):
         self._migrate_orgs_and_memberships()
         self._migrate_users_active_org_and_role_hint()
         self._migrate_sessions()
+        self._migrate_patients()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -421,6 +458,52 @@ class Storage(StorageBase):
                 ON sessions(user_id) WHERE revoked_at IS NULL;
             CREATE INDEX IF NOT EXISTS idx_sessions_expires
                 ON sessions(expires_at) WHERE revoked_at IS NULL;
+        """)
+        self._conn.commit()
+
+    def _migrate_patients(self) -> None:
+        """Create the patients table if absent (Phase 1.A)."""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS patients (
+                id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_user_id             INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                scope_organization_id     INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+                first_name                TEXT NOT NULL,
+                last_name                 TEXT NOT NULL,
+                middle_name               TEXT,
+                date_of_birth             TEXT,
+                sex                       TEXT,
+                mrn                       TEXT,
+                preferred_language        TEXT,
+                pronouns                  TEXT,
+                phone                     TEXT,
+                email                     TEXT,
+                address_line1             TEXT,
+                address_line2             TEXT,
+                address_city              TEXT,
+                address_state             TEXT,
+                address_zip               TEXT,
+                emergency_contact_name    TEXT,
+                emergency_contact_phone   TEXT,
+                notes                     TEXT,
+                created_by_user_id        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at                TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at                TEXT NOT NULL DEFAULT (datetime('now')),
+                deleted_at                TEXT,
+                CHECK (
+                    (scope_user_id IS NOT NULL AND scope_organization_id IS NULL)
+                    OR (scope_user_id IS NULL AND scope_organization_id IS NOT NULL)
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_patients_scope_user_name
+                ON patients(scope_user_id, last_name, first_name) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_patients_scope_org_name
+                ON patients(scope_organization_id, last_name, first_name) WHERE deleted_at IS NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_patients_org_mrn
+                ON patients(scope_organization_id, mrn)
+                WHERE scope_organization_id IS NOT NULL
+                  AND mrn IS NOT NULL
+                  AND deleted_at IS NULL;
         """)
         self._conn.commit()
 
@@ -1105,6 +1188,188 @@ class Storage(StorageBase):
         )
         self._conn.commit()
         return cursor.rowcount
+
+    # --- Patients (scope-enforced) ---
+
+    def create_patient(
+        self,
+        scope: Scope,
+        *,
+        first_name: str,
+        last_name: str,
+        middle_name: str | None = None,
+        date_of_birth: str | None = None,
+        sex: str | None = None,
+        mrn: str | None = None,
+        preferred_language: str | None = None,
+        pronouns: str | None = None,
+        phone: str | None = None,
+        email: str | None = None,
+        address_line1: str | None = None,
+        address_line2: str | None = None,
+        address_city: str | None = None,
+        address_state: str | None = None,
+        address_zip: str | None = None,
+        emergency_contact_name: str | None = None,
+        emergency_contact_phone: str | None = None,
+        notes: str | None = None,
+        created_by_user_id: int | None = None,
+    ) -> Patient:
+        # scope_sql_clause raises ScopeRequired on anonymous — the explicit
+        # scope_user_id / scope_organization_id columns below pick up the
+        # correct value from the Scope directly.
+        scope_sql_clause(scope)  # guard-only
+        cursor = self._conn.execute(
+            """INSERT INTO patients
+               (scope_user_id, scope_organization_id, first_name, last_name,
+                middle_name, date_of_birth, sex, mrn, preferred_language,
+                pronouns, phone, email, address_line1, address_line2,
+                address_city, address_state, address_zip,
+                emergency_contact_name, emergency_contact_phone, notes,
+                created_by_user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                scope.user_id if scope.is_solo else None,
+                scope.organization_id if scope.is_org else None,
+                first_name,
+                last_name,
+                middle_name,
+                date_of_birth,
+                sex,
+                mrn,
+                preferred_language,
+                pronouns,
+                phone,
+                email,
+                address_line1,
+                address_line2,
+                address_city,
+                address_state,
+                address_zip,
+                emergency_contact_name,
+                emergency_contact_phone,
+                notes,
+                created_by_user_id,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM patients WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_patient(row)
+
+    def get_patient(self, scope: Scope, patient_id: int) -> Patient | None:
+        clause, params = scope_sql_clause(scope)
+        row = self._conn.execute(
+            f"SELECT * FROM patients WHERE id = ? AND {clause} AND deleted_at IS NULL",
+            [patient_id, *params],
+        ).fetchone()
+        return _row_to_patient(row) if row else None
+
+    def list_patients(
+        self,
+        scope: Scope,
+        *,
+        search: str | None = None,
+        include_deleted: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Patient]:
+        clause, params = scope_sql_clause(scope)
+        where_parts = [clause]
+        if not include_deleted:
+            where_parts.append("deleted_at IS NULL")
+        if search:
+            # LIKE on last_name, first_name, or mrn — escape wildcards.
+            term = f"%{_escape_like(search.strip())}%"
+            where_parts.append(
+                "(last_name LIKE ? ESCAPE '\\' OR first_name LIKE ? ESCAPE '\\' "
+                "OR mrn LIKE ? ESCAPE '\\')"
+            )
+            params.extend([term, term, term])
+        sql = (
+            f"SELECT * FROM patients WHERE {' AND '.join(where_parts)} "
+            "ORDER BY last_name ASC, first_name ASC, id ASC LIMIT ? OFFSET ?"
+        )
+        params.extend([int(limit), int(offset)])
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_patient(r) for r in rows]
+
+    def update_patient(
+        self,
+        scope: Scope,
+        patient_id: int,
+        *,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        middle_name: str | None = None,
+        date_of_birth: str | None = None,
+        sex: str | None = None,
+        mrn: str | None = None,
+        preferred_language: str | None = None,
+        pronouns: str | None = None,
+        phone: str | None = None,
+        email: str | None = None,
+        address_line1: str | None = None,
+        address_line2: str | None = None,
+        address_city: str | None = None,
+        address_state: str | None = None,
+        address_zip: str | None = None,
+        emergency_contact_name: str | None = None,
+        emergency_contact_phone: str | None = None,
+        notes: str | None = None,
+    ) -> Patient | None:
+        # Only pass-through the fields the caller actually set. None means
+        # "don't touch" — the "clear a field" use case goes through a
+        # dedicated method on the route layer (Phase 2) to stay explicit.
+        fields: dict[str, str | None] = {
+            k: v
+            for k, v in {
+                "first_name": first_name,
+                "last_name": last_name,
+                "middle_name": middle_name,
+                "date_of_birth": date_of_birth,
+                "sex": sex,
+                "mrn": mrn,
+                "preferred_language": preferred_language,
+                "pronouns": pronouns,
+                "phone": phone,
+                "email": email,
+                "address_line1": address_line1,
+                "address_line2": address_line2,
+                "address_city": address_city,
+                "address_state": address_state,
+                "address_zip": address_zip,
+                "emergency_contact_name": emergency_contact_name,
+                "emergency_contact_phone": emergency_contact_phone,
+                "notes": notes,
+            }.items()
+            if v is not None
+        }
+        if not fields:
+            return self.get_patient(scope, patient_id)
+
+        clause, scope_params = scope_sql_clause(scope)
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        cursor = self._conn.execute(
+            f"UPDATE patients SET {set_clause}, updated_at = datetime('now') "
+            f"WHERE id = ? AND {clause} AND deleted_at IS NULL",
+            [*fields.values(), patient_id, *scope_params],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_patient(scope, patient_id)
+
+    def soft_delete_patient(self, scope: Scope, patient_id: int) -> bool:
+        clause, params = scope_sql_clause(scope)
+        cursor = self._conn.execute(
+            f"UPDATE patients SET deleted_at = datetime('now') "
+            f"WHERE id = ? AND {clause} AND deleted_at IS NULL",
+            [patient_id, *params],
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     def close(self) -> None:
         self._conn.close()
