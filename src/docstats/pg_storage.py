@@ -19,13 +19,19 @@ from docstats.domain.audit import AuditEvent
 from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.patients import Patient
 from docstats.domain.referrals import (
+    ATTACHMENT_KIND_VALUES,
     AUTH_STATUS_VALUES,
     EVENT_TYPE_VALUES,
     EXTERNAL_SOURCE_VALUES,
+    SOURCE_VALUES,
     STATUS_VALUES,
     URGENCY_VALUES,
     Referral,
+    ReferralAllergy,
+    ReferralAttachment,
+    ReferralDiagnosis,
     ReferralEvent,
+    ReferralMedication,
 )
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
@@ -170,6 +176,65 @@ def _row_to_referral_event(row: dict) -> ReferralEvent:
         to_value=row.get("to_value"),
         actor_user_id=row.get("actor_user_id"),
         note=row.get("note"),
+        created_at=created,
+    )
+
+
+def _row_to_referral_diagnosis(row: dict) -> ReferralDiagnosis:
+    created = _parse_ts(row.get("created_at"))
+    assert created is not None
+    return ReferralDiagnosis(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        icd10_code=row["icd10_code"],
+        icd10_desc=row.get("icd10_desc"),
+        is_primary=bool(row.get("is_primary", False)),
+        source=row["source"],
+        created_at=created,
+    )
+
+
+def _row_to_referral_medication(row: dict) -> ReferralMedication:
+    created = _parse_ts(row.get("created_at"))
+    assert created is not None
+    return ReferralMedication(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        name=row["name"],
+        dose=row.get("dose"),
+        route=row.get("route"),
+        frequency=row.get("frequency"),
+        source=row["source"],
+        created_at=created,
+    )
+
+
+def _row_to_referral_allergy(row: dict) -> ReferralAllergy:
+    created = _parse_ts(row.get("created_at"))
+    assert created is not None
+    return ReferralAllergy(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        substance=row["substance"],
+        reaction=row.get("reaction"),
+        severity=row.get("severity"),
+        source=row["source"],
+        created_at=created,
+    )
+
+
+def _row_to_referral_attachment(row: dict) -> ReferralAttachment:
+    created = _parse_ts(row.get("created_at"))
+    assert created is not None
+    return ReferralAttachment(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        kind=row["kind"],
+        label=row["label"],
+        date_of_service=row.get("date_of_service"),
+        storage_ref=row.get("storage_ref"),
+        checklist_only=bool(row.get("checklist_only", True)),
+        source=row["source"],
         created_at=created,
     )
 
@@ -1371,6 +1436,462 @@ class PostgresStorage(StorageBase):
             .execute()
         )
         return [_row_to_referral_event(r) for r in result.data]
+
+    # --- Referral clinical sub-entities (scope-transitive via referral) ---
+
+    # --- Diagnoses ---
+
+    def add_referral_diagnosis(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        icd10_code: str,
+        icd10_desc: str | None = None,
+        is_primary: bool = False,
+        source: str = "user_entered",
+    ) -> ReferralDiagnosis | None:
+        if source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        result = (
+            self._t("referral_diagnoses")
+            .insert(
+                {
+                    "referral_id": referral_id,
+                    "icd10_code": icd10_code,
+                    "icd10_desc": icd10_desc,
+                    "is_primary": is_primary,
+                    "source": source,
+                    "created_at": _now_iso(),
+                }
+            )
+            .execute()
+        )
+        return _row_to_referral_diagnosis(result.data[0])
+
+    def list_referral_diagnoses(self, scope: Scope, referral_id: int) -> list[ReferralDiagnosis]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        result = (
+            self._t("referral_diagnoses")
+            .select("*")
+            .eq("referral_id", referral_id)
+            .order("is_primary", desc=True)
+            .order("id")
+            .execute()
+        )
+        return [_row_to_referral_diagnosis(r) for r in result.data]
+
+    def update_referral_diagnosis(
+        self,
+        scope: Scope,
+        referral_id: int,
+        diagnosis_id: int,
+        *,
+        icd10_code: str | None = None,
+        icd10_desc: str | None = None,
+        is_primary: bool | None = None,
+        source: str | None = None,
+    ) -> ReferralDiagnosis | None:
+        if source is not None and source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        fields: dict[str, Any] = {}
+        if icd10_code is not None:
+            fields["icd10_code"] = icd10_code
+        if icd10_desc is not None:
+            fields["icd10_desc"] = icd10_desc
+        if is_primary is not None:
+            fields["is_primary"] = is_primary
+        if source is not None:
+            fields["source"] = source
+        if not fields:
+            result = (
+                self._t("referral_diagnoses")
+                .select("*")
+                .eq("id", diagnosis_id)
+                .eq("referral_id", referral_id)
+                .execute()
+            )
+            return _row_to_referral_diagnosis(result.data[0]) if result.data else None
+        result = (
+            self._t("referral_diagnoses")
+            .update(fields)
+            .eq("id", diagnosis_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        return _row_to_referral_diagnosis(result.data[0]) if result.data else None
+
+    def delete_referral_diagnosis(self, scope: Scope, referral_id: int, diagnosis_id: int) -> bool:
+        if self.get_referral(scope, referral_id) is None:
+            return False
+        # supabase-py .delete() returns empty data — select first to get count.
+        to_delete = (
+            self._t("referral_diagnoses")
+            .select("id")
+            .eq("id", diagnosis_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        if not to_delete.data:
+            return False
+        (
+            self._t("referral_diagnoses")
+            .delete()
+            .eq("id", diagnosis_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        return True
+
+    # --- Medications ---
+
+    def add_referral_medication(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        name: str,
+        dose: str | None = None,
+        route: str | None = None,
+        frequency: str | None = None,
+        source: str = "user_entered",
+    ) -> ReferralMedication | None:
+        if source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        result = (
+            self._t("referral_medications")
+            .insert(
+                {
+                    "referral_id": referral_id,
+                    "name": name,
+                    "dose": dose,
+                    "route": route,
+                    "frequency": frequency,
+                    "source": source,
+                    "created_at": _now_iso(),
+                }
+            )
+            .execute()
+        )
+        return _row_to_referral_medication(result.data[0])
+
+    def list_referral_medications(self, scope: Scope, referral_id: int) -> list[ReferralMedication]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        result = (
+            self._t("referral_medications")
+            .select("*")
+            .eq("referral_id", referral_id)
+            .order("id")
+            .execute()
+        )
+        return [_row_to_referral_medication(r) for r in result.data]
+
+    def update_referral_medication(
+        self,
+        scope: Scope,
+        referral_id: int,
+        medication_id: int,
+        *,
+        name: str | None = None,
+        dose: str | None = None,
+        route: str | None = None,
+        frequency: str | None = None,
+        source: str | None = None,
+    ) -> ReferralMedication | None:
+        if source is not None and source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        fields: dict[str, Any] = {
+            k: v
+            for k, v in {
+                "name": name,
+                "dose": dose,
+                "route": route,
+                "frequency": frequency,
+                "source": source,
+            }.items()
+            if v is not None
+        }
+        if not fields:
+            result = (
+                self._t("referral_medications")
+                .select("*")
+                .eq("id", medication_id)
+                .eq("referral_id", referral_id)
+                .execute()
+            )
+            return _row_to_referral_medication(result.data[0]) if result.data else None
+        result = (
+            self._t("referral_medications")
+            .update(fields)
+            .eq("id", medication_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        return _row_to_referral_medication(result.data[0]) if result.data else None
+
+    def delete_referral_medication(
+        self, scope: Scope, referral_id: int, medication_id: int
+    ) -> bool:
+        if self.get_referral(scope, referral_id) is None:
+            return False
+        to_delete = (
+            self._t("referral_medications")
+            .select("id")
+            .eq("id", medication_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        if not to_delete.data:
+            return False
+        (
+            self._t("referral_medications")
+            .delete()
+            .eq("id", medication_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        return True
+
+    # --- Allergies ---
+
+    def add_referral_allergy(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        substance: str,
+        reaction: str | None = None,
+        severity: str | None = None,
+        source: str = "user_entered",
+    ) -> ReferralAllergy | None:
+        if source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        result = (
+            self._t("referral_allergies")
+            .insert(
+                {
+                    "referral_id": referral_id,
+                    "substance": substance,
+                    "reaction": reaction,
+                    "severity": severity,
+                    "source": source,
+                    "created_at": _now_iso(),
+                }
+            )
+            .execute()
+        )
+        return _row_to_referral_allergy(result.data[0])
+
+    def list_referral_allergies(self, scope: Scope, referral_id: int) -> list[ReferralAllergy]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        result = (
+            self._t("referral_allergies")
+            .select("*")
+            .eq("referral_id", referral_id)
+            .order("id")
+            .execute()
+        )
+        return [_row_to_referral_allergy(r) for r in result.data]
+
+    def update_referral_allergy(
+        self,
+        scope: Scope,
+        referral_id: int,
+        allergy_id: int,
+        *,
+        substance: str | None = None,
+        reaction: str | None = None,
+        severity: str | None = None,
+        source: str | None = None,
+    ) -> ReferralAllergy | None:
+        if source is not None and source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        fields: dict[str, Any] = {
+            k: v
+            for k, v in {
+                "substance": substance,
+                "reaction": reaction,
+                "severity": severity,
+                "source": source,
+            }.items()
+            if v is not None
+        }
+        if not fields:
+            result = (
+                self._t("referral_allergies")
+                .select("*")
+                .eq("id", allergy_id)
+                .eq("referral_id", referral_id)
+                .execute()
+            )
+            return _row_to_referral_allergy(result.data[0]) if result.data else None
+        result = (
+            self._t("referral_allergies")
+            .update(fields)
+            .eq("id", allergy_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        return _row_to_referral_allergy(result.data[0]) if result.data else None
+
+    def delete_referral_allergy(self, scope: Scope, referral_id: int, allergy_id: int) -> bool:
+        if self.get_referral(scope, referral_id) is None:
+            return False
+        to_delete = (
+            self._t("referral_allergies")
+            .select("id")
+            .eq("id", allergy_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        if not to_delete.data:
+            return False
+        (
+            self._t("referral_allergies")
+            .delete()
+            .eq("id", allergy_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        return True
+
+    # --- Attachments ---
+
+    def add_referral_attachment(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        kind: str,
+        label: str,
+        date_of_service: str | None = None,
+        storage_ref: str | None = None,
+        checklist_only: bool = True,
+        source: str = "user_entered",
+    ) -> ReferralAttachment | None:
+        if kind not in ATTACHMENT_KIND_VALUES:
+            raise ValueError(f"Unknown attachment kind: {kind!r}")
+        if source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        result = (
+            self._t("referral_attachments")
+            .insert(
+                {
+                    "referral_id": referral_id,
+                    "kind": kind,
+                    "label": label,
+                    "date_of_service": date_of_service,
+                    "storage_ref": storage_ref,
+                    "checklist_only": checklist_only,
+                    "source": source,
+                    "created_at": _now_iso(),
+                }
+            )
+            .execute()
+        )
+        return _row_to_referral_attachment(result.data[0])
+
+    def list_referral_attachments(self, scope: Scope, referral_id: int) -> list[ReferralAttachment]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        result = (
+            self._t("referral_attachments")
+            .select("*")
+            .eq("referral_id", referral_id)
+            .order("id")
+            .execute()
+        )
+        return [_row_to_referral_attachment(r) for r in result.data]
+
+    def update_referral_attachment(
+        self,
+        scope: Scope,
+        referral_id: int,
+        attachment_id: int,
+        *,
+        kind: str | None = None,
+        label: str | None = None,
+        date_of_service: str | None = None,
+        storage_ref: str | None = None,
+        checklist_only: bool | None = None,
+        source: str | None = None,
+    ) -> ReferralAttachment | None:
+        if kind is not None and kind not in ATTACHMENT_KIND_VALUES:
+            raise ValueError(f"Unknown attachment kind: {kind!r}")
+        if source is not None and source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        fields: dict[str, Any] = {}
+        if kind is not None:
+            fields["kind"] = kind
+        if label is not None:
+            fields["label"] = label
+        if date_of_service is not None:
+            fields["date_of_service"] = date_of_service
+        if storage_ref is not None:
+            fields["storage_ref"] = storage_ref
+        if checklist_only is not None:
+            fields["checklist_only"] = checklist_only
+        if source is not None:
+            fields["source"] = source
+        if not fields:
+            result = (
+                self._t("referral_attachments")
+                .select("*")
+                .eq("id", attachment_id)
+                .eq("referral_id", referral_id)
+                .execute()
+            )
+            return _row_to_referral_attachment(result.data[0]) if result.data else None
+        result = (
+            self._t("referral_attachments")
+            .update(fields)
+            .eq("id", attachment_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        return _row_to_referral_attachment(result.data[0]) if result.data else None
+
+    def delete_referral_attachment(
+        self, scope: Scope, referral_id: int, attachment_id: int
+    ) -> bool:
+        if self.get_referral(scope, referral_id) is None:
+            return False
+        to_delete = (
+            self._t("referral_attachments")
+            .select("id")
+            .eq("id", attachment_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        if not to_delete.data:
+            return False
+        (
+            self._t("referral_attachments")
+            .delete()
+            .eq("id", attachment_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        return True
 
     def close(self) -> None:
         pass  # supabase-py client has no close method
