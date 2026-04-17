@@ -11,7 +11,9 @@ from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 if TYPE_CHECKING:
     from docstats.domain.audit import AuditEvent
     from docstats.domain.orgs import Membership, Organization
+    from docstats.domain.patients import Patient
     from docstats.domain.sessions import Session
+    from docstats.scope import Scope
 
 
 def normalize_email(email: str) -> str:
@@ -281,6 +283,77 @@ class StorageBase(ABC):
 
     @abstractmethod
     def purge_expired_sessions(self) -> int: ...
+
+    # --- Patients (scope-enforced) ---
+
+    @abstractmethod
+    def create_patient(
+        self,
+        scope: "Scope",
+        *,
+        first_name: str,
+        last_name: str,
+        middle_name: str | None = None,
+        date_of_birth: str | None = None,
+        sex: str | None = None,
+        mrn: str | None = None,
+        preferred_language: str | None = None,
+        pronouns: str | None = None,
+        phone: str | None = None,
+        email: str | None = None,
+        address_line1: str | None = None,
+        address_line2: str | None = None,
+        address_city: str | None = None,
+        address_state: str | None = None,
+        address_zip: str | None = None,
+        emergency_contact_name: str | None = None,
+        emergency_contact_phone: str | None = None,
+        notes: str | None = None,
+        created_by_user_id: int | None = None,
+    ) -> "Patient": ...
+
+    @abstractmethod
+    def get_patient(self, scope: "Scope", patient_id: int) -> "Patient | None": ...
+
+    @abstractmethod
+    def list_patients(
+        self,
+        scope: "Scope",
+        *,
+        search: str | None = None,
+        include_deleted: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list["Patient"]: ...
+
+    @abstractmethod
+    def update_patient(
+        self,
+        scope: "Scope",
+        patient_id: int,
+        *,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        middle_name: str | None = None,
+        date_of_birth: str | None = None,
+        sex: str | None = None,
+        mrn: str | None = None,
+        preferred_language: str | None = None,
+        pronouns: str | None = None,
+        phone: str | None = None,
+        email: str | None = None,
+        address_line1: str | None = None,
+        address_line2: str | None = None,
+        address_city: str | None = None,
+        address_state: str | None = None,
+        address_zip: str | None = None,
+        emergency_contact_name: str | None = None,
+        emergency_contact_phone: str | None = None,
+        notes: str | None = None,
+    ) -> "Patient | None": ...
+
+    @abstractmethod
+    def soft_delete_patient(self, scope: "Scope", patient_id: int) -> bool: ...
 
     @abstractmethod
     def close(self) -> None: ...

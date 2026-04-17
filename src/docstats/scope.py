@@ -13,6 +13,7 @@ because the scope key is on the SQL WHERE clause.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,3 +40,34 @@ class Scope:
         # membership_role is only meaningful in org mode.
         if self.membership_role is not None and self.organization_id is None:
             raise ValueError("membership_role requires organization_id")
+
+
+class ScopeRequired(ValueError):
+    """Raised when a storage method refuses an anonymous scope.
+
+    Patient / referral / attachment rows carry an owning scope — there is no
+    row that "belongs to nobody." Routes that hit these methods must go
+    through a dep that rejects anonymous callers first; if one slips through,
+    we fail loudly here rather than silently leaking across tenants.
+    """
+
+
+def scope_sql_clause(
+    scope: Scope,
+    *,
+    user_col: str = "scope_user_id",
+    org_col: str = "scope_organization_id",
+) -> tuple[str, list[Any]]:
+    """Return ``(sql_fragment, params)`` for filtering rows to the given scope.
+
+    Solo mode → ``scope_user_id = ? AND scope_organization_id IS NULL``.
+    Org mode  → ``scope_organization_id = ? AND scope_user_id IS NULL``.
+    Anonymous → raises ``ScopeRequired``; patient-level reads/writes require a
+    concrete owner. ``params`` is a list so callers can ``.extend()`` with
+    additional heterogeneous filter values (search terms, limits, etc.).
+    """
+    if scope.is_solo:
+        return (f"{user_col} = ? AND {org_col} IS NULL", [scope.user_id])
+    if scope.is_org:
+        return (f"{org_col} = ? AND {user_col} IS NULL", [scope.organization_id])
+    raise ScopeRequired("Anonymous scope is not allowed for scoped entities")

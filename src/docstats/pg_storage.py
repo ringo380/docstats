@@ -17,8 +17,10 @@ from typing import Any
 
 from docstats.domain.audit import AuditEvent
 from docstats.domain.orgs import ROLES, Membership, Organization
+from docstats.domain.patients import Patient
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
+from docstats.scope import Scope, ScopeRequired
 from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
 from docstats.validators import IP_MAX_LENGTH, USER_AGENT_MAX_LENGTH
 
@@ -70,6 +72,42 @@ def _row_to_membership(row: dict) -> Membership:
         role=row["role"],
         invited_by_user_id=row.get("invited_by_user_id"),
         joined_at=joined_at,
+        deleted_at=_parse_ts(row.get("deleted_at")),
+    )
+
+
+def _row_to_patient(row: dict) -> Patient:
+    """Convert a Supabase patients row into a Patient model."""
+    created = _parse_ts(row.get("created_at"))
+    updated = _parse_ts(row.get("updated_at"))
+    assert created is not None and updated is not None
+    # Postgres DATE comes back as ISO string (YYYY-MM-DD) via PostgREST.
+    dob = row.get("date_of_birth")
+    return Patient(
+        id=int(row["id"]),
+        scope_user_id=row.get("scope_user_id"),
+        scope_organization_id=row.get("scope_organization_id"),
+        first_name=row["first_name"],
+        last_name=row["last_name"],
+        middle_name=row.get("middle_name"),
+        date_of_birth=dob,
+        sex=row.get("sex"),
+        mrn=row.get("mrn"),
+        preferred_language=row.get("preferred_language"),
+        pronouns=row.get("pronouns"),
+        phone=row.get("phone"),
+        email=row.get("email"),
+        address_line1=row.get("address_line1"),
+        address_line2=row.get("address_line2"),
+        address_city=row.get("address_city"),
+        address_state=row.get("address_state"),
+        address_zip=row.get("address_zip"),
+        emergency_contact_name=row.get("emergency_contact_name"),
+        emergency_contact_phone=row.get("emergency_contact_phone"),
+        notes=row.get("notes"),
+        created_by_user_id=row.get("created_by_user_id"),
+        created_at=created,
+        updated_at=updated,
         deleted_at=_parse_ts(row.get("deleted_at")),
     )
 
@@ -827,6 +865,191 @@ class PostgresStorage(StorageBase):
             return 0
         self._t("sessions").delete().in_("id", ids).execute()
         return len(ids)
+
+    # --- Patients (scope-enforced) ---
+
+    def _apply_scope(self, query, scope: Scope):
+        """Apply scope filtering to a supabase-py query chain.
+
+        Mirrors ``scope.scope_sql_clause`` semantics — raises on anonymous,
+        adds ``scope_user_id`` / ``scope_organization_id`` filters for the
+        active mode (solo / org).
+        """
+        if scope.is_solo:
+            return query.eq("scope_user_id", scope.user_id).is_("scope_organization_id", None)
+        if scope.is_org:
+            return query.eq("scope_organization_id", scope.organization_id).is_(
+                "scope_user_id", None
+            )
+        raise ScopeRequired("Anonymous scope is not allowed for scoped entities")
+
+    def create_patient(
+        self,
+        scope: Scope,
+        *,
+        first_name: str,
+        last_name: str,
+        middle_name: str | None = None,
+        date_of_birth: str | None = None,
+        sex: str | None = None,
+        mrn: str | None = None,
+        preferred_language: str | None = None,
+        pronouns: str | None = None,
+        phone: str | None = None,
+        email: str | None = None,
+        address_line1: str | None = None,
+        address_line2: str | None = None,
+        address_city: str | None = None,
+        address_state: str | None = None,
+        address_zip: str | None = None,
+        emergency_contact_name: str | None = None,
+        emergency_contact_phone: str | None = None,
+        notes: str | None = None,
+        created_by_user_id: int | None = None,
+    ) -> Patient:
+        if scope.is_anonymous:
+            raise ScopeRequired("Anonymous scope is not allowed for scoped entities")
+        row: dict[str, Any] = {
+            "scope_user_id": scope.user_id if scope.is_solo else None,
+            "scope_organization_id": scope.organization_id if scope.is_org else None,
+            "first_name": first_name,
+            "last_name": last_name,
+            "middle_name": middle_name,
+            "date_of_birth": date_of_birth,
+            "sex": sex,
+            "mrn": mrn,
+            "preferred_language": preferred_language,
+            "pronouns": pronouns,
+            "phone": phone,
+            "email": email,
+            "address_line1": address_line1,
+            "address_line2": address_line2,
+            "address_city": address_city,
+            "address_state": address_state,
+            "address_zip": address_zip,
+            "emergency_contact_name": emergency_contact_name,
+            "emergency_contact_phone": emergency_contact_phone,
+            "notes": notes,
+            "created_by_user_id": created_by_user_id,
+            "created_at": _now_iso(),
+            "updated_at": _now_iso(),
+        }
+        result = self._t("patients").insert(row).execute()
+        return _row_to_patient(result.data[0])
+
+    def get_patient(self, scope: Scope, patient_id: int) -> Patient | None:
+        query = self._t("patients").select("*").eq("id", patient_id).is_("deleted_at", None)
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        return _row_to_patient(result.data[0]) if result.data else None
+
+    def list_patients(
+        self,
+        scope: Scope,
+        *,
+        search: str | None = None,
+        include_deleted: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Patient]:
+        query = self._t("patients").select("*")
+        query = self._apply_scope(query, scope)
+        if not include_deleted:
+            query = query.is_("deleted_at", None)
+        if search:
+            # Fetch scope-filtered rows and filter in Python — matches the
+            # search_providers approach in this backend and avoids PostgREST
+            # escaping pitfalls with .or_() on user input.
+            result = query.order("last_name").order("first_name").order("id").execute()
+            term = search.strip().lower()
+            rows = [
+                r
+                for r in result.data
+                if (r.get("last_name", "") or "").lower().find(term) != -1
+                or (r.get("first_name", "") or "").lower().find(term) != -1
+                or (r.get("mrn", "") or "").lower().find(term) != -1
+            ]
+            return [_row_to_patient(r) for r in rows[offset : offset + limit]]
+        result = (
+            query.order("last_name")
+            .order("first_name")
+            .order("id")
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+        return [_row_to_patient(r) for r in result.data]
+
+    def update_patient(
+        self,
+        scope: Scope,
+        patient_id: int,
+        *,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        middle_name: str | None = None,
+        date_of_birth: str | None = None,
+        sex: str | None = None,
+        mrn: str | None = None,
+        preferred_language: str | None = None,
+        pronouns: str | None = None,
+        phone: str | None = None,
+        email: str | None = None,
+        address_line1: str | None = None,
+        address_line2: str | None = None,
+        address_city: str | None = None,
+        address_state: str | None = None,
+        address_zip: str | None = None,
+        emergency_contact_name: str | None = None,
+        emergency_contact_phone: str | None = None,
+        notes: str | None = None,
+    ) -> Patient | None:
+        fields: dict[str, Any] = {
+            k: v
+            for k, v in {
+                "first_name": first_name,
+                "last_name": last_name,
+                "middle_name": middle_name,
+                "date_of_birth": date_of_birth,
+                "sex": sex,
+                "mrn": mrn,
+                "preferred_language": preferred_language,
+                "pronouns": pronouns,
+                "phone": phone,
+                "email": email,
+                "address_line1": address_line1,
+                "address_line2": address_line2,
+                "address_city": address_city,
+                "address_state": address_state,
+                "address_zip": address_zip,
+                "emergency_contact_name": emergency_contact_name,
+                "emergency_contact_phone": emergency_contact_phone,
+                "notes": notes,
+            }.items()
+            if v is not None
+        }
+        if not fields:
+            return self.get_patient(scope, patient_id)
+        fields["updated_at"] = _now_iso()
+
+        # Guard with scope + deleted_at so cross-tenant writes silently no-op
+        # rather than corrupting another tenant's row.
+        query = self._t("patients").update(fields).eq("id", patient_id).is_("deleted_at", None)
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        if not result.data:
+            return None
+        return _row_to_patient(result.data[0])
+
+    def soft_delete_patient(self, scope: Scope, patient_id: int) -> bool:
+        query = (
+            self._t("patients")
+            .update({"deleted_at": _now_iso()})
+            .eq("id", patient_id)
+            .is_("deleted_at", None)
+        )
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        return bool(result.data)
 
     def close(self) -> None:
         pass  # supabase-py client has no close method
