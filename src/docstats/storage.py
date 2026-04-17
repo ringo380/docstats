@@ -10,13 +10,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from docstats.domain.audit import AuditEvent
+from docstats.domain.orgs import ROLES, Membership, Organization
+from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
+from docstats.validators import IP_MAX_LENGTH, USER_AGENT_MAX_LENGTH
 
 if TYPE_CHECKING:
     from docstats.pg_storage import PostgresStorage
@@ -29,6 +34,99 @@ DEFAULT_DB_DIR = Path.home() / ".local" / "share" / "docstats"
 def _escape_like(query: str) -> str:
     """Escape SQL LIKE wildcard characters in a search query."""
     return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _parse_sqlite_utc(value: str | None) -> datetime | None:
+    """Parse a SQLite TEXT timestamp as tz-aware UTC.
+
+    SQLite's ``datetime('now')`` returns naive UTC; attaching ``tz=timezone.utc``
+    makes comparisons with ``datetime.now(tz=timezone.utc)`` consistent across
+    backends. All ``_row_to_*`` helpers go through this so SQLite-sourced
+    datetimes match the tz-aware datetimes Supabase returns.
+    """
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _row_to_organization(row: sqlite3.Row) -> Organization:
+    """Convert a SQLite organizations row into an Organization model."""
+    created = _parse_sqlite_utc(row["created_at"])
+    assert created is not None
+    return Organization(
+        id=int(row["id"]),
+        name=row["name"],
+        slug=row["slug"],
+        npi=row["npi"],
+        address_line1=row["address_line1"],
+        address_line2=row["address_line2"],
+        address_city=row["address_city"],
+        address_state=row["address_state"],
+        address_zip=row["address_zip"],
+        phone=row["phone"],
+        fax=row["fax"],
+        terms_bundle_version=row["terms_bundle_version"],
+        created_at=created,
+        deleted_at=_parse_sqlite_utc(row["deleted_at"]),
+    )
+
+
+def _row_to_membership(row: sqlite3.Row) -> Membership:
+    """Convert a SQLite memberships row into a Membership model."""
+    joined = _parse_sqlite_utc(row["joined_at"])
+    assert joined is not None
+    return Membership(
+        id=int(row["id"]),
+        organization_id=int(row["organization_id"]),
+        user_id=int(row["user_id"]),
+        role=row["role"],
+        invited_by_user_id=row["invited_by_user_id"],
+        joined_at=joined,
+        deleted_at=_parse_sqlite_utc(row["deleted_at"]),
+    )
+
+
+def _row_to_session(row: sqlite3.Row) -> Session:
+    """Convert a SQLite sessions row into a Session model."""
+    data_raw = row["data_json"]
+    created = _parse_sqlite_utc(row["created_at"])
+    last_seen = _parse_sqlite_utc(row["last_seen_at"])
+    expires = _parse_sqlite_utc(row["expires_at"])
+    assert created is not None and last_seen is not None and expires is not None
+    return Session(
+        id=row["id"],
+        user_id=row["user_id"],
+        data=json.loads(data_raw) if data_raw else {},
+        ip=row["ip"],
+        user_agent=row["user_agent"],
+        created_at=created,
+        last_seen_at=last_seen,
+        expires_at=expires,
+        revoked_at=_parse_sqlite_utc(row["revoked_at"]),
+    )
+
+
+def _row_to_audit_event(row: sqlite3.Row) -> AuditEvent:
+    """Convert a SQLite audit_events row into an AuditEvent."""
+    metadata_raw = row["metadata_json"]
+    created = _parse_sqlite_utc(row["created_at"])
+    assert created is not None
+    return AuditEvent(
+        id=int(row["id"]),
+        actor_user_id=row["actor_user_id"],
+        scope_user_id=row["scope_user_id"],
+        scope_organization_id=row["scope_organization_id"],
+        action=row["action"],
+        entity_type=row["entity_type"],
+        entity_id=row["entity_id"],
+        metadata=json.loads(metadata_raw) if metadata_raw else {},
+        ip=row["ip"],
+        user_agent=row["user_agent"],
+        created_at=created,
+    )
 
 
 _storage: "Storage | PostgresStorage | None" = None
@@ -107,6 +205,10 @@ class Storage(StorageBase):
         self._migrate_appt_suite()
         self._migrate_is_televisit()
         self._migrate_appt_phone_fax()
+        self._migrate_audit_events()
+        self._migrate_orgs_and_memberships()
+        self._migrate_users_active_org_and_role_hint()
+        self._migrate_sessions()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -218,6 +320,109 @@ class Storage(StorageBase):
                 self._conn.commit()
             except sqlite3.OperationalError:
                 pass  # Column already exists
+
+    def _migrate_audit_events(self) -> None:
+        """Create the append-only audit_events table if absent."""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_user_id         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                scope_user_id         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                scope_organization_id INTEGER,
+                action                TEXT NOT NULL,
+                entity_type           TEXT,
+                entity_id             TEXT,
+                metadata_json         TEXT,
+                ip                    TEXT,
+                user_agent            TEXT,
+                created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_events_actor
+                ON audit_events(actor_user_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_events_scope_user
+                ON audit_events(scope_user_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_events_scope_org
+                ON audit_events(scope_organization_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_events_entity
+                ON audit_events(entity_type, entity_id, created_at DESC);
+        """)
+        self._conn.commit()
+
+    def _migrate_orgs_and_memberships(self) -> None:
+        """Create organizations + memberships tables if absent."""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS organizations (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                name                  TEXT NOT NULL,
+                slug                  TEXT NOT NULL,
+                npi                   TEXT,
+                address_line1         TEXT,
+                address_line2         TEXT,
+                address_city          TEXT,
+                address_state         TEXT,
+                address_zip           TEXT,
+                phone                 TEXT,
+                fax                   TEXT,
+                terms_bundle_version  TEXT,
+                created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+                deleted_at            TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_live_slug
+                ON organizations(slug) WHERE deleted_at IS NULL;
+
+            CREATE TABLE IF NOT EXISTS memberships (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id     INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+                user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                role                TEXT NOT NULL CHECK (role IN ('owner','admin','coordinator','clinician','staff','read_only')),
+                invited_by_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                joined_at           TEXT NOT NULL DEFAULT (datetime('now')),
+                deleted_at          TEXT,
+                UNIQUE(organization_id, user_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memberships_user
+                ON memberships(user_id) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_memberships_org
+                ON memberships(organization_id) WHERE deleted_at IS NULL;
+        """)
+        self._conn.commit()
+
+    def _migrate_users_active_org_and_role_hint(self) -> None:
+        """Add active_org_id, role_hint, and PHI-consent columns to users."""
+        for col in (
+            "active_org_id INTEGER REFERENCES organizations(id) ON DELETE SET NULL",
+            "role_hint TEXT",
+            "phi_consent_version TEXT",
+            "phi_consent_at TEXT",
+            "phi_consent_ip TEXT",
+            "phi_consent_user_agent TEXT",
+        ):
+            try:
+                self._conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+        self._conn.commit()
+
+    def _migrate_sessions(self) -> None:
+        """Create the server-side sessions table if absent."""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id            TEXT PRIMARY KEY,
+                user_id       INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                data_json     TEXT,
+                ip            TEXT,
+                user_agent    TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at    TEXT NOT NULL,
+                revoked_at    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_user
+                ON sessions(user_id) WHERE revoked_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_sessions_expires
+                ON sessions(expires_at) WHERE revoked_at IS NULL;
+        """)
+        self._conn.commit()
 
     # --- User CRUD ---
 
@@ -336,6 +541,35 @@ class Storage(StorageBase):
         self._conn.execute(
             "UPDATE users SET terms_accepted_at=datetime('now'), terms_version=?, terms_ip=?, terms_user_agent=? WHERE id=?",
             (terms_version, ip_address, user_agent, user_id),
+        )
+        self._conn.commit()
+
+    def record_phi_consent(
+        self,
+        user_id: int,
+        *,
+        phi_consent_version: str,
+        ip_address: str,
+        user_agent: str,
+    ) -> None:
+        # Cap at storage boundary so callers can't blow up the users row with
+        # oversized headers. Matches the pattern in domain/audit.py record().
+        self._conn.execute(
+            "UPDATE users SET phi_consent_at=datetime('now'), phi_consent_version=?, "
+            "phi_consent_ip=?, phi_consent_user_agent=? WHERE id=?",
+            (
+                phi_consent_version,
+                ip_address[:IP_MAX_LENGTH] if ip_address else ip_address,
+                user_agent[:USER_AGENT_MAX_LENGTH] if user_agent else user_agent,
+                user_id,
+            ),
+        )
+        self._conn.commit()
+
+    def set_active_org(self, user_id: int, organization_id: int | None) -> None:
+        self._conn.execute(
+            "UPDATE users SET active_org_id = ? WHERE id = ?",
+            (organization_id, user_id),
         )
         self._conn.commit()
 
@@ -574,6 +808,303 @@ class Storage(StorageBase):
         else:
             logger.warning("ZIP code data file not found at %s", data_file)
             self._conn.commit()
+
+    # --- Audit log (append-only) ---
+
+    def record_audit_event(
+        self,
+        *,
+        action: str,
+        actor_user_id: int | None = None,
+        scope_user_id: int | None = None,
+        scope_organization_id: int | None = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> int:
+        cursor = self._conn.execute(
+            """INSERT INTO audit_events
+               (actor_user_id, scope_user_id, scope_organization_id, action,
+                entity_type, entity_id, metadata_json, ip, user_agent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                actor_user_id,
+                scope_user_id,
+                scope_organization_id,
+                action,
+                entity_type,
+                entity_id,
+                json.dumps(metadata) if metadata else None,
+                ip,
+                user_agent,
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+    def list_audit_events(
+        self,
+        *,
+        actor_user_id: int | None = None,
+        scope_user_id: int | None = None,
+        scope_organization_id: int | None = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        limit: int = 100,
+    ) -> list[AuditEvent]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if actor_user_id is not None:
+            clauses.append("actor_user_id = ?")
+            params.append(actor_user_id)
+        if scope_user_id is not None:
+            clauses.append("scope_user_id = ?")
+            params.append(scope_user_id)
+        if scope_organization_id is not None:
+            clauses.append("scope_organization_id = ?")
+            params.append(scope_organization_id)
+        if entity_type is not None:
+            clauses.append("entity_type = ?")
+            params.append(entity_type)
+        if entity_id is not None:
+            clauses.append("entity_id = ?")
+            params.append(entity_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        # Tiebreaker on id DESC so same-second rows stay deterministic.
+        sql = f"SELECT * FROM audit_events{where} ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(int(limit))
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_audit_event(row) for row in rows]
+
+    # --- Organizations & memberships ---
+
+    def create_organization(
+        self,
+        *,
+        name: str,
+        slug: str,
+        npi: str | None = None,
+        address_line1: str | None = None,
+        address_line2: str | None = None,
+        address_city: str | None = None,
+        address_state: str | None = None,
+        address_zip: str | None = None,
+        phone: str | None = None,
+        fax: str | None = None,
+        terms_bundle_version: str | None = None,
+    ) -> Organization:
+        cursor = self._conn.execute(
+            """INSERT INTO organizations
+               (name, slug, npi, address_line1, address_line2, address_city,
+                address_state, address_zip, phone, fax, terms_bundle_version)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                name,
+                slug,
+                npi,
+                address_line1,
+                address_line2,
+                address_city,
+                address_state,
+                address_zip,
+                phone,
+                fax,
+                terms_bundle_version,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM organizations WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_organization(row)
+
+    def get_organization(self, organization_id: int) -> Organization | None:
+        row = self._conn.execute(
+            "SELECT * FROM organizations WHERE id = ? AND deleted_at IS NULL",
+            (organization_id,),
+        ).fetchone()
+        return _row_to_organization(row) if row else None
+
+    def get_organization_by_slug(self, slug: str) -> Organization | None:
+        row = self._conn.execute(
+            "SELECT * FROM organizations WHERE slug = ? AND deleted_at IS NULL",
+            (slug,),
+        ).fetchone()
+        return _row_to_organization(row) if row else None
+
+    def soft_delete_organization(self, organization_id: int) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE organizations SET deleted_at = datetime('now') "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (organization_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def create_membership(
+        self,
+        *,
+        organization_id: int,
+        user_id: int,
+        role: str,
+        invited_by_user_id: int | None = None,
+    ) -> Membership:
+        if role not in ROLES:
+            raise ValueError(f"Unknown role: {role!r}")
+        # Upsert on (organization_id, user_id): re-inviting a previously
+        # soft-deleted member reactivates the existing row rather than
+        # failing the UNIQUE constraint. The invite flow's contract.
+        self._conn.execute(
+            """INSERT INTO memberships
+               (organization_id, user_id, role, invited_by_user_id)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(organization_id, user_id) DO UPDATE SET
+                   role = excluded.role,
+                   invited_by_user_id = excluded.invited_by_user_id,
+                   joined_at = datetime('now'),
+                   deleted_at = NULL""",
+            (organization_id, user_id, role, invited_by_user_id),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM memberships WHERE organization_id = ? AND user_id = ?",
+            (organization_id, user_id),
+        ).fetchone()
+        return _row_to_membership(row)
+
+    def get_membership(self, organization_id: int, user_id: int) -> Membership | None:
+        row = self._conn.execute(
+            "SELECT * FROM memberships "
+            "WHERE organization_id = ? AND user_id = ? AND deleted_at IS NULL",
+            (organization_id, user_id),
+        ).fetchone()
+        return _row_to_membership(row) if row else None
+
+    def list_memberships_for_user(self, user_id: int) -> list[Membership]:
+        rows = self._conn.execute(
+            "SELECT * FROM memberships "
+            "WHERE user_id = ? AND deleted_at IS NULL "
+            "ORDER BY joined_at DESC, id DESC",
+            (user_id,),
+        ).fetchall()
+        return [_row_to_membership(row) for row in rows]
+
+    def list_memberships_for_org(self, organization_id: int) -> list[Membership]:
+        rows = self._conn.execute(
+            "SELECT * FROM memberships "
+            "WHERE organization_id = ? AND deleted_at IS NULL "
+            "ORDER BY joined_at ASC, id ASC",
+            (organization_id,),
+        ).fetchall()
+        return [_row_to_membership(row) for row in rows]
+
+    def update_membership_role(self, organization_id: int, user_id: int, role: str) -> bool:
+        if role not in ROLES:
+            raise ValueError(f"Unknown role: {role!r}")
+        cursor = self._conn.execute(
+            "UPDATE memberships SET role = ? "
+            "WHERE organization_id = ? AND user_id = ? AND deleted_at IS NULL",
+            (role, organization_id, user_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def soft_delete_membership(self, organization_id: int, user_id: int) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE memberships SET deleted_at = datetime('now') "
+            "WHERE organization_id = ? AND user_id = ? AND deleted_at IS NULL",
+            (organization_id, user_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- Sessions ---
+
+    def create_session(
+        self,
+        *,
+        user_id: int | None = None,
+        data: dict[str, Any] | None = None,
+        ip: str | None = None,
+        user_agent: str | None = None,
+        ttl_seconds: int = 604800,
+    ) -> Session:
+        session_id = secrets.token_urlsafe(32)
+        now = datetime.now(tz=timezone.utc)
+        expires = now + timedelta(seconds=ttl_seconds)
+        self._conn.execute(
+            """INSERT INTO sessions
+               (id, user_id, data_json, ip, user_agent, created_at, last_seen_at, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                user_id,
+                json.dumps(data) if data else None,
+                ip,
+                user_agent,
+                now.isoformat(),
+                now.isoformat(),
+                expires.isoformat(),
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return _row_to_session(row)
+
+    def get_session(self, session_id: str) -> Session | None:
+        row = self._conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return _row_to_session(row) if row else None
+
+    def touch_session(
+        self,
+        session_id: str,
+        *,
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> bool:
+        # Always update last_seen_at; conditionally update ip / user_agent.
+        sets = ["last_seen_at = ?"]
+        params: list[Any] = [datetime.now(tz=timezone.utc).isoformat()]
+        if ip is not None:
+            sets.append("ip = ?")
+            params.append(ip)
+        if user_agent is not None:
+            sets.append("user_agent = ?")
+            params.append(user_agent)
+        params.append(session_id)
+        cursor = self._conn.execute(
+            f"UPDATE sessions SET {', '.join(sets)} WHERE id = ? AND revoked_at IS NULL",
+            params,
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def revoke_session(self, session_id: str) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+            (datetime.now(tz=timezone.utc).isoformat(), session_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def list_sessions_for_user(self, user_id: int) -> list[Session]:
+        rows = self._conn.execute(
+            "SELECT * FROM sessions "
+            "WHERE user_id = ? AND revoked_at IS NULL "
+            "ORDER BY last_seen_at DESC, id DESC",
+            (user_id,),
+        ).fetchall()
+        return [_row_to_session(row) for row in rows]
+
+    def purge_expired_sessions(self) -> int:
+        cursor = self._conn.execute(
+            "DELETE FROM sessions WHERE expires_at < ?",
+            (datetime.now(tz=timezone.utc).isoformat(),),
+        )
+        self._conn.commit()
+        return cursor.rowcount
 
     def close(self) -> None:
         self._conn.close()
