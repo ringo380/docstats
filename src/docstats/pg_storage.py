@@ -13,11 +13,18 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from docstats.domain.audit import AuditEvent
 from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.patients import Patient
+from docstats.domain.reference import (
+    PLAN_TYPE_VALUES,
+    RULE_SOURCE_VALUES,
+    InsurancePlan,
+    PayerRule,
+    SpecialtyRule,
+)
 from docstats.domain.referrals import (
     ATTACHMENT_KIND_VALUES,
     AUTH_STATUS_VALUES,
@@ -254,6 +261,84 @@ def _row_to_referral_response(row: dict) -> ReferralResponse:
         attached_consult_note_ref=row.get("attached_consult_note_ref"),
         received_via=row["received_via"],
         recorded_by_user_id=row.get("recorded_by_user_id"),
+        created_at=created,
+        updated_at=updated,
+    )
+
+
+def _parse_jsonb(value: Any) -> dict[str, Any]:
+    """Normalize a JSONB column from supabase-py to a dict.
+
+    Supabase returns JSONB as parsed dicts; some SDK paths return strings.
+    Accept either and default to {} on null.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        parsed = json.loads(value) if value else {}
+        return cast("dict[str, Any]", parsed)
+    return cast("dict[str, Any]", value)
+
+
+def _row_to_insurance_plan(row: dict) -> InsurancePlan:
+    created = _parse_ts(row.get("created_at"))
+    updated = _parse_ts(row.get("updated_at"))
+    assert created is not None and updated is not None
+    return InsurancePlan(
+        id=int(row["id"]),
+        scope_user_id=row.get("scope_user_id"),
+        scope_organization_id=row.get("scope_organization_id"),
+        payer_name=row["payer_name"],
+        plan_name=row.get("plan_name"),
+        plan_type=row["plan_type"],
+        member_id_pattern=row.get("member_id_pattern"),
+        group_id_pattern=row.get("group_id_pattern"),
+        requires_referral=bool(row.get("requires_referral", False)),
+        requires_prior_auth=bool(row.get("requires_prior_auth", False)),
+        notes=row.get("notes"),
+        created_at=created,
+        updated_at=updated,
+        deleted_at=_parse_ts(row.get("deleted_at")),
+    )
+
+
+def _row_to_specialty_rule(row: dict) -> SpecialtyRule:
+    created = _parse_ts(row.get("created_at"))
+    updated = _parse_ts(row.get("updated_at"))
+    assert created is not None and updated is not None
+    return SpecialtyRule(
+        id=int(row["id"]),
+        organization_id=row.get("organization_id"),
+        specialty_code=row["specialty_code"],
+        display_name=row.get("display_name"),
+        required_fields=_parse_jsonb(row.get("required_fields")),
+        recommended_attachments=_parse_jsonb(row.get("recommended_attachments")),
+        intake_questions=_parse_jsonb(row.get("intake_questions")),
+        urgency_red_flags=_parse_jsonb(row.get("urgency_red_flags")),
+        common_rejection_reasons=_parse_jsonb(row.get("common_rejection_reasons")),
+        source=row["source"],
+        version_id=int(row["version_id"]),
+        created_at=created,
+        updated_at=updated,
+    )
+
+
+def _row_to_payer_rule(row: dict) -> PayerRule:
+    created = _parse_ts(row.get("created_at"))
+    updated = _parse_ts(row.get("updated_at"))
+    assert created is not None and updated is not None
+    return PayerRule(
+        id=int(row["id"]),
+        organization_id=row.get("organization_id"),
+        payer_key=row["payer_key"],
+        display_name=row.get("display_name"),
+        referral_required=bool(row.get("referral_required", False)),
+        auth_required_services=_parse_jsonb(row.get("auth_required_services")),
+        auth_typical_turnaround_days=row.get("auth_typical_turnaround_days"),
+        records_required=_parse_jsonb(row.get("records_required")),
+        notes=row.get("notes"),
+        source=row["source"],
+        version_id=int(row["version_id"]),
         created_at=created,
         updated_at=updated,
     )
@@ -2029,6 +2114,316 @@ class PostgresStorage(StorageBase):
             .eq("referral_id", referral_id)
             .execute()
         )
+        return True
+
+    # --- Insurance plans (scope-owned) ---
+
+    def create_insurance_plan(
+        self,
+        scope: Scope,
+        *,
+        payer_name: str,
+        plan_name: str | None = None,
+        plan_type: str = "other",
+        member_id_pattern: str | None = None,
+        group_id_pattern: str | None = None,
+        requires_referral: bool = False,
+        requires_prior_auth: bool = False,
+        notes: str | None = None,
+    ) -> InsurancePlan:
+        if scope.is_anonymous:
+            raise ScopeRequired("Anonymous scope is not allowed for scoped entities")
+        if plan_type not in PLAN_TYPE_VALUES:
+            raise ValueError(f"Unknown plan_type: {plan_type!r}")
+        now = _now_iso()
+        row = {
+            "scope_user_id": scope.user_id if scope.is_solo else None,
+            "scope_organization_id": scope.organization_id if scope.is_org else None,
+            "payer_name": payer_name,
+            "plan_name": plan_name,
+            "plan_type": plan_type,
+            "member_id_pattern": member_id_pattern,
+            "group_id_pattern": group_id_pattern,
+            "requires_referral": requires_referral,
+            "requires_prior_auth": requires_prior_auth,
+            "notes": notes,
+            "created_at": now,
+            "updated_at": now,
+        }
+        result = self._t("insurance_plans").insert(row).execute()
+        return _row_to_insurance_plan(result.data[0])
+
+    def get_insurance_plan(self, scope: Scope, plan_id: int) -> InsurancePlan | None:
+        query = self._t("insurance_plans").select("*").eq("id", plan_id).is_("deleted_at", None)
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        return _row_to_insurance_plan(result.data[0]) if result.data else None
+
+    def list_insurance_plans(
+        self, scope: Scope, *, include_deleted: bool = False
+    ) -> list[InsurancePlan]:
+        query = self._t("insurance_plans").select("*")
+        query = self._apply_scope(query, scope)
+        if not include_deleted:
+            query = query.is_("deleted_at", None)
+        result = query.order("payer_name").order("plan_name").order("id").execute()
+        return [_row_to_insurance_plan(r) for r in result.data]
+
+    def update_insurance_plan(
+        self,
+        scope: Scope,
+        plan_id: int,
+        *,
+        payer_name: str | None = None,
+        plan_name: str | None = None,
+        plan_type: str | None = None,
+        member_id_pattern: str | None = None,
+        group_id_pattern: str | None = None,
+        requires_referral: bool | None = None,
+        requires_prior_auth: bool | None = None,
+        notes: str | None = None,
+    ) -> InsurancePlan | None:
+        if plan_type is not None and plan_type not in PLAN_TYPE_VALUES:
+            raise ValueError(f"Unknown plan_type: {plan_type!r}")
+        fields: dict[str, Any] = {
+            k: v
+            for k, v in {
+                "payer_name": payer_name,
+                "plan_name": plan_name,
+                "plan_type": plan_type,
+                "member_id_pattern": member_id_pattern,
+                "group_id_pattern": group_id_pattern,
+                "requires_referral": requires_referral,
+                "requires_prior_auth": requires_prior_auth,
+                "notes": notes,
+            }.items()
+            if v is not None
+        }
+        if not fields:
+            return self.get_insurance_plan(scope, plan_id)
+        fields["updated_at"] = _now_iso()
+        query = self._t("insurance_plans").update(fields).eq("id", plan_id).is_("deleted_at", None)
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        return _row_to_insurance_plan(result.data[0]) if result.data else None
+
+    def soft_delete_insurance_plan(self, scope: Scope, plan_id: int) -> bool:
+        query = (
+            self._t("insurance_plans")
+            .update({"deleted_at": _now_iso()})
+            .eq("id", plan_id)
+            .is_("deleted_at", None)
+        )
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        return bool(result.data)
+
+    # --- Specialty rules ---
+
+    def create_specialty_rule(
+        self,
+        *,
+        specialty_code: str,
+        organization_id: int | None = None,
+        display_name: str | None = None,
+        required_fields: dict[str, Any] | None = None,
+        recommended_attachments: dict[str, Any] | None = None,
+        intake_questions: dict[str, Any] | None = None,
+        urgency_red_flags: dict[str, Any] | None = None,
+        common_rejection_reasons: dict[str, Any] | None = None,
+        source: str = "seed",
+    ) -> SpecialtyRule:
+        if source not in RULE_SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        now = _now_iso()
+        row = {
+            "organization_id": organization_id,
+            "specialty_code": specialty_code,
+            "display_name": display_name,
+            "required_fields": required_fields or {},
+            "recommended_attachments": recommended_attachments or {},
+            "intake_questions": intake_questions or {},
+            "urgency_red_flags": urgency_red_flags or {},
+            "common_rejection_reasons": common_rejection_reasons or {},
+            "source": source,
+            "version_id": 1,
+            "created_at": now,
+            "updated_at": now,
+        }
+        result = self._t("specialty_rules").insert(row).execute()
+        return _row_to_specialty_rule(result.data[0])
+
+    def get_specialty_rule(self, rule_id: int) -> SpecialtyRule | None:
+        result = self._t("specialty_rules").select("*").eq("id", rule_id).execute()
+        return _row_to_specialty_rule(result.data[0]) if result.data else None
+
+    def list_specialty_rules(
+        self,
+        *,
+        organization_id: int | None = None,
+        include_globals: bool = True,
+    ) -> list[SpecialtyRule]:
+        query = self._t("specialty_rules").select("*")
+        if organization_id is None:
+            query = query.is_("organization_id", None)
+        elif include_globals:
+            # Globals + this org. supabase-py's .or_() takes a PostgREST
+            # filter string; safe here because organization_id is an int.
+            query = query.or_(f"organization_id.is.null,organization_id.eq.{organization_id}")
+        else:
+            query = query.eq("organization_id", organization_id)
+        result = query.order("specialty_code").order("id").execute()
+        return [_row_to_specialty_rule(r) for r in result.data]
+
+    def update_specialty_rule(
+        self,
+        rule_id: int,
+        *,
+        display_name: str | None = None,
+        required_fields: dict[str, Any] | None = None,
+        recommended_attachments: dict[str, Any] | None = None,
+        intake_questions: dict[str, Any] | None = None,
+        urgency_red_flags: dict[str, Any] | None = None,
+        common_rejection_reasons: dict[str, Any] | None = None,
+        source: str | None = None,
+        bump_version: bool = True,
+    ) -> SpecialtyRule | None:
+        if source is not None and source not in RULE_SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        fields: dict[str, Any] = {}
+        if display_name is not None:
+            fields["display_name"] = display_name
+        if required_fields is not None:
+            fields["required_fields"] = required_fields
+        if recommended_attachments is not None:
+            fields["recommended_attachments"] = recommended_attachments
+        if intake_questions is not None:
+            fields["intake_questions"] = intake_questions
+        if urgency_red_flags is not None:
+            fields["urgency_red_flags"] = urgency_red_flags
+        if common_rejection_reasons is not None:
+            fields["common_rejection_reasons"] = common_rejection_reasons
+        if source is not None:
+            fields["source"] = source
+        if not fields:
+            return self.get_specialty_rule(rule_id)
+        fields["updated_at"] = _now_iso()
+        if bump_version:
+            current = self.get_specialty_rule(rule_id)
+            if current is None:
+                return None
+            fields["version_id"] = current.version_id + 1
+        result = self._t("specialty_rules").update(fields).eq("id", rule_id).execute()
+        return _row_to_specialty_rule(result.data[0]) if result.data else None
+
+    def delete_specialty_rule(self, rule_id: int) -> bool:
+        to_delete = self._t("specialty_rules").select("id").eq("id", rule_id).execute()
+        if not to_delete.data:
+            return False
+        self._t("specialty_rules").delete().eq("id", rule_id).execute()
+        return True
+
+    # --- Payer rules ---
+
+    def create_payer_rule(
+        self,
+        *,
+        payer_key: str,
+        organization_id: int | None = None,
+        display_name: str | None = None,
+        referral_required: bool = False,
+        auth_required_services: dict[str, Any] | None = None,
+        auth_typical_turnaround_days: int | None = None,
+        records_required: dict[str, Any] | None = None,
+        notes: str | None = None,
+        source: str = "seed",
+    ) -> PayerRule:
+        if source not in RULE_SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        now = _now_iso()
+        row = {
+            "organization_id": organization_id,
+            "payer_key": payer_key,
+            "display_name": display_name,
+            "referral_required": referral_required,
+            "auth_required_services": auth_required_services or {},
+            "auth_typical_turnaround_days": auth_typical_turnaround_days,
+            "records_required": records_required or {},
+            "notes": notes,
+            "source": source,
+            "version_id": 1,
+            "created_at": now,
+            "updated_at": now,
+        }
+        result = self._t("payer_rules").insert(row).execute()
+        return _row_to_payer_rule(result.data[0])
+
+    def get_payer_rule(self, rule_id: int) -> PayerRule | None:
+        result = self._t("payer_rules").select("*").eq("id", rule_id).execute()
+        return _row_to_payer_rule(result.data[0]) if result.data else None
+
+    def list_payer_rules(
+        self,
+        *,
+        organization_id: int | None = None,
+        include_globals: bool = True,
+    ) -> list[PayerRule]:
+        query = self._t("payer_rules").select("*")
+        if organization_id is None:
+            query = query.is_("organization_id", None)
+        elif include_globals:
+            query = query.or_(f"organization_id.is.null,organization_id.eq.{organization_id}")
+        else:
+            query = query.eq("organization_id", organization_id)
+        result = query.order("payer_key").order("id").execute()
+        return [_row_to_payer_rule(r) for r in result.data]
+
+    def update_payer_rule(
+        self,
+        rule_id: int,
+        *,
+        display_name: str | None = None,
+        referral_required: bool | None = None,
+        auth_required_services: dict[str, Any] | None = None,
+        auth_typical_turnaround_days: int | None = None,
+        records_required: dict[str, Any] | None = None,
+        notes: str | None = None,
+        source: str | None = None,
+        bump_version: bool = True,
+    ) -> PayerRule | None:
+        if source is not None and source not in RULE_SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        fields: dict[str, Any] = {}
+        if display_name is not None:
+            fields["display_name"] = display_name
+        if referral_required is not None:
+            fields["referral_required"] = referral_required
+        if auth_required_services is not None:
+            fields["auth_required_services"] = auth_required_services
+        if auth_typical_turnaround_days is not None:
+            fields["auth_typical_turnaround_days"] = auth_typical_turnaround_days
+        if records_required is not None:
+            fields["records_required"] = records_required
+        if notes is not None:
+            fields["notes"] = notes
+        if source is not None:
+            fields["source"] = source
+        if not fields:
+            return self.get_payer_rule(rule_id)
+        fields["updated_at"] = _now_iso()
+        if bump_version:
+            current = self.get_payer_rule(rule_id)
+            if current is None:
+                return None
+            fields["version_id"] = current.version_id + 1
+        result = self._t("payer_rules").update(fields).eq("id", rule_id).execute()
+        return _row_to_payer_rule(result.data[0]) if result.data else None
+
+    def delete_payer_rule(self, rule_id: int) -> bool:
+        to_delete = self._t("payer_rules").select("id").eq("id", rule_id).execute()
+        if not to_delete.data:
+            return False
+        self._t("payer_rules").delete().eq("id", rule_id).execute()
         return True
 
     def close(self) -> None:
