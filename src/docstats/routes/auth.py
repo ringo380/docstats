@@ -10,6 +10,8 @@ from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from docstats.auth import get_current_user, hash_password, verify_password
+from docstats.domain import audit
+from docstats.domain.audit import client_ip
 from docstats.oauth import (
     GITHUB_ENABLED,
     github_authorize_url,
@@ -100,11 +102,23 @@ async def login_post(
         or not user.get("password_hash")
         or not verify_password(password, user["password_hash"])
     ):
+        audit.record(
+            storage,
+            action="user.login_failed",
+            request=request,
+            metadata={"email_hint": email[:3]} if email else None,
+        )
         return generic_error
 
-    request.session["user_id"] = user["id"]
-    request.session.pop("anon_searches", None)
+    _begin_session(request, storage, user["id"])
     storage.update_last_login(user["id"])
+    audit.record(
+        storage,
+        action="user.login",
+        request=request,
+        actor_user_id=user["id"],
+        scope_user_id=user["id"],
+    )
     return RedirectResponse("/", status_code=303)
 
 
@@ -163,14 +177,38 @@ async def signup_post(
         return _err("An account with that email already exists.")
 
     user_id = storage.create_user(email, hash_password(password))
-    request.session["user_id"] = user_id
-    request.session.pop("anon_searches", None)
+    _begin_session(request, storage, user_id)
+    audit.record(
+        storage,
+        action="user.signup",
+        request=request,
+        actor_user_id=user_id,
+        scope_user_id=user_id,
+    )
     return RedirectResponse("/onboarding", status_code=303)
 
 
 @router.get("/logout")
-async def logout(request: Request):
+async def logout(
+    request: Request,
+    storage: StorageBase = Depends(get_storage),
+):
+    prior_user_id = request.session.get("user_id")
+    prior_session_id = request.session.get("session_id")
     request.session.clear()
+    if prior_session_id:
+        try:
+            storage.revoke_session(prior_session_id)
+        except Exception:
+            logger.exception("Failed to revoke session on logout")
+    if prior_user_id:
+        audit.record(
+            storage,
+            action="user.logout",
+            request=request,
+            actor_user_id=prior_user_id,
+            scope_user_id=prior_user_id,
+        )
     return RedirectResponse("/", status_code=303)
 
 
@@ -215,9 +253,43 @@ async def github_callback(
         email=email,
         display_name=display_name,
     )
-    request.session["user_id"] = user_id
-    request.session.pop("anon_searches", None)
+    _begin_session(request, storage, user_id)
     user = storage.get_user_by_id(user_id)
+    audit.record(
+        storage,
+        action="user.login_github",
+        request=request,
+        actor_user_id=user_id,
+        scope_user_id=user_id,
+        metadata={"github_login": gh_user.get("login")},
+    )
     if user and user.get("terms_accepted_at"):
         return RedirectResponse("/", status_code=303)
     return RedirectResponse("/onboarding", status_code=303)
+
+
+def _begin_session(request: Request, storage: StorageBase, user_id: int) -> None:
+    """Open a new server-side session row and seat the cookie.
+
+    Always a fresh session_id per login — guarantees privilege-transition
+    rotation. Any stale session_id currently in the cookie is revoked first so
+    concurrent uses of the old token die immediately (session fixation defense).
+    """
+    prior = request.session.get("session_id")
+    if prior:
+        try:
+            storage.revoke_session(prior)
+        except Exception:
+            logger.exception("Failed to revoke prior session during login")
+    ip = client_ip(request)
+    ua = request.headers.get("User-Agent")
+    ua = ua[:500] if ua else None
+    try:
+        session = storage.create_session(user_id=user_id, ip=ip, user_agent=ua)
+        request.session["session_id"] = session.id
+    except Exception:
+        # DB down? Fall back to cookie-only session — degraded but usable.
+        logger.exception("Failed to create server-side session; falling back to cookie-only")
+        request.session.pop("session_id", None)
+    request.session["user_id"] = user_id
+    request.session.pop("anon_searches", None)

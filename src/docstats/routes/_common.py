@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
-from fastapi import Response
+from fastapi import Depends, Response
 from fastapi.templating import Jinja2Templates
 
+from docstats.auth import get_current_user
 from docstats.cache import ResponseCache
 from docstats.client import NPPESClient
-from docstats.storage import get_db_path
+from docstats.scope import Scope
+from docstats.storage import get_db_path, get_storage
 from docstats.storage_base import StorageBase
+
+logger = logging.getLogger(__name__)
 
 TEMPLATE_DIR = Path(__file__).parents[1] / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
@@ -95,3 +100,49 @@ def saved_count(storage: StorageBase, user_id: int | None) -> int:
     if user_id is None:
         return 0
     return len(storage.list_providers(user_id))
+
+
+def get_scope(
+    current_user: dict | None = Depends(get_current_user),
+    storage: StorageBase = Depends(get_storage),
+) -> Scope:
+    """Return the active Scope for the request.
+
+    - Anonymous request → ``Scope()`` (all fields None).
+    - Logged-in user with no ``active_org_id`` → solo mode, ``user_id`` set.
+    - Logged-in user with ``active_org_id`` → re-verified against
+      :meth:`StorageBase.get_membership`. If the membership is missing or
+      soft-deleted (e.g. the user was removed from the org but their session
+      cookie still claims it), we silently fall back to solo mode. Routes that
+      require org context should assert ``scope.is_org`` themselves.
+
+    The membership lookup is one extra DB read per authenticated request. Fine
+    for Phase 0; a cached version can land in Phase 7 if hot paths need it.
+    """
+    if not current_user:
+        return Scope()
+
+    user_id = current_user["id"]
+    active_org_id = current_user.get("active_org_id")
+    if active_org_id is None:
+        return Scope(user_id=user_id)
+
+    membership = storage.get_membership(active_org_id, user_id)
+    if membership is None:
+        # Stale active_org_id. Clear it lazily so the next request is fast.
+        logger.info(
+            "Clearing stale active_org_id=%s for user_id=%s (no active membership)",
+            active_org_id,
+            user_id,
+        )
+        try:
+            storage.set_active_org(user_id, None)
+        except Exception:
+            logger.exception("Failed to clear stale active_org_id for user_id=%s", user_id)
+        return Scope(user_id=user_id)
+
+    return Scope(
+        user_id=user_id,
+        organization_id=active_org_id,
+        membership_role=membership.role,
+    )

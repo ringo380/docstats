@@ -29,6 +29,12 @@ class UserRecord(TypedDict, total=False):
     terms_version: str | None
     terms_ip: str | None
     terms_user_agent: str | None
+    phi_consent_version: str | None
+    phi_consent_at: str | None
+    phi_consent_ip: str | None
+    phi_consent_user_agent: str | None
+    active_org_id: int | None
+    role_hint: str | None
     created_at: str
     last_login_at: str | None
 

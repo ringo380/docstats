@@ -143,3 +143,109 @@ def test_login_page_redirects_when_authenticated(tmp_path: Path):
     resp = tc.get("/auth/login", follow_redirects=False)
     app.dependency_overrides.clear()
     assert resp.status_code == 303
+
+
+# --- Phase 0.C: end-to-end session lifecycle ---
+
+
+def test_login_writes_audit_event(anon_client):
+    tc, storage = anon_client
+    storage.create_user("user@test.com", hash_password("correct123"))
+    tc.post(
+        "/auth/login",
+        data={"email": "user@test.com", "password": "correct123"},
+        follow_redirects=False,
+    )
+    events = storage.list_audit_events()
+    actions = [e.action for e in events]
+    assert "user.login" in actions
+
+
+def test_failed_login_writes_audit_event(anon_client):
+    tc, storage = anon_client
+    storage.create_user("user@test.com", hash_password("correct123"))
+    tc.post(
+        "/auth/login",
+        data={"email": "user@test.com", "password": "wrong"},
+        follow_redirects=False,
+    )
+    events = storage.list_audit_events()
+    actions = [e.action for e in events]
+    assert "user.login_failed" in actions
+
+
+def test_login_creates_session_row(anon_client):
+    tc, storage = anon_client
+    uid = storage.create_user("sess@test.com", hash_password("correct123"))
+    tc.post(
+        "/auth/login",
+        data={"email": "sess@test.com", "password": "correct123"},
+        follow_redirects=False,
+    )
+    sessions = storage.list_sessions_for_user(uid)
+    assert len(sessions) == 1
+    assert sessions[0].is_active()
+    assert sessions[0].user_id == uid
+
+
+def test_signup_creates_session_row(anon_client):
+    tc, storage = anon_client
+    tc.post(
+        "/auth/signup",
+        data={
+            "email": "signup@test.com",
+            "password": "correct123",
+            "confirm_password": "correct123",
+        },
+        follow_redirects=False,
+    )
+    user = storage.get_user_by_email("signup@test.com")
+    assert user is not None
+    sessions = storage.list_sessions_for_user(user["id"])
+    assert len(sessions) == 1
+
+
+def test_logout_revokes_session_row(anon_client):
+    tc, storage = anon_client
+    uid = storage.create_user("lo@test.com", hash_password("correct123"))
+    tc.post(
+        "/auth/login",
+        data={"email": "lo@test.com", "password": "correct123"},
+        follow_redirects=False,
+    )
+    assert len(storage.list_sessions_for_user(uid)) == 1
+    tc.get("/auth/logout", follow_redirects=False)
+    assert storage.list_sessions_for_user(uid) == []
+    # Audit trail shows logout.
+    actions = [e.action for e in storage.list_audit_events()]
+    assert "user.logout" in actions
+
+
+def test_second_login_revokes_prior_session(anon_client):
+    """Session fixation defense: logging in rotates the session id and revokes
+    any stale session that was still carried in the cookie."""
+    tc, storage = anon_client
+    uid = storage.create_user("re@test.com", hash_password("correct123"))
+    tc.post(
+        "/auth/login",
+        data={"email": "re@test.com", "password": "correct123"},
+        follow_redirects=False,
+    )
+    first_active = storage.list_sessions_for_user(uid)
+    assert len(first_active) == 1
+    first_id = first_active[0].id
+
+    # Second login on the same TestClient (cookie still present).
+    tc.post(
+        "/auth/login",
+        data={"email": "re@test.com", "password": "correct123"},
+        follow_redirects=False,
+    )
+    active = storage.list_sessions_for_user(uid)
+    assert len(active) == 1  # only the new one is live
+    assert active[0].id != first_id
+
+    # The old session row still exists but is revoked.
+    old = storage.get_session(first_id)
+    assert old is not None
+    assert old.is_active() is False

@@ -10,9 +10,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
+from docstats.domain.audit import AuditEvent
+from docstats.domain.orgs import ROLES, Membership, Organization
+from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
 
@@ -29,6 +34,92 @@ def _parse_ts(value: str | None) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(value)
+
+
+def _row_to_organization(row: dict) -> Organization:
+    """Convert a Supabase organizations row into an Organization model."""
+    created_at = _parse_ts(row.get("created_at"))
+    assert created_at is not None
+    return Organization(
+        id=int(row["id"]),
+        name=row["name"],
+        slug=row["slug"],
+        npi=row.get("npi"),
+        address_line1=row.get("address_line1"),
+        address_line2=row.get("address_line2"),
+        address_city=row.get("address_city"),
+        address_state=row.get("address_state"),
+        address_zip=row.get("address_zip"),
+        phone=row.get("phone"),
+        fax=row.get("fax"),
+        terms_bundle_version=row.get("terms_bundle_version"),
+        created_at=created_at,
+        deleted_at=_parse_ts(row.get("deleted_at")),
+    )
+
+
+def _row_to_membership(row: dict) -> Membership:
+    """Convert a Supabase memberships row into a Membership model."""
+    joined_at = _parse_ts(row.get("joined_at"))
+    assert joined_at is not None
+    return Membership(
+        id=int(row["id"]),
+        organization_id=int(row["organization_id"]),
+        user_id=int(row["user_id"]),
+        role=row["role"],
+        invited_by_user_id=row.get("invited_by_user_id"),
+        joined_at=joined_at,
+        deleted_at=_parse_ts(row.get("deleted_at")),
+    )
+
+
+def _row_to_session(row: dict) -> Session:
+    """Convert a Supabase sessions row into a Session model."""
+    data = row.get("data")
+    if isinstance(data, str):
+        data = json.loads(data) if data else {}
+    elif data is None:
+        data = {}
+    created = _parse_ts(row.get("created_at"))
+    last_seen = _parse_ts(row.get("last_seen_at"))
+    expires = _parse_ts(row.get("expires_at"))
+    assert created is not None and last_seen is not None and expires is not None
+    return Session(
+        id=row["id"],
+        user_id=row.get("user_id"),
+        data=data,
+        ip=row.get("ip"),
+        user_agent=row.get("user_agent"),
+        created_at=created,
+        last_seen_at=last_seen,
+        expires_at=expires,
+        revoked_at=_parse_ts(row.get("revoked_at")),
+    )
+
+
+def _row_to_audit_event(row: dict) -> AuditEvent:
+    """Convert a Supabase audit_events row into an AuditEvent."""
+    # Supabase JSONB returns dicts already; tolerate string too (some SDK paths).
+    meta = row.get("metadata")
+    if isinstance(meta, str):
+        meta = json.loads(meta) if meta else {}
+    elif meta is None:
+        meta = {}
+    created_at = _parse_ts(row.get("created_at"))
+    assert created_at is not None  # DEFAULT now() guarantees present
+    return AuditEvent(
+        id=int(row["id"]),
+        actor_user_id=row.get("actor_user_id"),
+        scope_user_id=row.get("scope_user_id"),
+        scope_organization_id=row.get("scope_organization_id"),
+        action=row["action"],
+        entity_type=row.get("entity_type"),
+        entity_id=row.get("entity_id"),
+        metadata=meta,
+        ip=row.get("ip"),
+        user_agent=row.get("user_agent"),
+        created_at=created_at,
+    )
 
 
 class PostgresStorage(StorageBase):
@@ -184,6 +275,26 @@ class PostgresStorage(StorageBase):
                 "terms_user_agent": user_agent,
             }
         ).eq("id", user_id).execute()
+
+    def record_phi_consent(
+        self,
+        user_id: int,
+        *,
+        phi_consent_version: str,
+        ip_address: str,
+        user_agent: str,
+    ) -> None:
+        self._t("users").update(
+            {
+                "phi_consent_at": _now_iso(),
+                "phi_consent_version": phi_consent_version,
+                "phi_consent_ip": ip_address,
+                "phi_consent_user_agent": user_agent,
+            }
+        ).eq("id", user_id).execute()
+
+    def set_active_org(self, user_id: int, organization_id: int | None) -> None:
+        self._t("users").update({"active_org_id": organization_id}).eq("id", user_id).execute()
 
     # --- Provider CRUD ---
 
@@ -428,6 +539,278 @@ class PostgresStorage(StorageBase):
             self._zip_loaded = True
         except Exception:
             logger.exception("Failed to load ZIP codes into Supabase — will retry next request")
+
+    # --- Audit log (append-only) ---
+
+    def record_audit_event(
+        self,
+        *,
+        action: str,
+        actor_user_id: int | None = None,
+        scope_user_id: int | None = None,
+        scope_organization_id: int | None = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> int:
+        row = {
+            "actor_user_id": actor_user_id,
+            "scope_user_id": scope_user_id,
+            "scope_organization_id": scope_organization_id,
+            "action": action,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "metadata": metadata or {},
+            "ip": ip,
+            "user_agent": user_agent,
+            "created_at": _now_iso(),
+        }
+        result = self._t("audit_events").insert(row).execute()
+        return int(result.data[0]["id"])
+
+    def list_audit_events(
+        self,
+        *,
+        actor_user_id: int | None = None,
+        scope_user_id: int | None = None,
+        scope_organization_id: int | None = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        limit: int = 100,
+    ) -> list[AuditEvent]:
+        query = self._t("audit_events").select("*")
+        if actor_user_id is not None:
+            query = query.eq("actor_user_id", actor_user_id)
+        if scope_user_id is not None:
+            query = query.eq("scope_user_id", scope_user_id)
+        if scope_organization_id is not None:
+            query = query.eq("scope_organization_id", scope_organization_id)
+        if entity_type is not None:
+            query = query.eq("entity_type", entity_type)
+        if entity_id is not None:
+            query = query.eq("entity_id", entity_id)
+        # Tiebreaker on id DESC so same-millisecond rows stay deterministic.
+        result = query.order("created_at", desc=True).order("id", desc=True).limit(limit).execute()
+        return [_row_to_audit_event(row) for row in result.data]
+
+    # --- Organizations & memberships ---
+
+    def create_organization(
+        self,
+        *,
+        name: str,
+        slug: str,
+        npi: str | None = None,
+        address_line1: str | None = None,
+        address_line2: str | None = None,
+        address_city: str | None = None,
+        address_state: str | None = None,
+        address_zip: str | None = None,
+        phone: str | None = None,
+        fax: str | None = None,
+        terms_bundle_version: str | None = None,
+    ) -> Organization:
+        row = {
+            "name": name,
+            "slug": slug,
+            "npi": npi,
+            "address_line1": address_line1,
+            "address_line2": address_line2,
+            "address_city": address_city,
+            "address_state": address_state,
+            "address_zip": address_zip,
+            "phone": phone,
+            "fax": fax,
+            "terms_bundle_version": terms_bundle_version,
+            "created_at": _now_iso(),
+        }
+        result = self._t("organizations").insert(row).execute()
+        return _row_to_organization(result.data[0])
+
+    def get_organization(self, organization_id: int) -> Organization | None:
+        result = (
+            self._t("organizations")
+            .select("*")
+            .eq("id", organization_id)
+            .is_("deleted_at", None)
+            .execute()
+        )
+        return _row_to_organization(result.data[0]) if result.data else None
+
+    def get_organization_by_slug(self, slug: str) -> Organization | None:
+        result = (
+            self._t("organizations").select("*").eq("slug", slug).is_("deleted_at", None).execute()
+        )
+        return _row_to_organization(result.data[0]) if result.data else None
+
+    def soft_delete_organization(self, organization_id: int) -> bool:
+        result = (
+            self._t("organizations")
+            .update({"deleted_at": _now_iso()})
+            .eq("id", organization_id)
+            .is_("deleted_at", None)
+            .execute()
+        )
+        return bool(result.data)
+
+    def create_membership(
+        self,
+        *,
+        organization_id: int,
+        user_id: int,
+        role: str,
+        invited_by_user_id: int | None = None,
+    ) -> Membership:
+        if role not in ROLES:
+            raise ValueError(f"Unknown role: {role!r}")
+        row = {
+            "organization_id": organization_id,
+            "user_id": user_id,
+            "role": role,
+            "invited_by_user_id": invited_by_user_id,
+            "joined_at": _now_iso(),
+        }
+        result = self._t("memberships").insert(row).execute()
+        return _row_to_membership(result.data[0])
+
+    def get_membership(self, organization_id: int, user_id: int) -> Membership | None:
+        result = (
+            self._t("memberships")
+            .select("*")
+            .eq("organization_id", organization_id)
+            .eq("user_id", user_id)
+            .is_("deleted_at", None)
+            .execute()
+        )
+        return _row_to_membership(result.data[0]) if result.data else None
+
+    def list_memberships_for_user(self, user_id: int) -> list[Membership]:
+        result = (
+            self._t("memberships")
+            .select("*")
+            .eq("user_id", user_id)
+            .is_("deleted_at", None)
+            .order("joined_at", desc=True)
+            .order("id", desc=True)
+            .execute()
+        )
+        return [_row_to_membership(row) for row in result.data]
+
+    def list_memberships_for_org(self, organization_id: int) -> list[Membership]:
+        result = (
+            self._t("memberships")
+            .select("*")
+            .eq("organization_id", organization_id)
+            .is_("deleted_at", None)
+            .order("joined_at", desc=False)
+            .order("id", desc=False)
+            .execute()
+        )
+        return [_row_to_membership(row) for row in result.data]
+
+    def update_membership_role(self, organization_id: int, user_id: int, role: str) -> bool:
+        if role not in ROLES:
+            raise ValueError(f"Unknown role: {role!r}")
+        result = (
+            self._t("memberships")
+            .update({"role": role})
+            .eq("organization_id", organization_id)
+            .eq("user_id", user_id)
+            .is_("deleted_at", None)
+            .execute()
+        )
+        return bool(result.data)
+
+    def soft_delete_membership(self, organization_id: int, user_id: int) -> bool:
+        result = (
+            self._t("memberships")
+            .update({"deleted_at": _now_iso()})
+            .eq("organization_id", organization_id)
+            .eq("user_id", user_id)
+            .is_("deleted_at", None)
+            .execute()
+        )
+        return bool(result.data)
+
+    # --- Sessions ---
+
+    def create_session(
+        self,
+        *,
+        user_id: int | None = None,
+        data: dict[str, Any] | None = None,
+        ip: str | None = None,
+        user_agent: str | None = None,
+        ttl_seconds: int = 604800,
+    ) -> Session:
+        session_id = secrets.token_urlsafe(32)
+        now = datetime.now(tz=timezone.utc)
+        expires = now + timedelta(seconds=ttl_seconds)
+        row = {
+            "id": session_id,
+            "user_id": user_id,
+            "data": data or {},
+            "ip": ip,
+            "user_agent": user_agent,
+            "created_at": now.isoformat(),
+            "last_seen_at": now.isoformat(),
+            "expires_at": expires.isoformat(),
+        }
+        result = self._t("sessions").insert(row).execute()
+        return _row_to_session(result.data[0])
+
+    def get_session(self, session_id: str) -> Session | None:
+        result = self._t("sessions").select("*").eq("id", session_id).execute()
+        return _row_to_session(result.data[0]) if result.data else None
+
+    def touch_session(
+        self,
+        session_id: str,
+        *,
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> bool:
+        updates: dict[str, Any] = {"last_seen_at": _now_iso()}
+        if ip is not None:
+            updates["ip"] = ip
+        if user_agent is not None:
+            updates["user_agent"] = user_agent
+        result = (
+            self._t("sessions")
+            .update(updates)
+            .eq("id", session_id)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        return bool(result.data)
+
+    def revoke_session(self, session_id: str) -> bool:
+        result = (
+            self._t("sessions")
+            .update({"revoked_at": _now_iso()})
+            .eq("id", session_id)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        return bool(result.data)
+
+    def list_sessions_for_user(self, user_id: int) -> list[Session]:
+        result = (
+            self._t("sessions")
+            .select("*")
+            .eq("user_id", user_id)
+            .is_("revoked_at", None)
+            .order("last_seen_at", desc=True)
+            .order("id", desc=True)
+            .execute()
+        )
+        return [_row_to_session(row) for row in result.data]
+
+    def purge_expired_sessions(self) -> int:
+        result = self._t("sessions").delete().lt("expires_at", _now_iso()).execute()
+        return len(result.data) if result.data else 0
 
     def close(self) -> None:
         pass  # supabase-py client has no close method
