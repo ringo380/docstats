@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from docstats.domain.audit import AuditEvent
     from docstats.domain.orgs import Membership, Organization
     from docstats.domain.patients import Patient
+    from docstats.domain.referrals import Referral, ReferralEvent
     from docstats.domain.sessions import Session
     from docstats.scope import Scope
 
@@ -354,6 +355,113 @@ class StorageBase(ABC):
 
     @abstractmethod
     def soft_delete_patient(self, scope: "Scope", patient_id: int) -> bool: ...
+
+    # --- Referrals (scope-enforced; patient_id scope-matched) ---
+
+    @abstractmethod
+    def create_referral(
+        self,
+        scope: "Scope",
+        *,
+        patient_id: int,
+        referring_provider_npi: str | None = None,
+        referring_provider_name: str | None = None,
+        referring_organization: str | None = None,
+        receiving_provider_npi: str | None = None,
+        receiving_organization_name: str | None = None,
+        specialty_code: str | None = None,
+        specialty_desc: str | None = None,
+        reason: str | None = None,
+        clinical_question: str | None = None,
+        urgency: str = "routine",
+        requested_service: str | None = None,
+        diagnosis_primary_icd: str | None = None,
+        diagnosis_primary_text: str | None = None,
+        payer_plan_id: int | None = None,
+        authorization_number: str | None = None,
+        authorization_status: str = "na_unknown",
+        status: str = "draft",
+        assigned_to_user_id: int | None = None,
+        external_reference_id: str | None = None,
+        external_source: str = "manual",
+        created_by_user_id: int | None = None,
+    ) -> "Referral": ...
+
+    @abstractmethod
+    def get_referral(self, scope: "Scope", referral_id: int) -> "Referral | None": ...
+
+    @abstractmethod
+    def list_referrals(
+        self,
+        scope: "Scope",
+        *,
+        patient_id: int | None = None,
+        status: str | None = None,
+        assigned_to_user_id: int | None = None,
+        include_deleted: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list["Referral"]: ...
+
+    @abstractmethod
+    def update_referral(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        *,
+        referring_provider_npi: str | None = None,
+        referring_provider_name: str | None = None,
+        referring_organization: str | None = None,
+        receiving_provider_npi: str | None = None,
+        receiving_organization_name: str | None = None,
+        specialty_code: str | None = None,
+        specialty_desc: str | None = None,
+        reason: str | None = None,
+        clinical_question: str | None = None,
+        urgency: str | None = None,
+        requested_service: str | None = None,
+        diagnosis_primary_icd: str | None = None,
+        diagnosis_primary_text: str | None = None,
+        payer_plan_id: int | None = None,
+        authorization_number: str | None = None,
+        authorization_status: str | None = None,
+        assigned_to_user_id: int | None = None,
+    ) -> "Referral | None": ...
+
+    @abstractmethod
+    def set_referral_status(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        new_status: str,
+    ) -> "Referral | None": ...
+
+    @abstractmethod
+    def soft_delete_referral(self, scope: "Scope", referral_id: int) -> bool: ...
+
+    # --- Referral events (append-only; scope-transitive via referral) ---
+
+    @abstractmethod
+    def record_referral_event(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        *,
+        event_type: str,
+        from_value: str | None = None,
+        to_value: str | None = None,
+        actor_user_id: int | None = None,
+        note: str | None = None,
+    ) -> "ReferralEvent | None": ...
+
+    @abstractmethod
+    def list_referral_events(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        *,
+        limit: int = 100,
+    ) -> list["ReferralEvent"]: ...
 
     @abstractmethod
     def close(self) -> None: ...
