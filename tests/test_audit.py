@@ -196,3 +196,16 @@ def test_record_helper_without_request(storage: Storage, user_id: int) -> None:
     assert event.action == "cli.backfill"
     assert event.ip is None
     assert event.user_agent is None
+
+
+def test_audit_event_created_at_is_tz_aware(storage: Storage, user_id: int) -> None:
+    """SQLite stores naive UTC timestamps; callers compare AuditEvent.created_at
+    against datetime.now(tz=timezone.utc). The row-to-model helper must attach
+    timezone.utc so those comparisons don't raise TypeError."""
+    from datetime import datetime, timezone
+
+    storage.record_audit_event(action="user.login", actor_user_id=user_id)
+    event = storage.list_audit_events(actor_user_id=user_id)[0]
+    assert event.created_at.tzinfo is not None
+    # And a tz-aware comparison works without raising:
+    assert event.created_at <= datetime.now(tz=timezone.utc)

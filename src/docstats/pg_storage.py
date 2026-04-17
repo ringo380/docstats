@@ -20,6 +20,7 @@ from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
+from docstats.validators import IP_MAX_LENGTH, USER_AGENT_MAX_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -284,12 +285,15 @@ class PostgresStorage(StorageBase):
         ip_address: str,
         user_agent: str,
     ) -> None:
+        # Cap at storage boundary; mirrors the SQLite backend + audit.record().
         self._t("users").update(
             {
                 "phi_consent_at": _now_iso(),
                 "phi_consent_version": phi_consent_version,
-                "phi_consent_ip": ip_address,
-                "phi_consent_user_agent": user_agent,
+                "phi_consent_ip": ip_address[:IP_MAX_LENGTH] if ip_address else ip_address,
+                "phi_consent_user_agent": user_agent[:USER_AGENT_MAX_LENGTH]
+                if user_agent
+                else user_agent,
             }
         ).eq("id", user_id).execute()
 
@@ -665,14 +669,19 @@ class PostgresStorage(StorageBase):
     ) -> Membership:
         if role not in ROLES:
             raise ValueError(f"Unknown role: {role!r}")
+        # Upsert on (organization_id, user_id): re-inviting a previously
+        # soft-deleted member reactivates the existing row rather than
+        # failing the UNIQUE constraint. Explicit deleted_at=None clears
+        # the soft-delete marker.
         row = {
             "organization_id": organization_id,
             "user_id": user_id,
             "role": role,
             "invited_by_user_id": invited_by_user_id,
             "joined_at": _now_iso(),
+            "deleted_at": None,
         }
-        result = self._t("memberships").insert(row).execute()
+        result = self._t("memberships").upsert(row, on_conflict="organization_id,user_id").execute()
         return _row_to_membership(result.data[0])
 
     def get_membership(self, organization_id: int, user_id: int) -> Membership | None:
@@ -809,8 +818,15 @@ class PostgresStorage(StorageBase):
         return [_row_to_session(row) for row in result.data]
 
     def purge_expired_sessions(self) -> int:
-        result = self._t("sessions").delete().lt("expires_at", _now_iso()).execute()
-        return len(result.data) if result.data else 0
+        # supabase-py .delete() does not return the deleted rows — result.data
+        # is always []. Select the ids first so the count is accurate.
+        cutoff = _now_iso()
+        to_delete = self._t("sessions").select("id").lt("expires_at", cutoff).execute()
+        ids = [row["id"] for row in to_delete.data]
+        if not ids:
+            return 0
+        self._t("sessions").delete().in_("id", ids).execute()
+        return len(ids)
 
     def close(self) -> None:
         pass  # supabase-py client has no close method

@@ -129,3 +129,25 @@ def test_phi_consent_exception_extends_auth_required() -> None:
     from docstats.auth import AuthRequiredException
 
     assert issubclass(PhiConsentRequiredException, AuthRequiredException)
+
+
+def test_record_phi_consent_truncates_oversized_ip_and_user_agent(
+    storage: Storage, user_id: int
+) -> None:
+    """Cap hostile / oversized headers at the storage boundary so the users
+    row can't be blown up by an uncapped caller — mirrors the 500-char cap
+    that domain/audit.record() applies."""
+    from docstats.validators import IP_MAX_LENGTH, USER_AGENT_MAX_LENGTH
+
+    storage.record_phi_consent(
+        user_id,
+        phi_consent_version="1.0",
+        ip_address="x" * 200,
+        user_agent="y" * 2000,
+    )
+    user = storage.get_user_by_id(user_id)
+    assert user is not None
+    assert user["phi_consent_ip"] is not None
+    assert len(user["phi_consent_ip"]) == IP_MAX_LENGTH
+    assert user["phi_consent_user_agent"] is not None
+    assert len(user["phi_consent_user_agent"]) == USER_AGENT_MAX_LENGTH

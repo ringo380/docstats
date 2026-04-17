@@ -238,3 +238,66 @@ def test_get_current_user_tolerates_storage_failure(user_id: int) -> None:
     req_session = {"user_id": user_id, "session_id": "some-id"}
     user = get_current_user(_fake_request(req_session), storage=broken)
     assert user is None
+
+
+# --- touch_session wiring in get_current_user ---
+
+
+def test_get_current_user_touches_stale_session(storage: Storage, user_id: int) -> None:
+    """If last_seen_at is older than the touch grace window, get_current_user
+    refreshes it. Otherwise the session row's last_seen_at never advances from
+    created_at, and 'active session' UX can't tell if a user is still active."""
+    session = storage.create_session(user_id=user_id)
+    # Force last_seen_at into the past so the touch-grace check fires.
+    storage._conn.execute(
+        "UPDATE sessions SET last_seen_at = datetime('now', '-10 minutes') WHERE id = ?",
+        (session.id,),
+    )
+    storage._conn.commit()
+    before = storage.get_session(session.id)
+    assert before is not None
+    req_session = {"user_id": user_id, "session_id": session.id}
+    get_current_user(_fake_request(req_session), storage=storage)
+    after = storage.get_session(session.id)
+    assert after is not None
+    assert after.last_seen_at > before.last_seen_at
+
+
+def test_get_current_user_skips_touch_within_grace(storage: Storage, user_id: int) -> None:
+    """Hot-path reads shouldn't cost a DB write on every request."""
+    session = storage.create_session(user_id=user_id)
+    req_session = {"user_id": user_id, "session_id": session.id}
+
+    wrapper = MagicMock(wraps=storage)
+    get_current_user(_fake_request(req_session), storage=wrapper)
+    # Fresh session (last_seen_at == created_at, both "now") is inside the
+    # 5-minute grace window, so touch_session must not be called.
+    wrapper.touch_session.assert_not_called()
+
+
+def test_get_current_user_tolerates_touch_failure(storage: Storage, user_id: int) -> None:
+    """A failed touch must never fail the auth check."""
+    session = storage.create_session(user_id=user_id)
+    storage._conn.execute(
+        "UPDATE sessions SET last_seen_at = datetime('now', '-10 minutes') WHERE id = ?",
+        (session.id,),
+    )
+    storage._conn.commit()
+
+    class FlakyStorage:
+        def __init__(self, inner: Storage) -> None:
+            self._inner = inner
+
+        def get_session(self, sid: str):
+            return self._inner.get_session(sid)
+
+        def get_user_by_id(self, uid: int):
+            return self._inner.get_user_by_id(uid)
+
+        def touch_session(self, *args, **kwargs):
+            raise RuntimeError("db hiccup")
+
+    req_session = {"user_id": user_id, "session_id": session.id}
+    user = get_current_user(_fake_request(req_session), storage=FlakyStorage(storage))  # type: ignore[arg-type]
+    assert user is not None
+    assert user["id"] == user_id

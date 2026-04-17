@@ -203,24 +203,29 @@ def test_soft_delete_membership(storage: Storage, user_id: int) -> None:
     assert storage.soft_delete_membership(org.id, user_id) is False
 
 
-def test_can_rejoin_after_soft_delete(storage: Storage, user_id: int) -> None:
-    """Removing a member and re-inviting them must work — the UNIQUE constraint
-    on (organization_id, user_id) would otherwise block re-creation. Current
-    schema uses a plain UNIQUE (not a partial index), so a rejoin attempt
-    fails; we need to either reactivate the existing soft-deleted row OR
-    switch to a partial unique index. Pin the current behavior so the choice
-    is intentional."""
-    import sqlite3
+def test_rejoin_after_soft_delete_reactivates(storage: Storage, user_id: int) -> None:
+    """Re-inviting a soft-deleted member reactivates the existing row.
 
+    The UNIQUE constraint on (organization_id, user_id) is unconditional, so
+    a second INSERT would fail. The upsert path clears ``deleted_at``,
+    refreshes ``joined_at``, and updates ``role`` / ``invited_by_user_id``
+    from the new invite.
+    """
     org = storage.create_organization(name="C", slug="c")
-    storage.create_membership(organization_id=org.id, user_id=user_id, role="staff")
+    first = storage.create_membership(organization_id=org.id, user_id=user_id, role="staff")
     storage.soft_delete_membership(org.id, user_id)
 
-    # Today: re-invite fails because UNIQUE(org_id, user_id) still covers the
-    # soft-deleted row. This is acceptable for Phase 0.B — the re-invite flow
-    # should reactivate the existing row. We pin the constraint behavior here.
-    with pytest.raises(sqlite3.IntegrityError):
-        storage.create_membership(organization_id=org.id, user_id=user_id, role="staff")
+    # Re-invite with a different role. Should reactivate the existing row.
+    second = storage.create_membership(
+        organization_id=org.id, user_id=user_id, role="admin", invited_by_user_id=user_id
+    )
+    assert second.id == first.id  # same row, reactivated
+    assert second.role == "admin"  # new role overwrote
+    assert second.invited_by_user_id == user_id
+    assert second.deleted_at is None
+    # And the member shows up in active lists again.
+    assert storage.get_membership(org.id, user_id) is not None
+    assert len(storage.list_memberships_for_user(user_id)) == 1
 
 
 # --- active_org_id ---

@@ -12,7 +12,10 @@
 CREATE TABLE IF NOT EXISTS docstats_organizations (
     id                    BIGSERIAL PRIMARY KEY,
     name                  TEXT NOT NULL,
-    slug                  TEXT NOT NULL UNIQUE,
+    -- NOTE: slug uniqueness is enforced via the partial unique index below,
+    -- NOT a column-level UNIQUE. A column-level UNIQUE would be unconditional
+    -- and would block re-using a slug after soft-delete.
+    slug                  TEXT NOT NULL,
     npi                   TEXT,
     address_line1         TEXT,
     address_line2         TEXT,

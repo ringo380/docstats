@@ -274,6 +274,12 @@ def _begin_session(request: Request, storage: StorageBase, user_id: int) -> None
     Always a fresh session_id per login — guarantees privilege-transition
     rotation. Any stale session_id currently in the cookie is revoked first so
     concurrent uses of the old token die immediately (session fixation defense).
+
+    Also wipes the session dict entirely before seeding user_id/session_id —
+    onboarding flags (``pcp_skipped``, ``onboarding_done``), flash messages,
+    the anonymous-search counter, and any other per-session state from a
+    prior user must not carry over on a re-login without explicit logout
+    (e.g., GitHub OAuth callback on an already-authed browser).
     """
     prior = request.session.get("session_id")
     if prior:
@@ -281,6 +287,10 @@ def _begin_session(request: Request, storage: StorageBase, user_id: int) -> None
             storage.revoke_session(prior)
         except Exception:
             logger.exception("Failed to revoke prior session during login")
+
+    # Full reset — prior user's flags must not leak into the new session.
+    request.session.clear()
+
     ip = client_ip(request)
     ua = request.headers.get("User-Agent")
     ua = ua[:500] if ua else None
@@ -289,7 +299,7 @@ def _begin_session(request: Request, storage: StorageBase, user_id: int) -> None
         request.session["session_id"] = session.id
     except Exception:
         # DB down? Fall back to cookie-only session — degraded but usable.
+        # get_current_user grandfathers this in; the cookie upgrades to a
+        # proper session row the next time login succeeds with DB reachable.
         logger.exception("Failed to create server-side session; falling back to cookie-only")
-        request.session.pop("session_id", None)
     request.session["user_id"] = user_id
-    request.session.pop("anon_searches", None)

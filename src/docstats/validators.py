@@ -17,6 +17,8 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 EMAIL_MAX_LENGTH = 254  # RFC 5321 practical limit
 PASSWORD_MAX_LENGTH = 72  # bcrypt truncates beyond this; reject explicitly
+IP_MAX_LENGTH = 45  # IPv6 max (8 groups of 4 hex + 7 colons); IPv4 fits easily
+USER_AGENT_MAX_LENGTH = 500  # defensive bound; real UAs are ~200 chars
 
 
 class ValidationError(ValueError):

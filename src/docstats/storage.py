@@ -21,6 +21,7 @@ from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
+from docstats.validators import IP_MAX_LENGTH, USER_AGENT_MAX_LENGTH
 
 if TYPE_CHECKING:
     from docstats.pg_storage import PostgresStorage
@@ -35,8 +36,26 @@ def _escape_like(query: str) -> str:
     return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _parse_sqlite_utc(value: str | None) -> datetime | None:
+    """Parse a SQLite TEXT timestamp as tz-aware UTC.
+
+    SQLite's ``datetime('now')`` returns naive UTC; attaching ``tz=timezone.utc``
+    makes comparisons with ``datetime.now(tz=timezone.utc)`` consistent across
+    backends. All ``_row_to_*`` helpers go through this so SQLite-sourced
+    datetimes match the tz-aware datetimes Supabase returns.
+    """
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _row_to_organization(row: sqlite3.Row) -> Organization:
     """Convert a SQLite organizations row into an Organization model."""
+    created = _parse_sqlite_utc(row["created_at"])
+    assert created is not None
     return Organization(
         id=int(row["id"]),
         name=row["name"],
@@ -50,37 +69,24 @@ def _row_to_organization(row: sqlite3.Row) -> Organization:
         phone=row["phone"],
         fax=row["fax"],
         terms_bundle_version=row["terms_bundle_version"],
-        created_at=datetime.fromisoformat(row["created_at"]),
-        deleted_at=datetime.fromisoformat(row["deleted_at"]) if row["deleted_at"] else None,
+        created_at=created,
+        deleted_at=_parse_sqlite_utc(row["deleted_at"]),
     )
 
 
 def _row_to_membership(row: sqlite3.Row) -> Membership:
     """Convert a SQLite memberships row into a Membership model."""
+    joined = _parse_sqlite_utc(row["joined_at"])
+    assert joined is not None
     return Membership(
         id=int(row["id"]),
         organization_id=int(row["organization_id"]),
         user_id=int(row["user_id"]),
         role=row["role"],
         invited_by_user_id=row["invited_by_user_id"],
-        joined_at=datetime.fromisoformat(row["joined_at"]),
-        deleted_at=datetime.fromisoformat(row["deleted_at"]) if row["deleted_at"] else None,
+        joined_at=joined,
+        deleted_at=_parse_sqlite_utc(row["deleted_at"]),
     )
-
-
-def _parse_sqlite_utc(value: str | None) -> datetime | None:
-    """Parse a SQLite TEXT timestamp as tz-aware UTC.
-
-    SQLite's ``datetime('now')`` returns naive UTC; attaching ``tz=timezone.utc``
-    makes comparisons with ``datetime.now(tz=timezone.utc)`` consistent across
-    backends.
-    """
-    if not value:
-        return None
-    dt = datetime.fromisoformat(value)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
 
 
 def _row_to_session(row: sqlite3.Row) -> Session:
@@ -106,6 +112,8 @@ def _row_to_session(row: sqlite3.Row) -> Session:
 def _row_to_audit_event(row: sqlite3.Row) -> AuditEvent:
     """Convert a SQLite audit_events row into an AuditEvent."""
     metadata_raw = row["metadata_json"]
+    created = _parse_sqlite_utc(row["created_at"])
+    assert created is not None
     return AuditEvent(
         id=int(row["id"]),
         actor_user_id=row["actor_user_id"],
@@ -117,7 +125,7 @@ def _row_to_audit_event(row: sqlite3.Row) -> AuditEvent:
         metadata=json.loads(metadata_raw) if metadata_raw else {},
         ip=row["ip"],
         user_agent=row["user_agent"],
-        created_at=datetime.fromisoformat(row["created_at"]),
+        created_at=created,
     )
 
 
@@ -544,10 +552,17 @@ class Storage(StorageBase):
         ip_address: str,
         user_agent: str,
     ) -> None:
+        # Cap at storage boundary so callers can't blow up the users row with
+        # oversized headers. Matches the pattern in domain/audit.py record().
         self._conn.execute(
             "UPDATE users SET phi_consent_at=datetime('now'), phi_consent_version=?, "
             "phi_consent_ip=?, phi_consent_user_agent=? WHERE id=?",
-            (phi_consent_version, ip_address, user_agent, user_id),
+            (
+                phi_consent_version,
+                ip_address[:IP_MAX_LENGTH] if ip_address else ip_address,
+                user_agent[:USER_AGENT_MAX_LENGTH] if user_agent else user_agent,
+                user_id,
+            ),
         )
         self._conn.commit()
 
@@ -938,15 +953,24 @@ class Storage(StorageBase):
     ) -> Membership:
         if role not in ROLES:
             raise ValueError(f"Unknown role: {role!r}")
-        cursor = self._conn.execute(
+        # Upsert on (organization_id, user_id): re-inviting a previously
+        # soft-deleted member reactivates the existing row rather than
+        # failing the UNIQUE constraint. The invite flow's contract.
+        self._conn.execute(
             """INSERT INTO memberships
                (organization_id, user_id, role, invited_by_user_id)
-               VALUES (?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(organization_id, user_id) DO UPDATE SET
+                   role = excluded.role,
+                   invited_by_user_id = excluded.invited_by_user_id,
+                   joined_at = datetime('now'),
+                   deleted_at = NULL""",
             (organization_id, user_id, role, invited_by_user_id),
         )
         self._conn.commit()
         row = self._conn.execute(
-            "SELECT * FROM memberships WHERE id = ?", (cursor.lastrowid,)
+            "SELECT * FROM memberships WHERE organization_id = ? AND user_id = ?",
+            (organization_id, user_id),
         ).fetchone()
         return _row_to_membership(row)
 
