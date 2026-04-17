@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from docstats.domain.audit import AuditEvent
     from docstats.domain.orgs import Membership, Organization
     from docstats.domain.patients import Patient
+    from docstats.domain.reference import InsurancePlan, PayerRule, SpecialtyRule
     from docstats.domain.referrals import (
         Referral,
         ReferralAllergy,
@@ -683,6 +684,145 @@ class StorageBase(ABC):
         referral_id: int,
         response_id: int,
     ) -> bool: ...
+
+    # --- Insurance plans (scope-owned) ---
+
+    @abstractmethod
+    def create_insurance_plan(
+        self,
+        scope: "Scope",
+        *,
+        payer_name: str,
+        plan_name: str | None = None,
+        plan_type: str = "other",
+        member_id_pattern: str | None = None,
+        group_id_pattern: str | None = None,
+        requires_referral: bool = False,
+        requires_prior_auth: bool = False,
+        notes: str | None = None,
+    ) -> "InsurancePlan": ...
+
+    @abstractmethod
+    def get_insurance_plan(self, scope: "Scope", plan_id: int) -> "InsurancePlan | None": ...
+
+    @abstractmethod
+    def list_insurance_plans(
+        self,
+        scope: "Scope",
+        *,
+        include_deleted: bool = False,
+    ) -> list["InsurancePlan"]: ...
+
+    @abstractmethod
+    def update_insurance_plan(
+        self,
+        scope: "Scope",
+        plan_id: int,
+        *,
+        payer_name: str | None = None,
+        plan_name: str | None = None,
+        plan_type: str | None = None,
+        member_id_pattern: str | None = None,
+        group_id_pattern: str | None = None,
+        requires_referral: bool | None = None,
+        requires_prior_auth: bool | None = None,
+        notes: str | None = None,
+    ) -> "InsurancePlan | None": ...
+
+    @abstractmethod
+    def soft_delete_insurance_plan(self, scope: "Scope", plan_id: int) -> bool: ...
+
+    # --- Specialty rules (platform default or org override) ---
+
+    @abstractmethod
+    def create_specialty_rule(
+        self,
+        *,
+        specialty_code: str,
+        organization_id: int | None = None,
+        display_name: str | None = None,
+        required_fields: dict[str, Any] | None = None,
+        recommended_attachments: dict[str, Any] | None = None,
+        intake_questions: dict[str, Any] | None = None,
+        urgency_red_flags: dict[str, Any] | None = None,
+        common_rejection_reasons: dict[str, Any] | None = None,
+        source: str = "seed",
+    ) -> "SpecialtyRule": ...
+
+    @abstractmethod
+    def get_specialty_rule(self, rule_id: int) -> "SpecialtyRule | None": ...
+
+    @abstractmethod
+    def list_specialty_rules(
+        self,
+        *,
+        organization_id: int | None = None,
+        include_globals: bool = True,
+    ) -> list["SpecialtyRule"]: ...
+
+    @abstractmethod
+    def update_specialty_rule(
+        self,
+        rule_id: int,
+        *,
+        display_name: str | None = None,
+        required_fields: dict[str, Any] | None = None,
+        recommended_attachments: dict[str, Any] | None = None,
+        intake_questions: dict[str, Any] | None = None,
+        urgency_red_flags: dict[str, Any] | None = None,
+        common_rejection_reasons: dict[str, Any] | None = None,
+        source: str | None = None,
+        bump_version: bool = True,
+    ) -> "SpecialtyRule | None": ...
+
+    @abstractmethod
+    def delete_specialty_rule(self, rule_id: int) -> bool: ...
+
+    # --- Payer rules (platform default or org override) ---
+
+    @abstractmethod
+    def create_payer_rule(
+        self,
+        *,
+        payer_key: str,
+        organization_id: int | None = None,
+        display_name: str | None = None,
+        referral_required: bool = False,
+        auth_required_services: dict[str, Any] | None = None,
+        auth_typical_turnaround_days: int | None = None,
+        records_required: dict[str, Any] | None = None,
+        notes: str | None = None,
+        source: str = "seed",
+    ) -> "PayerRule": ...
+
+    @abstractmethod
+    def get_payer_rule(self, rule_id: int) -> "PayerRule | None": ...
+
+    @abstractmethod
+    def list_payer_rules(
+        self,
+        *,
+        organization_id: int | None = None,
+        include_globals: bool = True,
+    ) -> list["PayerRule"]: ...
+
+    @abstractmethod
+    def update_payer_rule(
+        self,
+        rule_id: int,
+        *,
+        display_name: str | None = None,
+        referral_required: bool | None = None,
+        auth_required_services: dict[str, Any] | None = None,
+        auth_typical_turnaround_days: int | None = None,
+        records_required: dict[str, Any] | None = None,
+        notes: str | None = None,
+        source: str | None = None,
+        bump_version: bool = True,
+    ) -> "PayerRule | None": ...
+
+    @abstractmethod
+    def delete_payer_rule(self, rule_id: int) -> bool: ...
 
     @abstractmethod
     def close(self) -> None: ...

@@ -19,6 +19,13 @@ from typing import TYPE_CHECKING, Any
 from docstats.domain.audit import AuditEvent
 from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.patients import Patient
+from docstats.domain.reference import (
+    PLAN_TYPE_VALUES,
+    RULE_SOURCE_VALUES,
+    InsurancePlan,
+    PayerRule,
+    SpecialtyRule,
+)
 from docstats.domain.referrals import (
     ATTACHMENT_KIND_VALUES,
     AUTH_STATUS_VALUES,
@@ -272,6 +279,76 @@ def _row_to_referral_response(row: sqlite3.Row) -> ReferralResponse:
     )
 
 
+def _row_to_insurance_plan(row: sqlite3.Row) -> InsurancePlan:
+    created = _parse_sqlite_utc(row["created_at"])
+    updated = _parse_sqlite_utc(row["updated_at"])
+    assert created is not None and updated is not None
+    return InsurancePlan(
+        id=int(row["id"]),
+        scope_user_id=row["scope_user_id"],
+        scope_organization_id=row["scope_organization_id"],
+        payer_name=row["payer_name"],
+        plan_name=row["plan_name"],
+        plan_type=row["plan_type"],
+        member_id_pattern=row["member_id_pattern"],
+        group_id_pattern=row["group_id_pattern"],
+        requires_referral=bool(row["requires_referral"]),
+        requires_prior_auth=bool(row["requires_prior_auth"]),
+        notes=row["notes"],
+        created_at=created,
+        updated_at=updated,
+        deleted_at=_parse_sqlite_utc(row["deleted_at"]),
+    )
+
+
+def _row_to_specialty_rule(row: sqlite3.Row) -> SpecialtyRule:
+    created = _parse_sqlite_utc(row["created_at"])
+    updated = _parse_sqlite_utc(row["updated_at"])
+    assert created is not None and updated is not None
+    return SpecialtyRule(
+        id=int(row["id"]),
+        organization_id=row["organization_id"],
+        specialty_code=row["specialty_code"],
+        display_name=row["display_name"],
+        required_fields=json.loads(row["required_fields"]) if row["required_fields"] else {},
+        recommended_attachments=json.loads(row["recommended_attachments"])
+        if row["recommended_attachments"]
+        else {},
+        intake_questions=json.loads(row["intake_questions"]) if row["intake_questions"] else {},
+        urgency_red_flags=json.loads(row["urgency_red_flags"]) if row["urgency_red_flags"] else {},
+        common_rejection_reasons=json.loads(row["common_rejection_reasons"])
+        if row["common_rejection_reasons"]
+        else {},
+        source=row["source"],
+        version_id=int(row["version_id"]),
+        created_at=created,
+        updated_at=updated,
+    )
+
+
+def _row_to_payer_rule(row: sqlite3.Row) -> PayerRule:
+    created = _parse_sqlite_utc(row["created_at"])
+    updated = _parse_sqlite_utc(row["updated_at"])
+    assert created is not None and updated is not None
+    return PayerRule(
+        id=int(row["id"]),
+        organization_id=row["organization_id"],
+        payer_key=row["payer_key"],
+        display_name=row["display_name"],
+        referral_required=bool(row["referral_required"]),
+        auth_required_services=json.loads(row["auth_required_services"])
+        if row["auth_required_services"]
+        else {},
+        auth_typical_turnaround_days=row["auth_typical_turnaround_days"],
+        records_required=json.loads(row["records_required"]) if row["records_required"] else {},
+        notes=row["notes"],
+        source=row["source"],
+        version_id=int(row["version_id"]),
+        created_at=created,
+        updated_at=updated,
+    )
+
+
 def _row_to_session(row: sqlite3.Row) -> Session:
     """Convert a SQLite sessions row into a Session model."""
     data_raw = row["data_json"]
@@ -396,6 +473,7 @@ class Storage(StorageBase):
         self._migrate_referrals()
         self._migrate_referral_clinical()
         self._migrate_referral_responses()
+        self._migrate_reference_data()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -812,6 +890,83 @@ class Storage(StorageBase):
                 ON referral_responses(referral_id, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_referral_responses_completed
                 ON referral_responses(referral_id) WHERE consult_completed = 1;
+        """)
+        self._conn.commit()
+
+    def _migrate_reference_data(self) -> None:
+        """Create insurance_plans, specialty_rules, payer_rules (Phase 1.E)."""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS insurance_plans (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_user_id            INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                scope_organization_id    INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+                payer_name               TEXT NOT NULL,
+                plan_name                TEXT,
+                plan_type                TEXT NOT NULL DEFAULT 'other'
+                    CHECK (plan_type IN
+                           ('hmo','ppo','pos','epo','medicare','medicare_advantage',
+                            'medicaid','tricare','aca_marketplace','self_pay','other')),
+                member_id_pattern        TEXT,
+                group_id_pattern         TEXT,
+                requires_referral        INTEGER NOT NULL DEFAULT 0,
+                requires_prior_auth      INTEGER NOT NULL DEFAULT 0,
+                notes                    TEXT,
+                created_at               TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
+                deleted_at               TEXT,
+                CHECK (
+                    (scope_user_id IS NOT NULL AND scope_organization_id IS NULL)
+                    OR (scope_user_id IS NULL AND scope_organization_id IS NOT NULL)
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_insurance_plans_scope_user
+                ON insurance_plans(scope_user_id, payer_name) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_insurance_plans_scope_org
+                ON insurance_plans(scope_organization_id, payer_name) WHERE deleted_at IS NULL;
+
+            CREATE TABLE IF NOT EXISTS specialty_rules (
+                id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id            INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+                specialty_code             TEXT NOT NULL,
+                display_name               TEXT,
+                required_fields            TEXT NOT NULL DEFAULT '{}',
+                recommended_attachments    TEXT NOT NULL DEFAULT '{}',
+                intake_questions           TEXT NOT NULL DEFAULT '{}',
+                urgency_red_flags          TEXT NOT NULL DEFAULT '{}',
+                common_rejection_reasons   TEXT NOT NULL DEFAULT '{}',
+                source                     TEXT NOT NULL DEFAULT 'seed'
+                    CHECK (source IN ('seed','admin_override')),
+                version_id                 INTEGER NOT NULL DEFAULT 1,
+                created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at                 TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_specialty_rules_global_code
+                ON specialty_rules(specialty_code) WHERE organization_id IS NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_specialty_rules_org_code
+                ON specialty_rules(organization_id, specialty_code)
+                WHERE organization_id IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS payer_rules (
+                id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id                 INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+                payer_key                       TEXT NOT NULL,
+                display_name                    TEXT,
+                referral_required               INTEGER NOT NULL DEFAULT 0,
+                auth_required_services          TEXT NOT NULL DEFAULT '{}',
+                auth_typical_turnaround_days    INTEGER,
+                records_required                TEXT NOT NULL DEFAULT '{}',
+                notes                           TEXT,
+                source                          TEXT NOT NULL DEFAULT 'seed'
+                    CHECK (source IN ('seed','admin_override')),
+                version_id                      INTEGER NOT NULL DEFAULT 1,
+                created_at                      TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at                      TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_payer_rules_global_key
+                ON payer_rules(payer_key) WHERE organization_id IS NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_payer_rules_org_key
+                ON payer_rules(organization_id, payer_key)
+                WHERE organization_id IS NOT NULL;
         """)
         self._conn.commit()
 
@@ -2458,6 +2613,377 @@ class Storage(StorageBase):
             "DELETE FROM referral_responses WHERE id = ? AND referral_id = ?",
             (response_id, referral_id),
         )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- Insurance plans (scope-owned) ---
+
+    def create_insurance_plan(
+        self,
+        scope: Scope,
+        *,
+        payer_name: str,
+        plan_name: str | None = None,
+        plan_type: str = "other",
+        member_id_pattern: str | None = None,
+        group_id_pattern: str | None = None,
+        requires_referral: bool = False,
+        requires_prior_auth: bool = False,
+        notes: str | None = None,
+    ) -> InsurancePlan:
+        scope_sql_clause(scope)  # raises on anonymous
+        if plan_type not in PLAN_TYPE_VALUES:
+            raise ValueError(f"Unknown plan_type: {plan_type!r}")
+        cursor = self._conn.execute(
+            """INSERT INTO insurance_plans
+               (scope_user_id, scope_organization_id, payer_name, plan_name, plan_type,
+                member_id_pattern, group_id_pattern, requires_referral, requires_prior_auth,
+                notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                scope.user_id if scope.is_solo else None,
+                scope.organization_id if scope.is_org else None,
+                payer_name,
+                plan_name,
+                plan_type,
+                member_id_pattern,
+                group_id_pattern,
+                1 if requires_referral else 0,
+                1 if requires_prior_auth else 0,
+                notes,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM insurance_plans WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_insurance_plan(row)
+
+    def get_insurance_plan(self, scope: Scope, plan_id: int) -> InsurancePlan | None:
+        clause, params = scope_sql_clause(scope)
+        row = self._conn.execute(
+            f"SELECT * FROM insurance_plans WHERE id = ? AND {clause} AND deleted_at IS NULL",
+            [plan_id, *params],
+        ).fetchone()
+        return _row_to_insurance_plan(row) if row else None
+
+    def list_insurance_plans(
+        self, scope: Scope, *, include_deleted: bool = False
+    ) -> list[InsurancePlan]:
+        clause, params = scope_sql_clause(scope)
+        where = [clause]
+        if not include_deleted:
+            where.append("deleted_at IS NULL")
+        rows = self._conn.execute(
+            f"SELECT * FROM insurance_plans WHERE {' AND '.join(where)} "
+            "ORDER BY payer_name ASC, plan_name ASC, id ASC",
+            params,
+        ).fetchall()
+        return [_row_to_insurance_plan(r) for r in rows]
+
+    def update_insurance_plan(
+        self,
+        scope: Scope,
+        plan_id: int,
+        *,
+        payer_name: str | None = None,
+        plan_name: str | None = None,
+        plan_type: str | None = None,
+        member_id_pattern: str | None = None,
+        group_id_pattern: str | None = None,
+        requires_referral: bool | None = None,
+        requires_prior_auth: bool | None = None,
+        notes: str | None = None,
+    ) -> InsurancePlan | None:
+        if plan_type is not None and plan_type not in PLAN_TYPE_VALUES:
+            raise ValueError(f"Unknown plan_type: {plan_type!r}")
+        fields: dict[str, Any] = {}
+        if payer_name is not None:
+            fields["payer_name"] = payer_name
+        if plan_name is not None:
+            fields["plan_name"] = plan_name
+        if plan_type is not None:
+            fields["plan_type"] = plan_type
+        if member_id_pattern is not None:
+            fields["member_id_pattern"] = member_id_pattern
+        if group_id_pattern is not None:
+            fields["group_id_pattern"] = group_id_pattern
+        if requires_referral is not None:
+            fields["requires_referral"] = 1 if requires_referral else 0
+        if requires_prior_auth is not None:
+            fields["requires_prior_auth"] = 1 if requires_prior_auth else 0
+        if notes is not None:
+            fields["notes"] = notes
+        if not fields:
+            return self.get_insurance_plan(scope, plan_id)
+        clause, scope_params = scope_sql_clause(scope)
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        cursor = self._conn.execute(
+            f"UPDATE insurance_plans SET {set_clause}, updated_at = datetime('now') "
+            f"WHERE id = ? AND {clause} AND deleted_at IS NULL",
+            [*fields.values(), plan_id, *scope_params],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_insurance_plan(scope, plan_id)
+
+    def soft_delete_insurance_plan(self, scope: Scope, plan_id: int) -> bool:
+        clause, params = scope_sql_clause(scope)
+        cursor = self._conn.execute(
+            f"UPDATE insurance_plans SET deleted_at = datetime('now') "
+            f"WHERE id = ? AND {clause} AND deleted_at IS NULL",
+            [plan_id, *params],
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- Specialty rules (platform default or org override) ---
+
+    def create_specialty_rule(
+        self,
+        *,
+        specialty_code: str,
+        organization_id: int | None = None,
+        display_name: str | None = None,
+        required_fields: dict[str, Any] | None = None,
+        recommended_attachments: dict[str, Any] | None = None,
+        intake_questions: dict[str, Any] | None = None,
+        urgency_red_flags: dict[str, Any] | None = None,
+        common_rejection_reasons: dict[str, Any] | None = None,
+        source: str = "seed",
+    ) -> SpecialtyRule:
+        if source not in RULE_SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        cursor = self._conn.execute(
+            """INSERT INTO specialty_rules
+               (organization_id, specialty_code, display_name,
+                required_fields, recommended_attachments, intake_questions,
+                urgency_red_flags, common_rejection_reasons, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                organization_id,
+                specialty_code,
+                display_name,
+                json.dumps(required_fields or {}),
+                json.dumps(recommended_attachments or {}),
+                json.dumps(intake_questions or {}),
+                json.dumps(urgency_red_flags or {}),
+                json.dumps(common_rejection_reasons or {}),
+                source,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM specialty_rules WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_specialty_rule(row)
+
+    def get_specialty_rule(self, rule_id: int) -> SpecialtyRule | None:
+        row = self._conn.execute(
+            "SELECT * FROM specialty_rules WHERE id = ?", (rule_id,)
+        ).fetchone()
+        return _row_to_specialty_rule(row) if row else None
+
+    def list_specialty_rules(
+        self,
+        *,
+        organization_id: int | None = None,
+        include_globals: bool = True,
+    ) -> list[SpecialtyRule]:
+        if organization_id is None:
+            # Just globals.
+            rows = self._conn.execute(
+                "SELECT * FROM specialty_rules WHERE organization_id IS NULL "
+                "ORDER BY specialty_code ASC, id ASC"
+            ).fetchall()
+        elif include_globals:
+            rows = self._conn.execute(
+                "SELECT * FROM specialty_rules "
+                "WHERE organization_id IS NULL OR organization_id = ? "
+                "ORDER BY specialty_code ASC, organization_id NULLS FIRST, id ASC",
+                (organization_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM specialty_rules WHERE organization_id = ? "
+                "ORDER BY specialty_code ASC, id ASC",
+                (organization_id,),
+            ).fetchall()
+        return [_row_to_specialty_rule(r) for r in rows]
+
+    def update_specialty_rule(
+        self,
+        rule_id: int,
+        *,
+        display_name: str | None = None,
+        required_fields: dict[str, Any] | None = None,
+        recommended_attachments: dict[str, Any] | None = None,
+        intake_questions: dict[str, Any] | None = None,
+        urgency_red_flags: dict[str, Any] | None = None,
+        common_rejection_reasons: dict[str, Any] | None = None,
+        source: str | None = None,
+        bump_version: bool = True,
+    ) -> SpecialtyRule | None:
+        if source is not None and source not in RULE_SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        fields: dict[str, Any] = {}
+        if display_name is not None:
+            fields["display_name"] = display_name
+        if required_fields is not None:
+            fields["required_fields"] = json.dumps(required_fields)
+        if recommended_attachments is not None:
+            fields["recommended_attachments"] = json.dumps(recommended_attachments)
+        if intake_questions is not None:
+            fields["intake_questions"] = json.dumps(intake_questions)
+        if urgency_red_flags is not None:
+            fields["urgency_red_flags"] = json.dumps(urgency_red_flags)
+        if common_rejection_reasons is not None:
+            fields["common_rejection_reasons"] = json.dumps(common_rejection_reasons)
+        if source is not None:
+            fields["source"] = source
+        if not fields:
+            return self.get_specialty_rule(rule_id)
+        set_parts = [f"{k} = ?" for k in fields]
+        params: list[Any] = list(fields.values())
+        if bump_version:
+            set_parts.append("version_id = version_id + 1")
+        set_parts.append("updated_at = datetime('now')")
+        params.append(rule_id)
+        cursor = self._conn.execute(
+            f"UPDATE specialty_rules SET {', '.join(set_parts)} WHERE id = ?",
+            params,
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_specialty_rule(rule_id)
+
+    def delete_specialty_rule(self, rule_id: int) -> bool:
+        cursor = self._conn.execute("DELETE FROM specialty_rules WHERE id = ?", (rule_id,))
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- Payer rules (platform default or org override) ---
+
+    def create_payer_rule(
+        self,
+        *,
+        payer_key: str,
+        organization_id: int | None = None,
+        display_name: str | None = None,
+        referral_required: bool = False,
+        auth_required_services: dict[str, Any] | None = None,
+        auth_typical_turnaround_days: int | None = None,
+        records_required: dict[str, Any] | None = None,
+        notes: str | None = None,
+        source: str = "seed",
+    ) -> PayerRule:
+        if source not in RULE_SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        cursor = self._conn.execute(
+            """INSERT INTO payer_rules
+               (organization_id, payer_key, display_name, referral_required,
+                auth_required_services, auth_typical_turnaround_days,
+                records_required, notes, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                organization_id,
+                payer_key,
+                display_name,
+                1 if referral_required else 0,
+                json.dumps(auth_required_services or {}),
+                auth_typical_turnaround_days,
+                json.dumps(records_required or {}),
+                notes,
+                source,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM payer_rules WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_payer_rule(row)
+
+    def get_payer_rule(self, rule_id: int) -> PayerRule | None:
+        row = self._conn.execute("SELECT * FROM payer_rules WHERE id = ?", (rule_id,)).fetchone()
+        return _row_to_payer_rule(row) if row else None
+
+    def list_payer_rules(
+        self,
+        *,
+        organization_id: int | None = None,
+        include_globals: bool = True,
+    ) -> list[PayerRule]:
+        if organization_id is None:
+            rows = self._conn.execute(
+                "SELECT * FROM payer_rules WHERE organization_id IS NULL "
+                "ORDER BY payer_key ASC, id ASC"
+            ).fetchall()
+        elif include_globals:
+            rows = self._conn.execute(
+                "SELECT * FROM payer_rules "
+                "WHERE organization_id IS NULL OR organization_id = ? "
+                "ORDER BY payer_key ASC, organization_id NULLS FIRST, id ASC",
+                (organization_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM payer_rules WHERE organization_id = ? "
+                "ORDER BY payer_key ASC, id ASC",
+                (organization_id,),
+            ).fetchall()
+        return [_row_to_payer_rule(r) for r in rows]
+
+    def update_payer_rule(
+        self,
+        rule_id: int,
+        *,
+        display_name: str | None = None,
+        referral_required: bool | None = None,
+        auth_required_services: dict[str, Any] | None = None,
+        auth_typical_turnaround_days: int | None = None,
+        records_required: dict[str, Any] | None = None,
+        notes: str | None = None,
+        source: str | None = None,
+        bump_version: bool = True,
+    ) -> PayerRule | None:
+        if source is not None and source not in RULE_SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        fields: dict[str, Any] = {}
+        if display_name is not None:
+            fields["display_name"] = display_name
+        if referral_required is not None:
+            fields["referral_required"] = 1 if referral_required else 0
+        if auth_required_services is not None:
+            fields["auth_required_services"] = json.dumps(auth_required_services)
+        if auth_typical_turnaround_days is not None:
+            fields["auth_typical_turnaround_days"] = auth_typical_turnaround_days
+        if records_required is not None:
+            fields["records_required"] = json.dumps(records_required)
+        if notes is not None:
+            fields["notes"] = notes
+        if source is not None:
+            fields["source"] = source
+        if not fields:
+            return self.get_payer_rule(rule_id)
+        set_parts = [f"{k} = ?" for k in fields]
+        params: list[Any] = list(fields.values())
+        if bump_version:
+            set_parts.append("version_id = version_id + 1")
+        set_parts.append("updated_at = datetime('now')")
+        params.append(rule_id)
+        cursor = self._conn.execute(
+            f"UPDATE payer_rules SET {', '.join(set_parts)} WHERE id = ?",
+            params,
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_payer_rule(rule_id)
+
+    def delete_payer_rule(self, rule_id: int) -> bool:
+        cursor = self._conn.execute("DELETE FROM payer_rules WHERE id = ?", (rule_id,))
         self._conn.commit()
         return cursor.rowcount > 0
 
