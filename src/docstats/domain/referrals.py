@@ -76,6 +76,32 @@ EVENT_TYPE_VALUES: Final[tuple[str, ...]] = (
     "unassigned",
 )
 
+# Provenance tag on every clinical sub-entity row (diagnoses, meds, allergies,
+# attachments). The provenance model is a non-negotiable product principle —
+# every piece of clinical data must know where it came from. "ai_draft" rows
+# stay visually distinct in the UI until a user confirms/edits them.
+SOURCE_VALUES: Final[tuple[str, ...]] = (
+    "user_entered",
+    "imported_csv",
+    "nppes",
+    "ai_draft",
+    "carry_forward",
+    "ehr_import",
+)
+
+# Attachment kinds — referral_attachments only. A "checklist_only" row means
+# "the receiving specialist should expect this record, but we're not shipping
+# the file through this platform yet" (file upload lands in Phase 10).
+ATTACHMENT_KIND_VALUES: Final[tuple[str, ...]] = (
+    "lab",
+    "imaging",
+    "note",
+    "procedure",
+    "medication_list",
+    "problem_list",
+    "other",
+)
+
 # --- State machine ---
 
 # Directed adjacency list. Terminal states (completed, cancelled) have no
@@ -196,4 +222,81 @@ class ReferralEvent(BaseModel):
     to_value: str | None = None
     actor_user_id: int | None = None
     note: str | None = None
+    created_at: datetime
+
+
+# --- Clinical sub-entities (Phase 1.C) ---
+#
+# Each of the four sub-entity models below hangs off a Referral via
+# ``referral_id``. Scope flows transitively through the parent referral —
+# storage methods verify scope by calling ``get_referral(scope, referral_id)``
+# before touching the sub-entity row.
+#
+# Hard-delete on the sub-entity is fine: the referral_events timeline captures
+# the edit (``field_edited`` / ``note_added``), so a removed diagnosis still
+# leaves an audit trail without keeping a tombstone row around.
+
+
+class ReferralDiagnosis(BaseModel):
+    """An ICD-10 diagnosis attached to a Referral.
+
+    Exactly one row per referral may have ``is_primary = True`` (enforced by a
+    partial unique index on ``(referral_id) WHERE is_primary``). The headline
+    diagnosis also lives on ``referrals.diagnosis_primary_icd`` for fast
+    workspace-queue rendering — keep them in sync when the primary changes.
+    """
+
+    id: int
+    referral_id: int
+    icd10_code: str
+    icd10_desc: str | None = None
+    is_primary: bool = False
+    source: str = "user_entered"  # must be in SOURCE_VALUES
+    created_at: datetime
+
+
+class ReferralMedication(BaseModel):
+    """A current medication on a Referral. Free-text; future phases may add
+    RxNorm coding."""
+
+    id: int
+    referral_id: int
+    name: str
+    dose: str | None = None
+    route: str | None = None
+    frequency: str | None = None
+    source: str = "user_entered"
+    created_at: datetime
+
+
+class ReferralAllergy(BaseModel):
+    """An allergy on a Referral. Severity is free-text (mild / moderate /
+    severe / anaphylactic) — not enum-constrained yet."""
+
+    id: int
+    referral_id: int
+    substance: str
+    reaction: str | None = None
+    severity: str | None = None
+    source: str = "user_entered"
+    created_at: datetime
+
+
+class ReferralAttachment(BaseModel):
+    """A supporting record attached to a Referral.
+
+    ``checklist_only = True`` means the record will be sent outside the
+    platform (fax, portal upload) — we track that it should be included
+    without storing the file. File upload to Supabase Storage lands in
+    Phase 10; until then ``storage_ref`` stays None.
+    """
+
+    id: int
+    referral_id: int
+    kind: str  # must be in ATTACHMENT_KIND_VALUES
+    label: str
+    date_of_service: str | None = None  # ISO YYYY-MM-DD
+    storage_ref: str | None = None  # reserved for Phase 10
+    checklist_only: bool = True
+    source: str = "user_entered"
     created_at: datetime

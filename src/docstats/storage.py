@@ -20,13 +20,19 @@ from docstats.domain.audit import AuditEvent
 from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.patients import Patient
 from docstats.domain.referrals import (
+    ATTACHMENT_KIND_VALUES,
     AUTH_STATUS_VALUES,
     EVENT_TYPE_VALUES,
     EXTERNAL_SOURCE_VALUES,
+    SOURCE_VALUES,
     STATUS_VALUES,
     URGENCY_VALUES,
     Referral,
+    ReferralAllergy,
+    ReferralAttachment,
+    ReferralDiagnosis,
     ReferralEvent,
+    ReferralMedication,
 )
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
@@ -187,6 +193,65 @@ def _row_to_referral_event(row: sqlite3.Row) -> ReferralEvent:
     )
 
 
+def _row_to_referral_diagnosis(row: sqlite3.Row) -> ReferralDiagnosis:
+    created = _parse_sqlite_utc(row["created_at"])
+    assert created is not None
+    return ReferralDiagnosis(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        icd10_code=row["icd10_code"],
+        icd10_desc=row["icd10_desc"],
+        is_primary=bool(row["is_primary"]),
+        source=row["source"],
+        created_at=created,
+    )
+
+
+def _row_to_referral_medication(row: sqlite3.Row) -> ReferralMedication:
+    created = _parse_sqlite_utc(row["created_at"])
+    assert created is not None
+    return ReferralMedication(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        name=row["name"],
+        dose=row["dose"],
+        route=row["route"],
+        frequency=row["frequency"],
+        source=row["source"],
+        created_at=created,
+    )
+
+
+def _row_to_referral_allergy(row: sqlite3.Row) -> ReferralAllergy:
+    created = _parse_sqlite_utc(row["created_at"])
+    assert created is not None
+    return ReferralAllergy(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        substance=row["substance"],
+        reaction=row["reaction"],
+        severity=row["severity"],
+        source=row["source"],
+        created_at=created,
+    )
+
+
+def _row_to_referral_attachment(row: sqlite3.Row) -> ReferralAttachment:
+    created = _parse_sqlite_utc(row["created_at"])
+    assert created is not None
+    return ReferralAttachment(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        kind=row["kind"],
+        label=row["label"],
+        date_of_service=row["date_of_service"],
+        storage_ref=row["storage_ref"],
+        checklist_only=bool(row["checklist_only"]),
+        source=row["source"],
+        created_at=created,
+    )
+
+
 def _row_to_session(row: sqlite3.Row) -> Session:
     """Convert a SQLite sessions row into a Session model."""
     data_raw = row["data_json"]
@@ -309,6 +374,7 @@ class Storage(StorageBase):
         self._migrate_sessions()
         self._migrate_patients()
         self._migrate_referrals()
+        self._migrate_referral_clinical()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -639,6 +705,69 @@ class Storage(StorageBase):
             );
             CREATE INDEX IF NOT EXISTS idx_referral_events_referral
                 ON referral_events(referral_id, created_at DESC, id DESC);
+        """)
+        self._conn.commit()
+
+    def _migrate_referral_clinical(self) -> None:
+        """Create the four clinical sub-tables (Phase 1.C)."""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS referral_diagnoses (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                referral_id  INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+                icd10_code   TEXT NOT NULL,
+                icd10_desc   TEXT,
+                is_primary   INTEGER NOT NULL DEFAULT 0,
+                source       TEXT NOT NULL DEFAULT 'user_entered'
+                    CHECK (source IN ('user_entered','imported_csv','nppes','ai_draft','carry_forward','ehr_import')),
+                created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_referral_diagnoses_referral
+                ON referral_diagnoses(referral_id, is_primary DESC, id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_referral_diagnoses_one_primary
+                ON referral_diagnoses(referral_id) WHERE is_primary = 1;
+
+            CREATE TABLE IF NOT EXISTS referral_medications (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                referral_id  INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+                name         TEXT NOT NULL,
+                dose         TEXT,
+                route        TEXT,
+                frequency    TEXT,
+                source       TEXT NOT NULL DEFAULT 'user_entered'
+                    CHECK (source IN ('user_entered','imported_csv','nppes','ai_draft','carry_forward','ehr_import')),
+                created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_referral_medications_referral
+                ON referral_medications(referral_id, id);
+
+            CREATE TABLE IF NOT EXISTS referral_allergies (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                referral_id  INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+                substance    TEXT NOT NULL,
+                reaction     TEXT,
+                severity     TEXT,
+                source       TEXT NOT NULL DEFAULT 'user_entered'
+                    CHECK (source IN ('user_entered','imported_csv','nppes','ai_draft','carry_forward','ehr_import')),
+                created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_referral_allergies_referral
+                ON referral_allergies(referral_id, id);
+
+            CREATE TABLE IF NOT EXISTS referral_attachments (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                referral_id       INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+                kind              TEXT NOT NULL
+                    CHECK (kind IN ('lab','imaging','note','procedure','medication_list','problem_list','other')),
+                label             TEXT NOT NULL,
+                date_of_service   TEXT,
+                storage_ref       TEXT,
+                checklist_only    INTEGER NOT NULL DEFAULT 1,
+                source            TEXT NOT NULL DEFAULT 'user_entered'
+                    CHECK (source IN ('user_entered','imported_csv','nppes','ai_draft','carry_forward','ehr_import')),
+                created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_referral_attachments_referral
+                ON referral_attachments(referral_id, id);
         """)
         self._conn.commit()
 
@@ -1789,6 +1918,398 @@ class Storage(StorageBase):
             (referral_id, int(limit)),
         ).fetchall()
         return [_row_to_referral_event(r) for r in rows]
+
+    # --- Referral clinical sub-entities (scope-transitive via referral) ---
+
+    # --- Diagnoses ---
+
+    def add_referral_diagnosis(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        icd10_code: str,
+        icd10_desc: str | None = None,
+        is_primary: bool = False,
+        source: str = "user_entered",
+    ) -> ReferralDiagnosis | None:
+        if source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        cursor = self._conn.execute(
+            "INSERT INTO referral_diagnoses "
+            "(referral_id, icd10_code, icd10_desc, is_primary, source) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (referral_id, icd10_code, icd10_desc, 1 if is_primary else 0, source),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM referral_diagnoses WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_referral_diagnosis(row)
+
+    def list_referral_diagnoses(self, scope: Scope, referral_id: int) -> list[ReferralDiagnosis]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM referral_diagnoses WHERE referral_id = ? "
+            "ORDER BY is_primary DESC, id ASC",
+            (referral_id,),
+        ).fetchall()
+        return [_row_to_referral_diagnosis(r) for r in rows]
+
+    def update_referral_diagnosis(
+        self,
+        scope: Scope,
+        referral_id: int,
+        diagnosis_id: int,
+        *,
+        icd10_code: str | None = None,
+        icd10_desc: str | None = None,
+        is_primary: bool | None = None,
+        source: str | None = None,
+    ) -> ReferralDiagnosis | None:
+        if source is not None and source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        fields: dict[str, Any] = {}
+        if icd10_code is not None:
+            fields["icd10_code"] = icd10_code
+        if icd10_desc is not None:
+            fields["icd10_desc"] = icd10_desc
+        if is_primary is not None:
+            fields["is_primary"] = 1 if is_primary else 0
+        if source is not None:
+            fields["source"] = source
+        if not fields:
+            row = self._conn.execute(
+                "SELECT * FROM referral_diagnoses WHERE id = ? AND referral_id = ?",
+                (diagnosis_id, referral_id),
+            ).fetchone()
+            return _row_to_referral_diagnosis(row) if row else None
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        cursor = self._conn.execute(
+            f"UPDATE referral_diagnoses SET {set_clause} WHERE id = ? AND referral_id = ?",
+            [*fields.values(), diagnosis_id, referral_id],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM referral_diagnoses WHERE id = ?", (diagnosis_id,)
+        ).fetchone()
+        return _row_to_referral_diagnosis(row) if row else None
+
+    def delete_referral_diagnosis(self, scope: Scope, referral_id: int, diagnosis_id: int) -> bool:
+        if self.get_referral(scope, referral_id) is None:
+            return False
+        cursor = self._conn.execute(
+            "DELETE FROM referral_diagnoses WHERE id = ? AND referral_id = ?",
+            (diagnosis_id, referral_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- Medications ---
+
+    def add_referral_medication(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        name: str,
+        dose: str | None = None,
+        route: str | None = None,
+        frequency: str | None = None,
+        source: str = "user_entered",
+    ) -> ReferralMedication | None:
+        if source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        cursor = self._conn.execute(
+            "INSERT INTO referral_medications "
+            "(referral_id, name, dose, route, frequency, source) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (referral_id, name, dose, route, frequency, source),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM referral_medications WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_referral_medication(row)
+
+    def list_referral_medications(self, scope: Scope, referral_id: int) -> list[ReferralMedication]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM referral_medications WHERE referral_id = ? ORDER BY id ASC",
+            (referral_id,),
+        ).fetchall()
+        return [_row_to_referral_medication(r) for r in rows]
+
+    def update_referral_medication(
+        self,
+        scope: Scope,
+        referral_id: int,
+        medication_id: int,
+        *,
+        name: str | None = None,
+        dose: str | None = None,
+        route: str | None = None,
+        frequency: str | None = None,
+        source: str | None = None,
+    ) -> ReferralMedication | None:
+        if source is not None and source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        fields: dict[str, Any] = {
+            k: v
+            for k, v in {
+                "name": name,
+                "dose": dose,
+                "route": route,
+                "frequency": frequency,
+                "source": source,
+            }.items()
+            if v is not None
+        }
+        if not fields:
+            row = self._conn.execute(
+                "SELECT * FROM referral_medications WHERE id = ? AND referral_id = ?",
+                (medication_id, referral_id),
+            ).fetchone()
+            return _row_to_referral_medication(row) if row else None
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        cursor = self._conn.execute(
+            f"UPDATE referral_medications SET {set_clause} WHERE id = ? AND referral_id = ?",
+            [*fields.values(), medication_id, referral_id],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM referral_medications WHERE id = ?", (medication_id,)
+        ).fetchone()
+        return _row_to_referral_medication(row) if row else None
+
+    def delete_referral_medication(
+        self, scope: Scope, referral_id: int, medication_id: int
+    ) -> bool:
+        if self.get_referral(scope, referral_id) is None:
+            return False
+        cursor = self._conn.execute(
+            "DELETE FROM referral_medications WHERE id = ? AND referral_id = ?",
+            (medication_id, referral_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- Allergies ---
+
+    def add_referral_allergy(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        substance: str,
+        reaction: str | None = None,
+        severity: str | None = None,
+        source: str = "user_entered",
+    ) -> ReferralAllergy | None:
+        if source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        cursor = self._conn.execute(
+            "INSERT INTO referral_allergies "
+            "(referral_id, substance, reaction, severity, source) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (referral_id, substance, reaction, severity, source),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM referral_allergies WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_referral_allergy(row)
+
+    def list_referral_allergies(self, scope: Scope, referral_id: int) -> list[ReferralAllergy]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM referral_allergies WHERE referral_id = ? ORDER BY id ASC",
+            (referral_id,),
+        ).fetchall()
+        return [_row_to_referral_allergy(r) for r in rows]
+
+    def update_referral_allergy(
+        self,
+        scope: Scope,
+        referral_id: int,
+        allergy_id: int,
+        *,
+        substance: str | None = None,
+        reaction: str | None = None,
+        severity: str | None = None,
+        source: str | None = None,
+    ) -> ReferralAllergy | None:
+        if source is not None and source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        fields: dict[str, Any] = {
+            k: v
+            for k, v in {
+                "substance": substance,
+                "reaction": reaction,
+                "severity": severity,
+                "source": source,
+            }.items()
+            if v is not None
+        }
+        if not fields:
+            row = self._conn.execute(
+                "SELECT * FROM referral_allergies WHERE id = ? AND referral_id = ?",
+                (allergy_id, referral_id),
+            ).fetchone()
+            return _row_to_referral_allergy(row) if row else None
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        cursor = self._conn.execute(
+            f"UPDATE referral_allergies SET {set_clause} WHERE id = ? AND referral_id = ?",
+            [*fields.values(), allergy_id, referral_id],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM referral_allergies WHERE id = ?", (allergy_id,)
+        ).fetchone()
+        return _row_to_referral_allergy(row) if row else None
+
+    def delete_referral_allergy(self, scope: Scope, referral_id: int, allergy_id: int) -> bool:
+        if self.get_referral(scope, referral_id) is None:
+            return False
+        cursor = self._conn.execute(
+            "DELETE FROM referral_allergies WHERE id = ? AND referral_id = ?",
+            (allergy_id, referral_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- Attachments ---
+
+    def add_referral_attachment(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        kind: str,
+        label: str,
+        date_of_service: str | None = None,
+        storage_ref: str | None = None,
+        checklist_only: bool = True,
+        source: str = "user_entered",
+    ) -> ReferralAttachment | None:
+        if kind not in ATTACHMENT_KIND_VALUES:
+            raise ValueError(f"Unknown attachment kind: {kind!r}")
+        if source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        cursor = self._conn.execute(
+            "INSERT INTO referral_attachments "
+            "(referral_id, kind, label, date_of_service, storage_ref, checklist_only, source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                referral_id,
+                kind,
+                label,
+                date_of_service,
+                storage_ref,
+                1 if checklist_only else 0,
+                source,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM referral_attachments WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_referral_attachment(row)
+
+    def list_referral_attachments(self, scope: Scope, referral_id: int) -> list[ReferralAttachment]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM referral_attachments WHERE referral_id = ? ORDER BY id ASC",
+            (referral_id,),
+        ).fetchall()
+        return [_row_to_referral_attachment(r) for r in rows]
+
+    def update_referral_attachment(
+        self,
+        scope: Scope,
+        referral_id: int,
+        attachment_id: int,
+        *,
+        kind: str | None = None,
+        label: str | None = None,
+        date_of_service: str | None = None,
+        storage_ref: str | None = None,
+        checklist_only: bool | None = None,
+        source: str | None = None,
+    ) -> ReferralAttachment | None:
+        if kind is not None and kind not in ATTACHMENT_KIND_VALUES:
+            raise ValueError(f"Unknown attachment kind: {kind!r}")
+        if source is not None and source not in SOURCE_VALUES:
+            raise ValueError(f"Unknown source: {source!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        fields: dict[str, Any] = {}
+        if kind is not None:
+            fields["kind"] = kind
+        if label is not None:
+            fields["label"] = label
+        if date_of_service is not None:
+            fields["date_of_service"] = date_of_service
+        if storage_ref is not None:
+            fields["storage_ref"] = storage_ref
+        if checklist_only is not None:
+            fields["checklist_only"] = 1 if checklist_only else 0
+        if source is not None:
+            fields["source"] = source
+        if not fields:
+            row = self._conn.execute(
+                "SELECT * FROM referral_attachments WHERE id = ? AND referral_id = ?",
+                (attachment_id, referral_id),
+            ).fetchone()
+            return _row_to_referral_attachment(row) if row else None
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        cursor = self._conn.execute(
+            f"UPDATE referral_attachments SET {set_clause} WHERE id = ? AND referral_id = ?",
+            [*fields.values(), attachment_id, referral_id],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM referral_attachments WHERE id = ?", (attachment_id,)
+        ).fetchone()
+        return _row_to_referral_attachment(row) if row else None
+
+    def delete_referral_attachment(
+        self, scope: Scope, referral_id: int, attachment_id: int
+    ) -> bool:
+        if self.get_referral(scope, referral_id) is None:
+            return False
+        cursor = self._conn.execute(
+            "DELETE FROM referral_attachments WHERE id = ? AND referral_id = ?",
+            (attachment_id, referral_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     def close(self) -> None:
         self._conn.close()
