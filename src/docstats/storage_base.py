@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         ReferralDiagnosis,
         ReferralEvent,
         ReferralMedication,
+        ReferralResponse,
     )
     from docstats.domain.sessions import Session
     from docstats.scope import Scope
@@ -636,6 +637,51 @@ class StorageBase(ABC):
         scope: "Scope",
         referral_id: int,
         attachment_id: int,
+    ) -> bool: ...
+
+    # --- Referral responses (closed-loop updates from receiving side) ---
+
+    @abstractmethod
+    def record_referral_response(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        *,
+        appointment_date: str | None = None,
+        consult_completed: bool = False,
+        recommendations_text: str | None = None,
+        attached_consult_note_ref: str | None = None,
+        received_via: str = "manual",
+        recorded_by_user_id: int | None = None,
+    ) -> "ReferralResponse | None": ...
+
+    @abstractmethod
+    def list_referral_responses(
+        self,
+        scope: "Scope",
+        referral_id: int,
+    ) -> list["ReferralResponse"]: ...
+
+    @abstractmethod
+    def update_referral_response(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        response_id: int,
+        *,
+        appointment_date: str | None = None,
+        consult_completed: bool | None = None,
+        recommendations_text: str | None = None,
+        attached_consult_note_ref: str | None = None,
+        received_via: str | None = None,
+    ) -> "ReferralResponse | None": ...
+
+    @abstractmethod
+    def delete_referral_response(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        response_id: int,
     ) -> bool: ...
 
     @abstractmethod

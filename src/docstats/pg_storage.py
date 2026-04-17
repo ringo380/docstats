@@ -23,6 +23,7 @@ from docstats.domain.referrals import (
     AUTH_STATUS_VALUES,
     EVENT_TYPE_VALUES,
     EXTERNAL_SOURCE_VALUES,
+    RECEIVED_VIA_VALUES,
     SOURCE_VALUES,
     STATUS_VALUES,
     URGENCY_VALUES,
@@ -32,6 +33,7 @@ from docstats.domain.referrals import (
     ReferralDiagnosis,
     ReferralEvent,
     ReferralMedication,
+    ReferralResponse,
 )
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
@@ -236,6 +238,24 @@ def _row_to_referral_attachment(row: dict) -> ReferralAttachment:
         checklist_only=bool(row.get("checklist_only", True)),
         source=row["source"],
         created_at=created,
+    )
+
+
+def _row_to_referral_response(row: dict) -> ReferralResponse:
+    created = _parse_ts(row.get("created_at"))
+    updated = _parse_ts(row.get("updated_at"))
+    assert created is not None and updated is not None
+    return ReferralResponse(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        appointment_date=row.get("appointment_date"),
+        consult_completed=bool(row.get("consult_completed", False)),
+        recommendations_text=row.get("recommendations_text"),
+        attached_consult_note_ref=row.get("attached_consult_note_ref"),
+        received_via=row["received_via"],
+        recorded_by_user_id=row.get("recorded_by_user_id"),
+        created_at=created,
+        updated_at=updated,
     )
 
 
@@ -1888,6 +1908,124 @@ class PostgresStorage(StorageBase):
             self._t("referral_attachments")
             .delete()
             .eq("id", attachment_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        return True
+
+    # --- Referral responses (closed-loop) ---
+
+    def record_referral_response(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        appointment_date: str | None = None,
+        consult_completed: bool = False,
+        recommendations_text: str | None = None,
+        attached_consult_note_ref: str | None = None,
+        received_via: str = "manual",
+        recorded_by_user_id: int | None = None,
+    ) -> ReferralResponse | None:
+        if received_via not in RECEIVED_VIA_VALUES:
+            raise ValueError(f"Unknown received_via: {received_via!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        now = _now_iso()
+        result = (
+            self._t("referral_responses")
+            .insert(
+                {
+                    "referral_id": referral_id,
+                    "appointment_date": appointment_date,
+                    "consult_completed": consult_completed,
+                    "recommendations_text": recommendations_text,
+                    "attached_consult_note_ref": attached_consult_note_ref,
+                    "received_via": received_via,
+                    "recorded_by_user_id": recorded_by_user_id,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+            .execute()
+        )
+        return _row_to_referral_response(result.data[0])
+
+    def list_referral_responses(self, scope: Scope, referral_id: int) -> list[ReferralResponse]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        result = (
+            self._t("referral_responses")
+            .select("*")
+            .eq("referral_id", referral_id)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .execute()
+        )
+        return [_row_to_referral_response(r) for r in result.data]
+
+    def update_referral_response(
+        self,
+        scope: Scope,
+        referral_id: int,
+        response_id: int,
+        *,
+        appointment_date: str | None = None,
+        consult_completed: bool | None = None,
+        recommendations_text: str | None = None,
+        attached_consult_note_ref: str | None = None,
+        received_via: str | None = None,
+    ) -> ReferralResponse | None:
+        if received_via is not None and received_via not in RECEIVED_VIA_VALUES:
+            raise ValueError(f"Unknown received_via: {received_via!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        fields: dict[str, Any] = {}
+        if appointment_date is not None:
+            fields["appointment_date"] = appointment_date
+        if consult_completed is not None:
+            fields["consult_completed"] = consult_completed
+        if recommendations_text is not None:
+            fields["recommendations_text"] = recommendations_text
+        if attached_consult_note_ref is not None:
+            fields["attached_consult_note_ref"] = attached_consult_note_ref
+        if received_via is not None:
+            fields["received_via"] = received_via
+        if not fields:
+            result = (
+                self._t("referral_responses")
+                .select("*")
+                .eq("id", response_id)
+                .eq("referral_id", referral_id)
+                .execute()
+            )
+            return _row_to_referral_response(result.data[0]) if result.data else None
+        fields["updated_at"] = _now_iso()
+        result = (
+            self._t("referral_responses")
+            .update(fields)
+            .eq("id", response_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        return _row_to_referral_response(result.data[0]) if result.data else None
+
+    def delete_referral_response(self, scope: Scope, referral_id: int, response_id: int) -> bool:
+        if self.get_referral(scope, referral_id) is None:
+            return False
+        to_delete = (
+            self._t("referral_responses")
+            .select("id")
+            .eq("id", response_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        if not to_delete.data:
+            return False
+        (
+            self._t("referral_responses")
+            .delete()
+            .eq("id", response_id)
             .eq("referral_id", referral_id)
             .execute()
         )
