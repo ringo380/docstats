@@ -18,6 +18,15 @@ from typing import Any
 from docstats.domain.audit import AuditEvent
 from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.patients import Patient
+from docstats.domain.referrals import (
+    AUTH_STATUS_VALUES,
+    EVENT_TYPE_VALUES,
+    EXTERNAL_SOURCE_VALUES,
+    STATUS_VALUES,
+    URGENCY_VALUES,
+    Referral,
+    ReferralEvent,
+)
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.scope import Scope, ScopeRequired
@@ -109,6 +118,59 @@ def _row_to_patient(row: dict) -> Patient:
         created_at=created,
         updated_at=updated,
         deleted_at=_parse_ts(row.get("deleted_at")),
+    )
+
+
+def _row_to_referral(row: dict) -> Referral:
+    """Convert a Supabase referrals row into a Referral model."""
+    created = _parse_ts(row.get("created_at"))
+    updated = _parse_ts(row.get("updated_at"))
+    assert created is not None and updated is not None
+    return Referral(
+        id=int(row["id"]),
+        scope_user_id=row.get("scope_user_id"),
+        scope_organization_id=row.get("scope_organization_id"),
+        patient_id=int(row["patient_id"]),
+        referring_provider_npi=row.get("referring_provider_npi"),
+        referring_provider_name=row.get("referring_provider_name"),
+        referring_organization=row.get("referring_organization"),
+        receiving_provider_npi=row.get("receiving_provider_npi"),
+        receiving_organization_name=row.get("receiving_organization_name"),
+        specialty_code=row.get("specialty_code"),
+        specialty_desc=row.get("specialty_desc"),
+        reason=row.get("reason"),
+        clinical_question=row.get("clinical_question"),
+        urgency=row["urgency"],
+        requested_service=row.get("requested_service"),
+        diagnosis_primary_icd=row.get("diagnosis_primary_icd"),
+        diagnosis_primary_text=row.get("diagnosis_primary_text"),
+        payer_plan_id=row.get("payer_plan_id"),
+        authorization_number=row.get("authorization_number"),
+        authorization_status=row["authorization_status"],
+        status=row["status"],
+        assigned_to_user_id=row.get("assigned_to_user_id"),
+        external_reference_id=row.get("external_reference_id"),
+        external_source=row["external_source"],
+        created_by_user_id=row.get("created_by_user_id"),
+        created_at=created,
+        updated_at=updated,
+        deleted_at=_parse_ts(row.get("deleted_at")),
+    )
+
+
+def _row_to_referral_event(row: dict) -> ReferralEvent:
+    """Convert a Supabase referral_events row into a ReferralEvent."""
+    created = _parse_ts(row.get("created_at"))
+    assert created is not None
+    return ReferralEvent(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        event_type=row["event_type"],
+        from_value=row.get("from_value"),
+        to_value=row.get("to_value"),
+        actor_user_id=row.get("actor_user_id"),
+        note=row.get("note"),
+        created_at=created,
     )
 
 
@@ -1050,6 +1112,265 @@ class PostgresStorage(StorageBase):
         query = self._apply_scope(query, scope)
         result = query.execute()
         return bool(result.data)
+
+    # --- Referrals (scope-enforced; patient_id scope-matched) ---
+
+    def create_referral(
+        self,
+        scope: Scope,
+        *,
+        patient_id: int,
+        referring_provider_npi: str | None = None,
+        referring_provider_name: str | None = None,
+        referring_organization: str | None = None,
+        receiving_provider_npi: str | None = None,
+        receiving_organization_name: str | None = None,
+        specialty_code: str | None = None,
+        specialty_desc: str | None = None,
+        reason: str | None = None,
+        clinical_question: str | None = None,
+        urgency: str = "routine",
+        requested_service: str | None = None,
+        diagnosis_primary_icd: str | None = None,
+        diagnosis_primary_text: str | None = None,
+        payer_plan_id: int | None = None,
+        authorization_number: str | None = None,
+        authorization_status: str = "na_unknown",
+        status: str = "draft",
+        assigned_to_user_id: int | None = None,
+        external_reference_id: str | None = None,
+        external_source: str = "manual",
+        created_by_user_id: int | None = None,
+    ) -> Referral:
+        if scope.is_anonymous:
+            raise ScopeRequired("Anonymous scope is not allowed for scoped entities")
+        if urgency not in URGENCY_VALUES:
+            raise ValueError(f"Unknown urgency: {urgency!r}")
+        if authorization_status not in AUTH_STATUS_VALUES:
+            raise ValueError(f"Unknown authorization_status: {authorization_status!r}")
+        if status not in STATUS_VALUES:
+            raise ValueError(f"Unknown status: {status!r}")
+        if external_source not in EXTERNAL_SOURCE_VALUES:
+            raise ValueError(f"Unknown external_source: {external_source!r}")
+        if self.get_patient(scope, patient_id) is None:
+            raise ValueError(f"Patient {patient_id} not found in scope or soft-deleted")
+
+        row: dict[str, Any] = {
+            "scope_user_id": scope.user_id if scope.is_solo else None,
+            "scope_organization_id": scope.organization_id if scope.is_org else None,
+            "patient_id": patient_id,
+            "referring_provider_npi": referring_provider_npi,
+            "referring_provider_name": referring_provider_name,
+            "referring_organization": referring_organization,
+            "receiving_provider_npi": receiving_provider_npi,
+            "receiving_organization_name": receiving_organization_name,
+            "specialty_code": specialty_code,
+            "specialty_desc": specialty_desc,
+            "reason": reason,
+            "clinical_question": clinical_question,
+            "urgency": urgency,
+            "requested_service": requested_service,
+            "diagnosis_primary_icd": diagnosis_primary_icd,
+            "diagnosis_primary_text": diagnosis_primary_text,
+            "payer_plan_id": payer_plan_id,
+            "authorization_number": authorization_number,
+            "authorization_status": authorization_status,
+            "status": status,
+            "assigned_to_user_id": assigned_to_user_id,
+            "external_reference_id": external_reference_id,
+            "external_source": external_source,
+            "created_by_user_id": created_by_user_id,
+            "created_at": _now_iso(),
+            "updated_at": _now_iso(),
+        }
+        result = self._t("referrals").insert(row).execute()
+        referral = _row_to_referral(result.data[0])
+        # Seed a ``created`` event so the timeline is complete from t=0.
+        self._t("referral_events").insert(
+            {
+                "referral_id": referral.id,
+                "event_type": "created",
+                "to_value": status,
+                "actor_user_id": created_by_user_id,
+                "created_at": _now_iso(),
+            }
+        ).execute()
+        return referral
+
+    def get_referral(self, scope: Scope, referral_id: int) -> Referral | None:
+        query = self._t("referrals").select("*").eq("id", referral_id).is_("deleted_at", None)
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        return _row_to_referral(result.data[0]) if result.data else None
+
+    def list_referrals(
+        self,
+        scope: Scope,
+        *,
+        patient_id: int | None = None,
+        status: str | None = None,
+        assigned_to_user_id: int | None = None,
+        include_deleted: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Referral]:
+        query = self._t("referrals").select("*")
+        query = self._apply_scope(query, scope)
+        if not include_deleted:
+            query = query.is_("deleted_at", None)
+        if patient_id is not None:
+            query = query.eq("patient_id", patient_id)
+        if status is not None:
+            query = query.eq("status", status)
+        if assigned_to_user_id is not None:
+            query = query.eq("assigned_to_user_id", assigned_to_user_id)
+        result = (
+            query.order("updated_at", desc=True)
+            .order("id", desc=True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+        return [_row_to_referral(r) for r in result.data]
+
+    def update_referral(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        referring_provider_npi: str | None = None,
+        referring_provider_name: str | None = None,
+        referring_organization: str | None = None,
+        receiving_provider_npi: str | None = None,
+        receiving_organization_name: str | None = None,
+        specialty_code: str | None = None,
+        specialty_desc: str | None = None,
+        reason: str | None = None,
+        clinical_question: str | None = None,
+        urgency: str | None = None,
+        requested_service: str | None = None,
+        diagnosis_primary_icd: str | None = None,
+        diagnosis_primary_text: str | None = None,
+        payer_plan_id: int | None = None,
+        authorization_number: str | None = None,
+        authorization_status: str | None = None,
+        assigned_to_user_id: int | None = None,
+    ) -> Referral | None:
+        if urgency is not None and urgency not in URGENCY_VALUES:
+            raise ValueError(f"Unknown urgency: {urgency!r}")
+        if authorization_status is not None and authorization_status not in AUTH_STATUS_VALUES:
+            raise ValueError(f"Unknown authorization_status: {authorization_status!r}")
+        fields: dict[str, Any] = {
+            k: v
+            for k, v in {
+                "referring_provider_npi": referring_provider_npi,
+                "referring_provider_name": referring_provider_name,
+                "referring_organization": referring_organization,
+                "receiving_provider_npi": receiving_provider_npi,
+                "receiving_organization_name": receiving_organization_name,
+                "specialty_code": specialty_code,
+                "specialty_desc": specialty_desc,
+                "reason": reason,
+                "clinical_question": clinical_question,
+                "urgency": urgency,
+                "requested_service": requested_service,
+                "diagnosis_primary_icd": diagnosis_primary_icd,
+                "diagnosis_primary_text": diagnosis_primary_text,
+                "payer_plan_id": payer_plan_id,
+                "authorization_number": authorization_number,
+                "authorization_status": authorization_status,
+                "assigned_to_user_id": assigned_to_user_id,
+            }.items()
+            if v is not None
+        }
+        if not fields:
+            return self.get_referral(scope, referral_id)
+        fields["updated_at"] = _now_iso()
+        query = self._t("referrals").update(fields).eq("id", referral_id).is_("deleted_at", None)
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        if not result.data:
+            return None
+        return _row_to_referral(result.data[0])
+
+    def set_referral_status(
+        self,
+        scope: Scope,
+        referral_id: int,
+        new_status: str,
+    ) -> Referral | None:
+        if new_status not in STATUS_VALUES:
+            raise ValueError(f"Unknown status: {new_status!r}")
+        query = (
+            self._t("referrals")
+            .update({"status": new_status, "updated_at": _now_iso()})
+            .eq("id", referral_id)
+            .is_("deleted_at", None)
+        )
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        if not result.data:
+            return None
+        return _row_to_referral(result.data[0])
+
+    def soft_delete_referral(self, scope: Scope, referral_id: int) -> bool:
+        query = (
+            self._t("referrals")
+            .update({"deleted_at": _now_iso()})
+            .eq("id", referral_id)
+            .is_("deleted_at", None)
+        )
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        return bool(result.data)
+
+    # --- Referral events (append-only; scope-transitive) ---
+
+    def record_referral_event(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        event_type: str,
+        from_value: str | None = None,
+        to_value: str | None = None,
+        actor_user_id: int | None = None,
+        note: str | None = None,
+    ) -> ReferralEvent | None:
+        if event_type not in EVENT_TYPE_VALUES:
+            raise ValueError(f"Unknown event_type: {event_type!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        row = {
+            "referral_id": referral_id,
+            "event_type": event_type,
+            "from_value": from_value,
+            "to_value": to_value,
+            "actor_user_id": actor_user_id,
+            "note": note,
+            "created_at": _now_iso(),
+        }
+        result = self._t("referral_events").insert(row).execute()
+        return _row_to_referral_event(result.data[0])
+
+    def list_referral_events(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        limit: int = 100,
+    ) -> list[ReferralEvent]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        result = (
+            self._t("referral_events")
+            .select("*")
+            .eq("referral_id", referral_id)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [_row_to_referral_event(r) for r in result.data]
 
     def close(self) -> None:
         pass  # supabase-py client has no close method

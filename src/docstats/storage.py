@@ -19,6 +19,15 @@ from typing import TYPE_CHECKING, Any
 from docstats.domain.audit import AuditEvent
 from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.patients import Patient
+from docstats.domain.referrals import (
+    AUTH_STATUS_VALUES,
+    EVENT_TYPE_VALUES,
+    EXTERNAL_SOURCE_VALUES,
+    STATUS_VALUES,
+    URGENCY_VALUES,
+    Referral,
+    ReferralEvent,
+)
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.scope import Scope, scope_sql_clause
@@ -122,6 +131,59 @@ def _row_to_patient(row: sqlite3.Row) -> Patient:
         created_at=created,
         updated_at=updated,
         deleted_at=_parse_sqlite_utc(row["deleted_at"]),
+    )
+
+
+def _row_to_referral(row: sqlite3.Row) -> Referral:
+    """Convert a SQLite referrals row into a Referral model."""
+    created = _parse_sqlite_utc(row["created_at"])
+    updated = _parse_sqlite_utc(row["updated_at"])
+    assert created is not None and updated is not None
+    return Referral(
+        id=int(row["id"]),
+        scope_user_id=row["scope_user_id"],
+        scope_organization_id=row["scope_organization_id"],
+        patient_id=int(row["patient_id"]),
+        referring_provider_npi=row["referring_provider_npi"],
+        referring_provider_name=row["referring_provider_name"],
+        referring_organization=row["referring_organization"],
+        receiving_provider_npi=row["receiving_provider_npi"],
+        receiving_organization_name=row["receiving_organization_name"],
+        specialty_code=row["specialty_code"],
+        specialty_desc=row["specialty_desc"],
+        reason=row["reason"],
+        clinical_question=row["clinical_question"],
+        urgency=row["urgency"],
+        requested_service=row["requested_service"],
+        diagnosis_primary_icd=row["diagnosis_primary_icd"],
+        diagnosis_primary_text=row["diagnosis_primary_text"],
+        payer_plan_id=row["payer_plan_id"],
+        authorization_number=row["authorization_number"],
+        authorization_status=row["authorization_status"],
+        status=row["status"],
+        assigned_to_user_id=row["assigned_to_user_id"],
+        external_reference_id=row["external_reference_id"],
+        external_source=row["external_source"],
+        created_by_user_id=row["created_by_user_id"],
+        created_at=created,
+        updated_at=updated,
+        deleted_at=_parse_sqlite_utc(row["deleted_at"]),
+    )
+
+
+def _row_to_referral_event(row: sqlite3.Row) -> ReferralEvent:
+    """Convert a SQLite referral_events row into a ReferralEvent."""
+    created = _parse_sqlite_utc(row["created_at"])
+    assert created is not None
+    return ReferralEvent(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        event_type=row["event_type"],
+        from_value=row["from_value"],
+        to_value=row["to_value"],
+        actor_user_id=row["actor_user_id"],
+        note=row["note"],
+        created_at=created,
     )
 
 
@@ -246,6 +308,7 @@ class Storage(StorageBase):
         self._migrate_users_active_org_and_role_hint()
         self._migrate_sessions()
         self._migrate_patients()
+        self._migrate_referrals()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -504,6 +567,78 @@ class Storage(StorageBase):
                 WHERE scope_organization_id IS NOT NULL
                   AND mrn IS NOT NULL
                   AND deleted_at IS NULL;
+        """)
+        self._conn.commit()
+
+    def _migrate_referrals(self) -> None:
+        """Create referrals + referral_events tables (Phase 1.B)."""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS referrals (
+                id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_user_id                 INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                scope_organization_id         INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+                patient_id                    INTEGER NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
+                referring_provider_npi        TEXT,
+                referring_provider_name       TEXT,
+                referring_organization        TEXT,
+                receiving_provider_npi        TEXT,
+                receiving_organization_name   TEXT,
+                specialty_code                TEXT,
+                specialty_desc                TEXT,
+                reason                        TEXT,
+                clinical_question             TEXT,
+                urgency                       TEXT NOT NULL DEFAULT 'routine'
+                    CHECK (urgency IN ('routine','priority','urgent','stat')),
+                requested_service             TEXT,
+                diagnosis_primary_icd         TEXT,
+                diagnosis_primary_text        TEXT,
+                payer_plan_id                 INTEGER,
+                authorization_number          TEXT,
+                authorization_status          TEXT NOT NULL DEFAULT 'na_unknown'
+                    CHECK (authorization_status IN
+                           ('not_required','required_pending','obtained','denied','na_unknown')),
+                status                        TEXT NOT NULL DEFAULT 'draft'
+                    CHECK (status IN
+                           ('draft','ready','sent','awaiting_records','awaiting_auth',
+                            'scheduled','rejected','completed','cancelled')),
+                assigned_to_user_id           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                external_reference_id         TEXT,
+                external_source               TEXT NOT NULL DEFAULT 'manual'
+                    CHECK (external_source IN ('manual','bulk_csv','api')),
+                created_by_user_id            INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at                    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at                    TEXT NOT NULL DEFAULT (datetime('now')),
+                deleted_at                    TEXT,
+                CHECK (
+                    (scope_user_id IS NOT NULL AND scope_organization_id IS NULL)
+                    OR (scope_user_id IS NULL AND scope_organization_id IS NOT NULL)
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_referrals_scope_user_status
+                ON referrals(scope_user_id, status, updated_at DESC) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_referrals_scope_org_status
+                ON referrals(scope_organization_id, status, updated_at DESC) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_referrals_patient
+                ON referrals(patient_id, created_at DESC) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_referrals_assignee
+                ON referrals(assigned_to_user_id, status, updated_at DESC)
+                WHERE assigned_to_user_id IS NOT NULL AND deleted_at IS NULL;
+
+            CREATE TABLE IF NOT EXISTS referral_events (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                referral_id      INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+                event_type       TEXT NOT NULL
+                    CHECK (event_type IN
+                           ('created','status_changed','field_edited','exported','sent',
+                            'response_received','note_added','assigned','unassigned')),
+                from_value       TEXT,
+                to_value         TEXT,
+                actor_user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                note             TEXT,
+                created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_referral_events_referral
+                ON referral_events(referral_id, created_at DESC, id DESC);
         """)
         self._conn.commit()
 
@@ -1370,6 +1505,290 @@ class Storage(StorageBase):
         )
         self._conn.commit()
         return cursor.rowcount > 0
+
+    # --- Referrals (scope-enforced; patient_id scope-matched) ---
+
+    def create_referral(
+        self,
+        scope: Scope,
+        *,
+        patient_id: int,
+        referring_provider_npi: str | None = None,
+        referring_provider_name: str | None = None,
+        referring_organization: str | None = None,
+        receiving_provider_npi: str | None = None,
+        receiving_organization_name: str | None = None,
+        specialty_code: str | None = None,
+        specialty_desc: str | None = None,
+        reason: str | None = None,
+        clinical_question: str | None = None,
+        urgency: str = "routine",
+        requested_service: str | None = None,
+        diagnosis_primary_icd: str | None = None,
+        diagnosis_primary_text: str | None = None,
+        payer_plan_id: int | None = None,
+        authorization_number: str | None = None,
+        authorization_status: str = "na_unknown",
+        status: str = "draft",
+        assigned_to_user_id: int | None = None,
+        external_reference_id: str | None = None,
+        external_source: str = "manual",
+        created_by_user_id: int | None = None,
+    ) -> Referral:
+        scope_sql_clause(scope)  # raises ScopeRequired on anonymous
+        if urgency not in URGENCY_VALUES:
+            raise ValueError(f"Unknown urgency: {urgency!r}")
+        if authorization_status not in AUTH_STATUS_VALUES:
+            raise ValueError(f"Unknown authorization_status: {authorization_status!r}")
+        if status not in STATUS_VALUES:
+            raise ValueError(f"Unknown status: {status!r}")
+        if external_source not in EXTERNAL_SOURCE_VALUES:
+            raise ValueError(f"Unknown external_source: {external_source!r}")
+        # Patient must be readable in the same scope — prevents cross-tenant
+        # FK forgery (e.g. referring to a patient in another org).
+        if self.get_patient(scope, patient_id) is None:
+            raise ValueError(f"Patient {patient_id} not found in scope or soft-deleted")
+
+        cursor = self._conn.execute(
+            """INSERT INTO referrals (
+                scope_user_id, scope_organization_id, patient_id,
+                referring_provider_npi, referring_provider_name, referring_organization,
+                receiving_provider_npi, receiving_organization_name,
+                specialty_code, specialty_desc,
+                reason, clinical_question, urgency, requested_service,
+                diagnosis_primary_icd, diagnosis_primary_text,
+                payer_plan_id, authorization_number, authorization_status,
+                status, assigned_to_user_id,
+                external_reference_id, external_source, created_by_user_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )""",
+            (
+                scope.user_id if scope.is_solo else None,
+                scope.organization_id if scope.is_org else None,
+                patient_id,
+                referring_provider_npi,
+                referring_provider_name,
+                referring_organization,
+                receiving_provider_npi,
+                receiving_organization_name,
+                specialty_code,
+                specialty_desc,
+                reason,
+                clinical_question,
+                urgency,
+                requested_service,
+                diagnosis_primary_icd,
+                diagnosis_primary_text,
+                payer_plan_id,
+                authorization_number,
+                authorization_status,
+                status,
+                assigned_to_user_id,
+                external_reference_id,
+                external_source,
+                created_by_user_id,
+            ),
+        )
+        self._conn.commit()
+        referral_id = cursor.lastrowid
+        assert referral_id is not None
+        # Seed the timeline with a ``created`` event. Callers don't need to
+        # wire this themselves — it's the one event every referral has.
+        self._conn.execute(
+            "INSERT INTO referral_events (referral_id, event_type, to_value, actor_user_id) "
+            "VALUES (?, 'created', ?, ?)",
+            (referral_id, status, created_by_user_id),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM referrals WHERE id = ?", (referral_id,)).fetchone()
+        return _row_to_referral(row)
+
+    def get_referral(self, scope: Scope, referral_id: int) -> Referral | None:
+        clause, params = scope_sql_clause(scope)
+        row = self._conn.execute(
+            f"SELECT * FROM referrals WHERE id = ? AND {clause} AND deleted_at IS NULL",
+            [referral_id, *params],
+        ).fetchone()
+        return _row_to_referral(row) if row else None
+
+    def list_referrals(
+        self,
+        scope: Scope,
+        *,
+        patient_id: int | None = None,
+        status: str | None = None,
+        assigned_to_user_id: int | None = None,
+        include_deleted: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Referral]:
+        clause, params = scope_sql_clause(scope)
+        where_parts = [clause]
+        if not include_deleted:
+            where_parts.append("deleted_at IS NULL")
+        if patient_id is not None:
+            where_parts.append("patient_id = ?")
+            params.append(patient_id)
+        if status is not None:
+            where_parts.append("status = ?")
+            params.append(status)
+        if assigned_to_user_id is not None:
+            where_parts.append("assigned_to_user_id = ?")
+            params.append(assigned_to_user_id)
+        sql = (
+            f"SELECT * FROM referrals WHERE {' AND '.join(where_parts)} "
+            "ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([int(limit), int(offset)])
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_referral(r) for r in rows]
+
+    def update_referral(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        referring_provider_npi: str | None = None,
+        referring_provider_name: str | None = None,
+        referring_organization: str | None = None,
+        receiving_provider_npi: str | None = None,
+        receiving_organization_name: str | None = None,
+        specialty_code: str | None = None,
+        specialty_desc: str | None = None,
+        reason: str | None = None,
+        clinical_question: str | None = None,
+        urgency: str | None = None,
+        requested_service: str | None = None,
+        diagnosis_primary_icd: str | None = None,
+        diagnosis_primary_text: str | None = None,
+        payer_plan_id: int | None = None,
+        authorization_number: str | None = None,
+        authorization_status: str | None = None,
+        assigned_to_user_id: int | None = None,
+    ) -> Referral | None:
+        if urgency is not None and urgency not in URGENCY_VALUES:
+            raise ValueError(f"Unknown urgency: {urgency!r}")
+        if authorization_status is not None and authorization_status not in AUTH_STATUS_VALUES:
+            raise ValueError(f"Unknown authorization_status: {authorization_status!r}")
+        fields: dict[str, Any] = {
+            k: v
+            for k, v in {
+                "referring_provider_npi": referring_provider_npi,
+                "referring_provider_name": referring_provider_name,
+                "referring_organization": referring_organization,
+                "receiving_provider_npi": receiving_provider_npi,
+                "receiving_organization_name": receiving_organization_name,
+                "specialty_code": specialty_code,
+                "specialty_desc": specialty_desc,
+                "reason": reason,
+                "clinical_question": clinical_question,
+                "urgency": urgency,
+                "requested_service": requested_service,
+                "diagnosis_primary_icd": diagnosis_primary_icd,
+                "diagnosis_primary_text": diagnosis_primary_text,
+                "payer_plan_id": payer_plan_id,
+                "authorization_number": authorization_number,
+                "authorization_status": authorization_status,
+                "assigned_to_user_id": assigned_to_user_id,
+            }.items()
+            if v is not None
+        }
+        if not fields:
+            return self.get_referral(scope, referral_id)
+        clause, scope_params = scope_sql_clause(scope)
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        cursor = self._conn.execute(
+            f"UPDATE referrals SET {set_clause}, updated_at = datetime('now') "
+            f"WHERE id = ? AND {clause} AND deleted_at IS NULL",
+            [*fields.values(), referral_id, *scope_params],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_referral(scope, referral_id)
+
+    def set_referral_status(
+        self,
+        scope: Scope,
+        referral_id: int,
+        new_status: str,
+    ) -> Referral | None:
+        """Update status without validating the transition.
+
+        State-machine validation lives in ``domain.referrals.require_transition``
+        — route handlers call that first, then this. Storage stays dumb so
+        repair scripts / migrations can set any valid enum value.
+        """
+        if new_status not in STATUS_VALUES:
+            raise ValueError(f"Unknown status: {new_status!r}")
+        clause, params = scope_sql_clause(scope)
+        cursor = self._conn.execute(
+            f"UPDATE referrals SET status = ?, updated_at = datetime('now') "
+            f"WHERE id = ? AND {clause} AND deleted_at IS NULL",
+            [new_status, referral_id, *params],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_referral(scope, referral_id)
+
+    def soft_delete_referral(self, scope: Scope, referral_id: int) -> bool:
+        clause, params = scope_sql_clause(scope)
+        cursor = self._conn.execute(
+            f"UPDATE referrals SET deleted_at = datetime('now') "
+            f"WHERE id = ? AND {clause} AND deleted_at IS NULL",
+            [referral_id, *params],
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- Referral events (append-only; scope-transitive) ---
+
+    def record_referral_event(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        event_type: str,
+        from_value: str | None = None,
+        to_value: str | None = None,
+        actor_user_id: int | None = None,
+        note: str | None = None,
+    ) -> ReferralEvent | None:
+        if event_type not in EVENT_TYPE_VALUES:
+            raise ValueError(f"Unknown event_type: {event_type!r}")
+        # Scope-gate: the referral must be readable from this scope. Returning
+        # None on miss avoids leaking the existence of out-of-scope referrals.
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        cursor = self._conn.execute(
+            "INSERT INTO referral_events "
+            "(referral_id, event_type, from_value, to_value, actor_user_id, note) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (referral_id, event_type, from_value, to_value, actor_user_id, note),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM referral_events WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_referral_event(row)
+
+    def list_referral_events(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        limit: int = 100,
+    ) -> list[ReferralEvent]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM referral_events WHERE referral_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (referral_id, int(limit)),
+        ).fetchall()
+        return [_row_to_referral_event(r) for r in rows]
 
     def close(self) -> None:
         self._conn.close()
