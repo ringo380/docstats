@@ -12,7 +12,14 @@ if TYPE_CHECKING:
     from docstats.domain.audit import AuditEvent
     from docstats.domain.orgs import Membership, Organization
     from docstats.domain.patients import Patient
-    from docstats.domain.referrals import Referral, ReferralEvent
+    from docstats.domain.referrals import (
+        Referral,
+        ReferralAllergy,
+        ReferralAttachment,
+        ReferralDiagnosis,
+        ReferralEvent,
+        ReferralMedication,
+    )
     from docstats.domain.sessions import Session
     from docstats.scope import Scope
 
@@ -462,6 +469,174 @@ class StorageBase(ABC):
         *,
         limit: int = 100,
     ) -> list["ReferralEvent"]: ...
+
+    # --- Referral clinical sub-entities (scope-transitive via referral) ---
+
+    @abstractmethod
+    def add_referral_diagnosis(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        *,
+        icd10_code: str,
+        icd10_desc: str | None = None,
+        is_primary: bool = False,
+        source: str = "user_entered",
+    ) -> "ReferralDiagnosis | None": ...
+
+    @abstractmethod
+    def list_referral_diagnoses(
+        self,
+        scope: "Scope",
+        referral_id: int,
+    ) -> list["ReferralDiagnosis"]: ...
+
+    @abstractmethod
+    def update_referral_diagnosis(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        diagnosis_id: int,
+        *,
+        icd10_code: str | None = None,
+        icd10_desc: str | None = None,
+        is_primary: bool | None = None,
+        source: str | None = None,
+    ) -> "ReferralDiagnosis | None": ...
+
+    @abstractmethod
+    def delete_referral_diagnosis(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        diagnosis_id: int,
+    ) -> bool: ...
+
+    @abstractmethod
+    def add_referral_medication(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        *,
+        name: str,
+        dose: str | None = None,
+        route: str | None = None,
+        frequency: str | None = None,
+        source: str = "user_entered",
+    ) -> "ReferralMedication | None": ...
+
+    @abstractmethod
+    def list_referral_medications(
+        self,
+        scope: "Scope",
+        referral_id: int,
+    ) -> list["ReferralMedication"]: ...
+
+    @abstractmethod
+    def update_referral_medication(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        medication_id: int,
+        *,
+        name: str | None = None,
+        dose: str | None = None,
+        route: str | None = None,
+        frequency: str | None = None,
+        source: str | None = None,
+    ) -> "ReferralMedication | None": ...
+
+    @abstractmethod
+    def delete_referral_medication(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        medication_id: int,
+    ) -> bool: ...
+
+    @abstractmethod
+    def add_referral_allergy(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        *,
+        substance: str,
+        reaction: str | None = None,
+        severity: str | None = None,
+        source: str = "user_entered",
+    ) -> "ReferralAllergy | None": ...
+
+    @abstractmethod
+    def list_referral_allergies(
+        self,
+        scope: "Scope",
+        referral_id: int,
+    ) -> list["ReferralAllergy"]: ...
+
+    @abstractmethod
+    def update_referral_allergy(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        allergy_id: int,
+        *,
+        substance: str | None = None,
+        reaction: str | None = None,
+        severity: str | None = None,
+        source: str | None = None,
+    ) -> "ReferralAllergy | None": ...
+
+    @abstractmethod
+    def delete_referral_allergy(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        allergy_id: int,
+    ) -> bool: ...
+
+    @abstractmethod
+    def add_referral_attachment(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        *,
+        kind: str,
+        label: str,
+        date_of_service: str | None = None,
+        storage_ref: str | None = None,
+        checklist_only: bool = True,
+        source: str = "user_entered",
+    ) -> "ReferralAttachment | None": ...
+
+    @abstractmethod
+    def list_referral_attachments(
+        self,
+        scope: "Scope",
+        referral_id: int,
+    ) -> list["ReferralAttachment"]: ...
+
+    @abstractmethod
+    def update_referral_attachment(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        attachment_id: int,
+        *,
+        kind: str | None = None,
+        label: str | None = None,
+        date_of_service: str | None = None,
+        storage_ref: str | None = None,
+        checklist_only: bool | None = None,
+        source: str | None = None,
+    ) -> "ReferralAttachment | None": ...
+
+    @abstractmethod
+    def delete_referral_attachment(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        attachment_id: int,
+    ) -> bool: ...
 
     @abstractmethod
     def close(self) -> None: ...
