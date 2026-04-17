@@ -24,6 +24,7 @@ from docstats.domain.referrals import (
     AUTH_STATUS_VALUES,
     EVENT_TYPE_VALUES,
     EXTERNAL_SOURCE_VALUES,
+    RECEIVED_VIA_VALUES,
     SOURCE_VALUES,
     STATUS_VALUES,
     URGENCY_VALUES,
@@ -33,6 +34,7 @@ from docstats.domain.referrals import (
     ReferralDiagnosis,
     ReferralEvent,
     ReferralMedication,
+    ReferralResponse,
 )
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
@@ -252,6 +254,24 @@ def _row_to_referral_attachment(row: sqlite3.Row) -> ReferralAttachment:
     )
 
 
+def _row_to_referral_response(row: sqlite3.Row) -> ReferralResponse:
+    created = _parse_sqlite_utc(row["created_at"])
+    updated = _parse_sqlite_utc(row["updated_at"])
+    assert created is not None and updated is not None
+    return ReferralResponse(
+        id=int(row["id"]),
+        referral_id=int(row["referral_id"]),
+        appointment_date=row["appointment_date"],
+        consult_completed=bool(row["consult_completed"]),
+        recommendations_text=row["recommendations_text"],
+        attached_consult_note_ref=row["attached_consult_note_ref"],
+        received_via=row["received_via"],
+        recorded_by_user_id=row["recorded_by_user_id"],
+        created_at=created,
+        updated_at=updated,
+    )
+
+
 def _row_to_session(row: sqlite3.Row) -> Session:
     """Convert a SQLite sessions row into a Session model."""
     data_raw = row["data_json"]
@@ -375,6 +395,7 @@ class Storage(StorageBase):
         self._migrate_patients()
         self._migrate_referrals()
         self._migrate_referral_clinical()
+        self._migrate_referral_responses()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -768,6 +789,29 @@ class Storage(StorageBase):
             );
             CREATE INDEX IF NOT EXISTS idx_referral_attachments_referral
                 ON referral_attachments(referral_id, id);
+        """)
+        self._conn.commit()
+
+    def _migrate_referral_responses(self) -> None:
+        """Create the referral_responses table (Phase 1.D)."""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS referral_responses (
+                id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+                referral_id                  INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+                appointment_date             TEXT,
+                consult_completed            INTEGER NOT NULL DEFAULT 0,
+                recommendations_text         TEXT,
+                attached_consult_note_ref    TEXT,
+                received_via                 TEXT NOT NULL DEFAULT 'manual'
+                    CHECK (received_via IN ('fax','portal','email','phone','manual','api')),
+                recorded_by_user_id          INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at                   TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at                   TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_referral_responses_referral
+                ON referral_responses(referral_id, created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_referral_responses_completed
+                ON referral_responses(referral_id) WHERE consult_completed = 1;
         """)
         self._conn.commit()
 
@@ -2307,6 +2351,112 @@ class Storage(StorageBase):
         cursor = self._conn.execute(
             "DELETE FROM referral_attachments WHERE id = ? AND referral_id = ?",
             (attachment_id, referral_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- Referral responses (closed-loop) ---
+
+    def record_referral_response(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        appointment_date: str | None = None,
+        consult_completed: bool = False,
+        recommendations_text: str | None = None,
+        attached_consult_note_ref: str | None = None,
+        received_via: str = "manual",
+        recorded_by_user_id: int | None = None,
+    ) -> ReferralResponse | None:
+        if received_via not in RECEIVED_VIA_VALUES:
+            raise ValueError(f"Unknown received_via: {received_via!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        cursor = self._conn.execute(
+            "INSERT INTO referral_responses "
+            "(referral_id, appointment_date, consult_completed, recommendations_text, "
+            "attached_consult_note_ref, received_via, recorded_by_user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                referral_id,
+                appointment_date,
+                1 if consult_completed else 0,
+                recommendations_text,
+                attached_consult_note_ref,
+                received_via,
+                recorded_by_user_id,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM referral_responses WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_referral_response(row)
+
+    def list_referral_responses(self, scope: Scope, referral_id: int) -> list[ReferralResponse]:
+        if self.get_referral(scope, referral_id) is None:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM referral_responses WHERE referral_id = ? "
+            "ORDER BY created_at DESC, id DESC",
+            (referral_id,),
+        ).fetchall()
+        return [_row_to_referral_response(r) for r in rows]
+
+    def update_referral_response(
+        self,
+        scope: Scope,
+        referral_id: int,
+        response_id: int,
+        *,
+        appointment_date: str | None = None,
+        consult_completed: bool | None = None,
+        recommendations_text: str | None = None,
+        attached_consult_note_ref: str | None = None,
+        received_via: str | None = None,
+    ) -> ReferralResponse | None:
+        if received_via is not None and received_via not in RECEIVED_VIA_VALUES:
+            raise ValueError(f"Unknown received_via: {received_via!r}")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        fields: dict[str, Any] = {}
+        if appointment_date is not None:
+            fields["appointment_date"] = appointment_date
+        if consult_completed is not None:
+            fields["consult_completed"] = 1 if consult_completed else 0
+        if recommendations_text is not None:
+            fields["recommendations_text"] = recommendations_text
+        if attached_consult_note_ref is not None:
+            fields["attached_consult_note_ref"] = attached_consult_note_ref
+        if received_via is not None:
+            fields["received_via"] = received_via
+        if not fields:
+            row = self._conn.execute(
+                "SELECT * FROM referral_responses WHERE id = ? AND referral_id = ?",
+                (response_id, referral_id),
+            ).fetchone()
+            return _row_to_referral_response(row) if row else None
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        cursor = self._conn.execute(
+            f"UPDATE referral_responses SET {set_clause}, updated_at = datetime('now') "
+            "WHERE id = ? AND referral_id = ?",
+            [*fields.values(), response_id, referral_id],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM referral_responses WHERE id = ?", (response_id,)
+        ).fetchone()
+        return _row_to_referral_response(row) if row else None
+
+    def delete_referral_response(self, scope: Scope, referral_id: int, response_id: int) -> bool:
+        if self.get_referral(scope, referral_id) is None:
+            return False
+        cursor = self._conn.execute(
+            "DELETE FROM referral_responses WHERE id = ? AND referral_id = ?",
+            (response_id, referral_id),
         )
         self._conn.commit()
         return cursor.rowcount > 0

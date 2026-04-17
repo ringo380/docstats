@@ -102,6 +102,18 @@ ATTACHMENT_KIND_VALUES: Final[tuple[str, ...]] = (
     "other",
 )
 
+# Channel the closed-loop response arrived through. ``manual`` covers any
+# out-of-band entry (the coordinator heard back by phone and typed it in);
+# ``api`` is reserved for the future webhook receiver (Phase 9).
+RECEIVED_VIA_VALUES: Final[tuple[str, ...]] = (
+    "fax",
+    "portal",
+    "email",
+    "phone",
+    "manual",
+    "api",
+)
+
 # --- State machine ---
 
 # Directed adjacency list. Terminal states (completed, cancelled) have no
@@ -300,3 +312,29 @@ class ReferralAttachment(BaseModel):
     checklist_only: bool = True
     source: str = "user_entered"
     created_at: datetime
+
+
+class ReferralResponse(BaseModel):
+    """A closed-loop update on a Referral from the receiving side.
+
+    Multiple responses per referral are allowed — e.g. one when the
+    specialist's office schedules (appointment_date set, consult_completed
+    False), a later one when the consult actually happens and
+    recommendations land (consult_completed True, recommendations_text
+    populated). Marking the terminal response triggers
+    ``referrals.status → completed`` via the route layer (Phase 2+).
+
+    ``attached_consult_note_ref`` is a Phase 10 storage key placeholder —
+    until file upload ships, the recommendations live in the text column.
+    """
+
+    id: int
+    referral_id: int
+    appointment_date: str | None = None  # ISO YYYY-MM-DD
+    consult_completed: bool = False
+    recommendations_text: str | None = None
+    attached_consult_note_ref: str | None = None  # reserved for Phase 10
+    received_via: str = "manual"  # must be in RECEIVED_VIA_VALUES
+    recorded_by_user_id: int | None = None
+    created_at: datetime
+    updated_at: datetime
