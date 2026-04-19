@@ -1,6 +1,14 @@
-{# Expects: referral (Referral), completeness (CompletenessReport). #}
+{# Expects: referral (Referral), completeness (CompletenessReportV2). #}
 <section class="card">
   <h3>Completeness</h3>
+  {% if completeness.specialty_display_name or completeness.payer_display_name %}
+    <div class="sub" style="margin-bottom: 8px;">
+      Rules:
+      {% if completeness.specialty_display_name %}{{ completeness.specialty_display_name }}{% endif %}
+      {% if completeness.specialty_display_name and completeness.payer_display_name %} · {% endif %}
+      {% if completeness.payer_display_name %}{{ completeness.payer_display_name }}{% endif %}
+    </div>
+  {% endif %}
   {% if completeness.is_complete %}
     <p class="completeness-ok">✓ Required fields present.</p>
   {% else %}
@@ -16,6 +24,35 @@
       </li>
     {% endfor %}
   </ul>
+
+  {% if completeness.red_flags %}
+  <div class="red-flags">
+    <h4>⚠ Red-flag keywords</h4>
+    <ul>
+      {% for flag in completeness.red_flags %}<li>{{ flag }}</li>{% endfor %}
+    </ul>
+    <div class="sub">Consider escalating urgency.</div>
+  </div>
+  {% endif %}
+
+  {% if completeness.recommended_attachments %}
+  <div class="recommended-attachments">
+    <h4>Recommended attachments</h4>
+    <ul class="sub">
+      {% for label in completeness.recommended_attachments %}<li>{{ label }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if completeness.rejection_hints %}
+  <div class="rejection-hints">
+    <h4>Common rejection reasons</h4>
+    <ul class="sub">
+      {% for hint in completeness.rejection_hints %}<li>{{ hint }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
   <button type="button" class="btn btn-sm btn-secondary"
           hx-get="/referrals/{{ referral.id }}/completeness"
           hx-target="#completeness-panel"

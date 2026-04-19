@@ -351,6 +351,28 @@ def export_all(
         print(text)
 
 
+@app.command(name="seed-rules")
+def seed_rules(
+    overwrite: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite", help="Reset global rule rows to seed values (bump_version=False)"
+        ),
+    ] = False,
+) -> None:
+    """Seed the 12 specialty + 8 payer platform-default rule rows (idempotent).
+
+    Default behavior skips existing global rows; ``--overwrite`` restores
+    their canonical seed values without invalidating rule-engine caches.
+    """
+    from docstats.domain.seed import seed_platform_defaults as _seed
+
+    storage = _get_storage()
+    counts = _seed(storage, overwrite=overwrite)
+    for k, v in counts.items():
+        console.print(f"  {k}: {v}")
+
+
 @app.command()
 def web(
     host: Annotated[str, typer.Option("--host", "-h", help="Bind address")] = "127.0.0.1",

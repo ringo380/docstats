@@ -871,3 +871,47 @@ dl.kv dd { color: var(--text); margin: 0; }
 .event-log li:last-child { border-bottom: none; }
 .event-log .event-type { font-weight: 600; color: var(--text); }
 .event-log .sub { font-size: 0.75rem; color: var(--text-muted); }
+
+/* ── Rules-engine completeness additions (Phase 3.B) ─────────────────── */
+.red-flags,
+.recommended-attachments,
+.rejection-hints {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.red-flags h4,
+.recommended-attachments h4,
+.rejection-hints h4 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin: 0 0 6px;
+}
+.red-flags { color: var(--orange); }
+.red-flags h4 { color: var(--orange); }
+.red-flags ul { list-style: none; padding: 0; margin: 0; font-size: 0.85rem; }
+.red-flags li { padding: 2px 0; }
+.recommended-attachments ul,
+.rejection-hints ul { padding-left: 1.1rem; margin: 0; font-size: 0.78rem; }
+
+/* ── Intake-question panel (Phase 3.C) ───────────────────────────────── */
+.intake-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin: 10px 0;
+  font-size: 0.85rem;
+}
+.intake-panel h4 {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--green);
+  margin: 0 0 6px;
+}
+.intake-prompts { padding-left: 1.1rem; margin: 4px 0; }
+.intake-rejections { color: var(--orange); margin-top: 8px; }
+.intake-rejections ul { padding-left: 1.1rem; margin: 2px 0; }

@@ -76,9 +76,14 @@
       </label>
       <label>Specialty taxonomy code
         <input type="text" name="specialty_code" maxlength="16" value="{{ values.specialty_code or '' }}"
-               placeholder="e.g. 207RC0000X">
+               placeholder="e.g. 207RC0000X"
+               hx-get="/referrals/intake-questions"
+               hx-trigger="change, keyup changed delay:500ms"
+               hx-target="#intake-panel"
+               hx-swap="innerHTML">
       </label>
     </div>
+    <div id="intake-panel" class="intake-panel-wrap"></div>
     <div class="sub">Full NPPES search + typeahead arrives in Phase 2.D. For now, paste the NPI from the <a href="/" target="_blank">search page</a>.</div>
   </fieldset>
 
