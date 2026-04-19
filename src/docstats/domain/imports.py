@@ -22,7 +22,7 @@ State machine for ``csv_import_rows.status``:
 
     pending ──► valid ──► committed
        │         │
-       │         └──► skipped  (coordinator chose not to create)
+       ├────────►┴──► skipped  (coordinator chose not to create)
        ▼
      error ──► valid  (after inline edit)
          └──► skipped

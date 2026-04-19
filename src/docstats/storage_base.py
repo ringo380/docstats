@@ -449,6 +449,31 @@ class StorageBase(ABC):
     @abstractmethod
     def soft_delete_referral(self, scope: "Scope", referral_id: int) -> bool: ...
 
+    @abstractmethod
+    def clear_referral_field(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        field: str,
+    ) -> "Referral | None":
+        """Explicitly set a nullable referral field back to ``NULL``.
+
+        ``update_referral`` uses ``None``-means-skip semantics on every kwarg
+        so partial updates don't wipe unrelated fields; this is the companion
+        method for the "I really do want to clear X" case. Only these four
+        nullable fields may be cleared: ``assigned_to_user_id``,
+        ``authorization_number``, ``payer_plan_id``, ``external_reference_id``.
+        Other field names raise ``ValueError``.
+
+        ``diagnosis_primary_icd`` and ``diagnosis_primary_text`` are
+        intentionally NOT clearable via this method — they are denormalized
+        from ``referral_diagnoses`` and must be changed by flipping or
+        deleting the ``is_primary`` sub-table row (which triggers the sync
+        helper). Clearing them directly would break the "sub-table is source
+        of truth" invariant.
+        """
+        ...
+
     # --- Referral events (append-only; scope-transitive via referral) ---
 
     @abstractmethod
@@ -759,7 +784,21 @@ class StorageBase(ABC):
         *,
         organization_id: int | None = None,
         include_globals: bool = True,
-    ) -> list["SpecialtyRule"]: ...
+    ) -> list["SpecialtyRule"]:
+        """Return specialty rules, sorted by ``(specialty_code, organization_id
+        NULLS FIRST, id)`` when ``include_globals=True`` — callers can rely on
+        the global row appearing immediately before any org override with the
+        same ``specialty_code``.
+
+        Note: when ``organization_id`` is set and ``include_globals=True``,
+        both the platform default AND the org override for the same
+        ``specialty_code`` are returned (two rows, distinguished by their
+        ``organization_id`` column). The rules engine (Phase 3) is
+        responsible for merging them — typically "org override wins". Callers
+        that want only one row per ``specialty_code`` should pass
+        ``include_globals=False``.
+        """
+        ...
 
     @abstractmethod
     def update_specialty_rule(
@@ -774,7 +813,19 @@ class StorageBase(ABC):
         common_rejection_reasons: dict[str, Any] | None = None,
         source: str | None = None,
         bump_version: bool = True,
-    ) -> "SpecialtyRule | None": ...
+        overwrite: bool = False,
+    ) -> "SpecialtyRule | None":
+        """Update a specialty_rule row.
+
+        ``None`` means "leave unchanged" by default. Pass ``overwrite=True`` to
+        write every kwarg literally (including ``None``) — used by
+        :func:`docstats.domain.seed.seed_platform_defaults` so seed re-runs
+        can restore a field to ``None`` that an admin previously filled in.
+        ``bump_version`` defaults to ``True``; callers that just fix seed
+        typos or push canonical values back should pass ``False`` so
+        rule-engine caches aren't invalidated.
+        """
+        ...
 
     @abstractmethod
     def delete_specialty_rule(self, rule_id: int) -> bool: ...
@@ -805,7 +856,14 @@ class StorageBase(ABC):
         *,
         organization_id: int | None = None,
         include_globals: bool = True,
-    ) -> list["PayerRule"]: ...
+    ) -> list["PayerRule"]:
+        """Return payer rules, ordering and merge semantics identical to
+        :meth:`list_specialty_rules`. When ``include_globals=True`` with a
+        concrete ``organization_id``, both the global default AND the org
+        override for the same ``payer_key`` are returned as separate rows.
+        The rules engine (Phase 3) owns the "org override wins" merge.
+        """
+        ...
 
     @abstractmethod
     def update_payer_rule(
@@ -820,7 +878,15 @@ class StorageBase(ABC):
         notes: str | None = None,
         source: str | None = None,
         bump_version: bool = True,
-    ) -> "PayerRule | None": ...
+        overwrite: bool = False,
+    ) -> "PayerRule | None":
+        """Same shape as :meth:`update_specialty_rule`: pass ``overwrite=True``
+        to write all kwargs literally, including ``None`` (lets the seeder
+        reset e.g. Medicare's ``auth_typical_turnaround_days`` back to
+        ``None``). ``bump_version=False`` skips the version_id bump for seed
+        re-runs that restore canonical values.
+        """
+        ...
 
     @abstractmethod
     def delete_payer_rule(self, rule_id: int) -> bool: ...
