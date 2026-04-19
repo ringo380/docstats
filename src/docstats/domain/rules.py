@@ -16,10 +16,14 @@ The engine is framework-free — no FastAPI / Jinja imports — so tests can
 exercise it in isolation. Routes wire it in via ``rules_based_completeness``
 in ``routes/referrals.py``.
 
-Caching note: every rule row carries a ``version_id`` that admins bump on
-edit. ``ResolvedRuleSet.version_key`` is a stable string derived from the
-specialty + payer version_ids — callers that want to memoize the evaluation
-per-referral-per-ruleset can key off it.
+Memoization is intentionally NOT implemented in this module — routes re-run
+``evaluate`` per request, and the cost is bounded by the DB-level
+``specialty_code=`` / ``payer_key=`` narrowing on ``list_*_rules`` (at most
+2 rows fetched per resolve). If request volume ever makes this a hotspot,
+key a module-level LRU cache on ``(referral.id, referral.updated_at,
+specialty_rule.id, specialty_rule.version_id, payer_rule.id,
+payer_rule.version_id)`` — the rule rows' ``version_id`` bumps on every
+admin edit, so the cache invalidates cleanly without manual busting.
 """
 
 from __future__ import annotations
@@ -66,21 +70,6 @@ class ResolvedRuleSet:
     specialty: SpecialtyRule | None
     payer: PayerRule | None
 
-    @property
-    def version_key(self) -> str:
-        """Cache key combining both rules' version_ids.
-
-        Shape: ``"s{id}:{v}|p{id}:{v}"``. Missing rules render as ``"s-"``
-        / ``"p-"`` so the key stays stable when only one side resolves.
-        """
-        s = (
-            f"s{self.specialty.id}:{self.specialty.version_id}"
-            if self.specialty is not None
-            else "s-"
-        )
-        p = f"p{self.payer.id}:{self.payer.version_id}" if self.payer is not None else "p-"
-        return f"{s}|{p}"
-
 
 class CompletenessReportV2(BaseModel):
     """Rules-aware completeness report.
@@ -114,12 +103,13 @@ class CompletenessReportV2(BaseModel):
 
     @property
     def is_complete(self) -> bool:
-        """True when no required items are missing AND no red-flag keyword hit.
+        """True when no required items are missing.
 
-        Red flags don't block completeness at the "all required present"
-        level, but they escalate the urgency — a red-flagged referral in
-        "ready" status is almost always a misconfiguration. Keep the strict
-        reading for now and let the UI surface red flags independently.
+        Red flags are reported via :attr:`red_flags` and surface as a separate
+        UI section — they do NOT gate completeness, since a red-flag match
+        triggers an urgency escalation rather than a missing-data block. Keep
+        the strict "all required present" reading here; let the UI decide
+        what to do with the escalation signal.
         """
         return not self.missing_required
 
@@ -131,19 +121,20 @@ def resolve_specialty_rule(
 ) -> SpecialtyRule | None:
     """Look up the effective specialty rule.
 
-    ``list_specialty_rules`` orders ``(specialty_code, organization_id NULLS
-    FIRST, id)`` — so for a given code, any platform-default row appears
-    before an org-override row. "Org override wins" is then just
-    dict-last-assignment into a code→row map.
+    Passes ``specialty_code`` to ``list_specialty_rules`` so the DB narrows to
+    at most two rows (global + any org override). Storage contract orders
+    ``(specialty_code, organization_id NULLS FIRST, id)``, so the last row in
+    the filtered result is the effective rule (org override if present,
+    global otherwise).
     """
     if not specialty_code:
         return None
-    rows = storage.list_specialty_rules(organization_id=organization_id, include_globals=True)
-    effective: dict[str, SpecialtyRule] = {}
-    for row in rows:
-        if row.specialty_code == specialty_code:
-            effective[row.specialty_code] = row
-    return effective.get(specialty_code)
+    rows = storage.list_specialty_rules(
+        organization_id=organization_id,
+        include_globals=True,
+        specialty_code=specialty_code,
+    )
+    return rows[-1] if rows else None
 
 
 def resolve_payer_rule(
@@ -151,16 +142,21 @@ def resolve_payer_rule(
     organization_id: int | None,
     payer_plan: InsurancePlan | None,
 ) -> PayerRule | None:
-    """Derive ``payer_key`` from the plan row and look up the rule."""
+    """Derive ``payer_key`` from the plan row and look up the rule.
+
+    ``payer_key`` is ``"{payer_name}|{plan_type}"`` — the canonical seed
+    format. ``create_insurance_plan`` rejects ``|`` in ``payer_name`` at the
+    storage boundary so the derived key is unambiguous.
+    """
     if payer_plan is None:
         return None
     payer_key = f"{payer_plan.payer_name}|{payer_plan.plan_type}"
-    rows = storage.list_payer_rules(organization_id=organization_id, include_globals=True)
-    effective: dict[str, PayerRule] = {}
-    for row in rows:
-        if row.payer_key == payer_key:
-            effective[row.payer_key] = row
-    return effective.get(payer_key)
+    rows = storage.list_payer_rules(
+        organization_id=organization_id,
+        include_globals=True,
+        payer_key=payer_key,
+    )
+    return rows[-1] if rows else None
 
 
 def resolve_ruleset(

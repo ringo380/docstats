@@ -2825,6 +2825,11 @@ class Storage(StorageBase):
         scope_sql_clause(scope)  # raises on anonymous
         if plan_type not in PLAN_TYPE_VALUES:
             raise ValueError(f"Unknown plan_type: {plan_type!r}")
+        # payer_name is embedded into payer_key as "{payer_name}|{plan_type}"
+        # by the rules engine — reject pipe characters so derived keys remain
+        # unambiguous. No real US payer name contains this character.
+        if "|" in payer_name:
+            raise ValueError("payer_name must not contain the '|' character")
         cursor = self._conn.execute(
             """INSERT INTO insurance_plans
                (scope_user_id, scope_organization_id, payer_name, plan_name, plan_type,
@@ -2981,25 +2986,32 @@ class Storage(StorageBase):
         *,
         organization_id: int | None = None,
         include_globals: bool = True,
+        specialty_code: str | None = None,
     ) -> list[SpecialtyRule]:
+        code_clause = " AND specialty_code = ?" if specialty_code is not None else ""
+        code_params: tuple = (specialty_code,) if specialty_code is not None else ()
         if organization_id is None:
             # Just globals.
             rows = self._conn.execute(
-                "SELECT * FROM specialty_rules WHERE organization_id IS NULL "
-                "ORDER BY specialty_code ASC, id ASC"
+                "SELECT * FROM specialty_rules WHERE organization_id IS NULL"
+                + code_clause
+                + " ORDER BY specialty_code ASC, id ASC",
+                code_params,
             ).fetchall()
         elif include_globals:
             rows = self._conn.execute(
                 "SELECT * FROM specialty_rules "
-                "WHERE organization_id IS NULL OR organization_id = ? "
-                "ORDER BY specialty_code ASC, organization_id NULLS FIRST, id ASC",
-                (organization_id,),
+                "WHERE (organization_id IS NULL OR organization_id = ?)"
+                + code_clause
+                + " ORDER BY specialty_code ASC, organization_id NULLS FIRST, id ASC",
+                (organization_id, *code_params),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT * FROM specialty_rules WHERE organization_id = ? "
-                "ORDER BY specialty_code ASC, id ASC",
-                (organization_id,),
+                "SELECT * FROM specialty_rules WHERE organization_id = ?"
+                + code_clause
+                + " ORDER BY specialty_code ASC, id ASC",
+                (organization_id, *code_params),
             ).fetchall()
         return [_row_to_specialty_rule(r) for r in rows]
 
@@ -3134,24 +3146,31 @@ class Storage(StorageBase):
         *,
         organization_id: int | None = None,
         include_globals: bool = True,
+        payer_key: str | None = None,
     ) -> list[PayerRule]:
+        key_clause = " AND payer_key = ?" if payer_key is not None else ""
+        key_params: tuple = (payer_key,) if payer_key is not None else ()
         if organization_id is None:
             rows = self._conn.execute(
-                "SELECT * FROM payer_rules WHERE organization_id IS NULL "
-                "ORDER BY payer_key ASC, id ASC"
+                "SELECT * FROM payer_rules WHERE organization_id IS NULL"
+                + key_clause
+                + " ORDER BY payer_key ASC, id ASC",
+                key_params,
             ).fetchall()
         elif include_globals:
             rows = self._conn.execute(
                 "SELECT * FROM payer_rules "
-                "WHERE organization_id IS NULL OR organization_id = ? "
-                "ORDER BY payer_key ASC, organization_id NULLS FIRST, id ASC",
-                (organization_id,),
+                "WHERE (organization_id IS NULL OR organization_id = ?)"
+                + key_clause
+                + " ORDER BY payer_key ASC, organization_id NULLS FIRST, id ASC",
+                (organization_id, *key_params),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT * FROM payer_rules WHERE organization_id = ? "
-                "ORDER BY payer_key ASC, id ASC",
-                (organization_id,),
+                "SELECT * FROM payer_rules WHERE organization_id = ?"
+                + key_clause
+                + " ORDER BY payer_key ASC, id ASC",
+                (organization_id, *key_params),
             ).fetchall()
         return [_row_to_payer_rule(r) for r in rows]
 

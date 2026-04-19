@@ -40,16 +40,27 @@ logger = logging.getLogger(__name__)
 # --- Lifespan: idempotent boot-time seeding of platform-default rules.
 # Replaces the deprecated @app.on_event("startup") hook. Failure is
 # non-fatal — a Supabase blip during deploy shouldn't knock the web up.
+#
+# Tests that use ``TestClient(app)`` trigger the lifespan, which calls
+# ``get_storage()`` directly (lifespan runs BEFORE per-request dependency
+# overrides, so ``app.dependency_overrides[get_storage]`` doesn't apply
+# here). To prevent real-DB mutation from test runs, set
+# ``DOCSTATS_SKIP_BOOT_SEED=1`` in the test environment. Route-scoped
+# tests don't need the lifespan to seed anyway — they either stub the
+# storage via DI or seed explicitly via ``seed_platform_defaults``.
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    try:
-        storage = get_storage()
-        counts = seed_platform_defaults(storage)
-        logger.info("seeded platform defaults: %s", counts)
-    except Exception:
-        logger.exception("seed_platform_defaults failed at boot (continuing)")
+    if os.environ.get("DOCSTATS_SKIP_BOOT_SEED") == "1":
+        logger.debug("DOCSTATS_SKIP_BOOT_SEED=1 — skipping boot-time rule seed")
+    else:
+        try:
+            storage = get_storage()
+            counts = seed_platform_defaults(storage)
+            logger.info("seeded platform defaults: %s", counts)
+        except Exception:
+            logger.exception("seed_platform_defaults failed at boot (continuing)")
     yield
 
 

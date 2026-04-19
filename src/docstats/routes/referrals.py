@@ -291,7 +291,7 @@ async def referral_create(
                 from_value=urgency,
                 to_value=final_urgency,
                 actor_user_id=current_user["id"],
-                note=f"urgency (auto-escalated: red flags {red_flag_hits})",
+                note=f"urgency (auto-escalated: red flags {', '.join(red_flag_hits)})",
             )
         except Exception:
             logger.exception("Failed to record auto-urgency event for referral %s", referral.id)

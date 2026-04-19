@@ -785,6 +785,7 @@ class StorageBase(ABC):
         *,
         organization_id: int | None = None,
         include_globals: bool = True,
+        specialty_code: str | None = None,
     ) -> list["SpecialtyRule"]:
         """Return specialty rules, sorted by ``(specialty_code, organization_id
         NULLS FIRST, id)`` when ``include_globals=True`` — callers can rely on
@@ -798,6 +799,10 @@ class StorageBase(ABC):
         responsible for merging them — typically "org override wins". Callers
         that want only one row per ``specialty_code`` should pass
         ``include_globals=False``.
+
+        ``specialty_code`` narrows the result at the DB level (at most two rows
+        — the global + any org override) so the rules engine doesn't scan the
+        full rule set per resolve. Omit to return the full catalog.
         """
         ...
 
@@ -857,12 +862,16 @@ class StorageBase(ABC):
         *,
         organization_id: int | None = None,
         include_globals: bool = True,
+        payer_key: str | None = None,
     ) -> list["PayerRule"]:
         """Return payer rules, ordering and merge semantics identical to
         :meth:`list_specialty_rules`. When ``include_globals=True`` with a
         concrete ``organization_id``, both the global default AND the org
         override for the same ``payer_key`` are returned as separate rows.
         The rules engine (Phase 3) owns the "org override wins" merge.
+
+        ``payer_key`` narrows the result at the DB level (mirrors the
+        ``specialty_code`` kwarg on ``list_specialty_rules``).
         """
         ...
 

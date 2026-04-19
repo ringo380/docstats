@@ -238,28 +238,6 @@ def test_evaluate_payer_no_hint_when_auth_present(seeded_storage: Storage, user_
     assert not any("typically requires a referral" in hint for hint in report.rejection_hints)
 
 
-# --- ResolvedRuleSet.version_key ---
-
-
-def test_version_key_stable_when_one_side_missing() -> None:
-    rs = ResolvedRuleSet(specialty=None, payer=None)
-    assert rs.version_key == "s-|p-"
-
-
-def test_version_key_changes_on_specialty_version_bump(
-    seeded_storage: Storage,
-) -> None:
-    cardio_v1 = resolve_specialty_rule(seeded_storage, None, "207RC0000X")
-    assert cardio_v1 is not None
-    rs_v1 = ResolvedRuleSet(specialty=cardio_v1, payer=None)
-    # Bump the rule's version via an admin-style update.
-    seeded_storage.update_specialty_rule(cardio_v1.id, display_name="Cardiology v2")
-    cardio_v2 = resolve_specialty_rule(seeded_storage, None, "207RC0000X")
-    assert cardio_v2 is not None
-    rs_v2 = ResolvedRuleSet(specialty=cardio_v2, payer=None)
-    assert rs_v1.version_key != rs_v2.version_key
-
-
 # --- resolve_payer_rule ---
 
 
@@ -283,6 +261,20 @@ def test_resolve_payer_rule_none_plan() -> None:
     assert resolve_payer_rule(None, None, None) is None  # type: ignore[arg-type]
 
 
+def test_create_insurance_plan_rejects_pipe_in_payer_name(
+    seeded_storage: Storage, user_id: int
+) -> None:
+    """payer_key is derived as ``{payer_name}|{plan_type}``; reject ``|`` in
+    payer_name at the storage boundary so the derived key stays unambiguous."""
+    scope = Scope(user_id=user_id)
+    with pytest.raises(ValueError, match=r"'\|'"):
+        seeded_storage.create_insurance_plan(
+            scope,
+            payer_name="Evil|Injected",
+            plan_type="ppo",
+        )
+
+
 # --- Boot-time seeding (Phase 3.D) ---
 
 
@@ -290,10 +282,16 @@ def test_lifespan_calls_seed_platform_defaults(monkeypatch):
     """web.py's lifespan context calls seed_platform_defaults. We can't
     route the call through a dep override (startup runs before request DI),
     so we patch the module-level import and assert the hook fired.
+
+    conftest sets ``DOCSTATS_SKIP_BOOT_SEED=1`` to prevent accidental
+    real-DB mutation; unset it for this test so the lifespan actually runs
+    the seed path.
     """
     from fastapi.testclient import TestClient
 
     from docstats import web as web_module
+
+    monkeypatch.delenv("DOCSTATS_SKIP_BOOT_SEED", raising=False)
 
     called: dict[str, int] = {"count": 0}
 
@@ -320,6 +318,8 @@ def test_lifespan_seed_failure_is_non_fatal(monkeypatch, caplog):
 
     from docstats import web as web_module
 
+    monkeypatch.delenv("DOCSTATS_SKIP_BOOT_SEED", raising=False)
+
     def _boom(_storage, *, overwrite: bool = False):
         raise RuntimeError("supabase 500")
 
@@ -328,6 +328,26 @@ def test_lifespan_seed_failure_is_non_fatal(monkeypatch, caplog):
         with TestClient(web_module.app):
             pass
     assert any("seed_platform_defaults failed" in rec.message for rec in caplog.records)
+
+
+def test_lifespan_skip_env_var(monkeypatch):
+    """DOCSTATS_SKIP_BOOT_SEED=1 bypasses the seed call entirely."""
+    from fastapi.testclient import TestClient
+
+    from docstats import web as web_module
+
+    monkeypatch.setenv("DOCSTATS_SKIP_BOOT_SEED", "1")
+
+    called: dict[str, int] = {"count": 0}
+
+    def _fake_seed(_storage, *, overwrite: bool = False) -> dict[str, int]:
+        called["count"] += 1
+        return {}
+
+    monkeypatch.setattr(web_module, "seed_platform_defaults", _fake_seed)
+    with TestClient(web_module.app):
+        pass
+    assert called["count"] == 0
 
 
 def test_cli_seed_rules_command(tmp_path, monkeypatch):

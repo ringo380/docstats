@@ -2293,6 +2293,8 @@ class PostgresStorage(StorageBase):
         self._require_scoped(scope)
         if plan_type not in PLAN_TYPE_VALUES:
             raise ValueError(f"Unknown plan_type: {plan_type!r}")
+        if "|" in payer_name:
+            raise ValueError("payer_name must not contain the '|' character")
         now = _now_iso()
         row = {
             "scope_user_id": scope.user_id if scope.is_solo else None,
@@ -2420,8 +2422,11 @@ class PostgresStorage(StorageBase):
         *,
         organization_id: int | None = None,
         include_globals: bool = True,
+        specialty_code: str | None = None,
     ) -> list[SpecialtyRule]:
         query = self._t("specialty_rules").select("*")
+        if specialty_code is not None:
+            query = query.eq("specialty_code", specialty_code)
         if organization_id is None:
             query = query.is_("organization_id", None)
             result = query.order("specialty_code").order("id").execute()
@@ -2560,8 +2565,11 @@ class PostgresStorage(StorageBase):
         *,
         organization_id: int | None = None,
         include_globals: bool = True,
+        payer_key: str | None = None,
     ) -> list[PayerRule]:
         query = self._t("payer_rules").select("*")
+        if payer_key is not None:
+            query = query.eq("payer_key", payer_key)
         if organization_id is None:
             query = query.is_("organization_id", None)
             result = query.order("payer_key").order("id").execute()
