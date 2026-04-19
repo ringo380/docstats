@@ -1410,8 +1410,10 @@ class PostgresStorage(StorageBase):
         # Seed a ``created`` event so the timeline is complete from t=0.
         # Postgres doesn't give us a single-statement transactional wrapper
         # over the REST API, so if this event insert fails we compensate by
-        # soft-deleting the referral we just wrote. Callers see an exception
-        # and no dangling referral-without-timeline.
+        # soft-deleting the referral we just wrote. The compensation itself
+        # can fail too (second network glitch) — swallow that secondary
+        # error with ``logger.exception`` so the caller still sees the
+        # ORIGINAL event-insert failure, which is what broke their call.
         try:
             self._t("referral_events").insert(
                 {
@@ -1423,7 +1425,16 @@ class PostgresStorage(StorageBase):
                 }
             ).execute()
         except Exception:
-            self._t("referrals").update({"deleted_at": _now_iso()}).eq("id", referral.id).execute()
+            try:
+                self._t("referrals").update({"deleted_at": _now_iso()}).eq(
+                    "id", referral.id
+                ).execute()
+            except Exception:
+                logger.exception(
+                    "create_referral compensation soft-delete failed for id=%s; "
+                    "referral row may be left without a timeline event",
+                    referral.id,
+                )
             raise
         return referral
 
@@ -1557,14 +1568,16 @@ class PostgresStorage(StorageBase):
         result = query.execute()
         return bool(result.data)
 
+    # See SQLite ``Storage._CLEARABLE_REFERRAL_FIELDS`` for the invariant
+    # this set protects — in particular ``diagnosis_primary_icd`` /
+    # ``diagnosis_primary_text`` MUST flow through the sub-table so
+    # ``_sync_referral_primary_diagnosis`` keeps them in lockstep.
     _CLEARABLE_REFERRAL_FIELDS: frozenset[str] = frozenset(
         {
             "assigned_to_user_id",
             "authorization_number",
             "payer_plan_id",
             "external_reference_id",
-            "diagnosis_primary_icd",
-            "diagnosis_primary_text",
         }
     )
 
@@ -1638,10 +1651,14 @@ class PostgresStorage(StorageBase):
 
     def _sync_referral_primary_diagnosis(self, referral_id: int) -> None:
         """Re-sync ``referrals.diagnosis_primary_{icd,text}`` to match the
-        current ``is_primary=True`` row in ``referral_diagnoses``. Called
-        after every diagnosis mutation so the denormalized headline never
-        drifts from the source-of-truth sub-table. Clears the headline when
-        no primary row exists.
+        current ``is_primary=True`` row in ``referral_diagnoses``. Invoked
+        whenever the primary bit on a diagnosis row is touched — add with
+        ``is_primary=True``, update that toggles primary or edits the
+        currently-primary row's code/desc, or delete of the currently-primary
+        row. If no primary row exists, the headline is cleared. (Postgres
+        REST has no single-statement transaction spanning both tables, so
+        there's a small atomicity gap between the sub-table write and this
+        sync — SQLite wraps both in ``with self._conn:``.)
         """
         primary = (
             self._t("referral_diagnoses")
@@ -2440,7 +2457,21 @@ class PostgresStorage(StorageBase):
             raise ValueError(f"Unknown source: {source!r}")
         fields: dict[str, Any] = {}
         if overwrite:
-            # Write every JSONB / text kwarg literally, including None.
+            # Every JSONB column on ``specialty_rules`` is NOT NULL in the
+            # schema. Refuse None eagerly instead of letting PostgREST reject
+            # the update with a cryptic constraint error.
+            for col_name, col_val in (
+                ("required_fields", required_fields),
+                ("recommended_attachments", recommended_attachments),
+                ("intake_questions", intake_questions),
+                ("urgency_red_flags", urgency_red_flags),
+                ("common_rejection_reasons", common_rejection_reasons),
+            ):
+                if col_val is None:
+                    raise ValueError(
+                        f"overwrite=True requires a non-None value for {col_name!r} "
+                        "(column is NOT NULL in the schema)"
+                    )
             fields["display_name"] = display_name
             fields["required_fields"] = required_fields
             fields["recommended_attachments"] = recommended_attachments
@@ -2562,9 +2593,22 @@ class PostgresStorage(StorageBase):
             raise ValueError(f"Unknown source: {source!r}")
         fields: dict[str, Any] = {}
         if overwrite:
+            # ``referral_required``, ``auth_required_services``, ``records_required``
+            # are NOT NULL on ``payer_rules``. Refuse None eagerly.
+            for col_name, col_val in (
+                ("referral_required", referral_required),
+                ("auth_required_services", auth_required_services),
+                ("records_required", records_required),
+            ):
+                if col_val is None:
+                    raise ValueError(
+                        f"overwrite=True requires a non-None value for {col_name!r} "
+                        "(column is NOT NULL in the schema)"
+                    )
             fields["display_name"] = display_name
             fields["referral_required"] = referral_required
             fields["auth_required_services"] = auth_required_services
+            # ``auth_typical_turnaround_days`` is nullable; ``notes`` is nullable.
             fields["auth_typical_turnaround_days"] = auth_typical_turnaround_days
             fields["records_required"] = records_required
             fields["notes"] = notes

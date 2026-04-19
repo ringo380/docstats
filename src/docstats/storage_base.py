@@ -460,10 +460,17 @@ class StorageBase(ABC):
 
         ``update_referral`` uses ``None``-means-skip semantics on every kwarg
         so partial updates don't wipe unrelated fields; this is the companion
-        method for the "I really do want to clear X" case. Only nullable
-        fields may be cleared: ``assigned_to_user_id``, ``authorization_number``,
-        ``payer_plan_id``, ``external_reference_id``, ``diagnosis_primary_icd``,
-        ``diagnosis_primary_text``. Other fields raise ``ValueError``.
+        method for the "I really do want to clear X" case. Only these four
+        nullable fields may be cleared: ``assigned_to_user_id``,
+        ``authorization_number``, ``payer_plan_id``, ``external_reference_id``.
+        Other field names raise ``ValueError``.
+
+        ``diagnosis_primary_icd`` and ``diagnosis_primary_text`` are
+        intentionally NOT clearable via this method — they are denormalized
+        from ``referral_diagnoses`` and must be changed by flipping or
+        deleting the ``is_primary`` sub-table row (which triggers the sync
+        helper). Clearing them directly would break the "sub-table is source
+        of truth" invariant.
         """
         ...
 

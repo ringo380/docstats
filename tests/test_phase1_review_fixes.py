@@ -270,6 +270,74 @@ def test_clear_referral_field_rejects_non_clearable(
         storage.clear_referral_field(scope_a, referral_a, "status")
 
 
+def test_clear_referral_field_rejects_denormalized_headline(
+    storage: Storage, scope_a: Scope, referral_a: int
+) -> None:
+    """``diagnosis_primary_icd`` / ``diagnosis_primary_text`` must NOT be
+    clearable via ``clear_referral_field`` — they are denormalized from
+    ``referral_diagnoses`` and clearing them directly would leave an
+    ``is_primary=True`` sub-table row disagreeing with a NULL headline,
+    silently violating the "sub-table is source of truth" invariant.
+    Callers who want to drop the primary diagnosis must delete or flip
+    the sub-table row instead, which routes through the sync helper.
+    """
+    storage.add_referral_diagnosis(scope_a, referral_a, icd10_code="I10", is_primary=True)
+    with pytest.raises(ValueError, match="not clearable"):
+        storage.clear_referral_field(scope_a, referral_a, "diagnosis_primary_icd")
+    with pytest.raises(ValueError, match="not clearable"):
+        storage.clear_referral_field(scope_a, referral_a, "diagnosis_primary_text")
+    # Headline still matches the sub-table.
+    ref = storage.get_referral(scope_a, referral_a)
+    assert ref is not None
+    assert ref.diagnosis_primary_icd == "I10"
+
+
+def test_update_specialty_rule_overwrite_rejects_none_notnull(
+    storage: Storage,
+) -> None:
+    """``overwrite=True`` must eagerly raise ``ValueError`` when any
+    NOT-NULL JSONB kwarg is None. Without this check, we'd hit a DB
+    constraint error mid-statement with a much worse diagnostic.
+    """
+    seed_platform_defaults(storage)
+    cardio = next(
+        r
+        for r in storage.list_specialty_rules(organization_id=None)
+        if r.specialty_code == "207RC0000X"
+    )
+    with pytest.raises(ValueError, match="NOT NULL"):
+        storage.update_specialty_rule(
+            cardio.id,
+            display_name="x",
+            required_fields={"fields": []},
+            recommended_attachments={"kinds": []},
+            intake_questions={"prompts": []},
+            urgency_red_flags=None,  # NOT NULL — must reject
+            common_rejection_reasons={"reasons": []},
+            overwrite=True,
+        )
+
+
+def test_update_payer_rule_overwrite_rejects_none_notnull(
+    storage: Storage,
+) -> None:
+    seed_platform_defaults(storage)
+    medicare = next(
+        r
+        for r in storage.list_payer_rules(organization_id=None)
+        if r.payer_key == "Medicare|medicare"
+    )
+    with pytest.raises(ValueError, match="NOT NULL"):
+        storage.update_payer_rule(
+            medicare.id,
+            display_name="x",
+            referral_required=None,  # NOT NULL — must reject
+            auth_required_services={"services": []},
+            records_required={"kinds": []},
+            overwrite=True,
+        )
+
+
 def test_clear_referral_field_scope_isolated(
     storage: Storage, scope_a: Scope, scope_b: Scope, referral_b: int
 ) -> None:
@@ -322,3 +390,53 @@ def test_list_specialty_rules_without_globals_returns_org_only(
     # Only the org override, no platform defaults.
     assert all(r.organization_id == org.id for r in rules)
     assert len(rules) == 1
+
+
+def test_list_specialty_rules_naive_dict_caller_gets_override(
+    storage: Storage,
+) -> None:
+    """Pins the ordering guarantee for the Phase 3 rules engine's typical
+    merge pattern: ``{r.specialty_code: r for r in rules}`` relies on
+    dict-last-wins, and the storage layer guarantees the org override
+    appears *after* the global row for the same code (NULLS FIRST on
+    ``organization_id``). If this test regresses, the rules engine will
+    silently apply the wrong rule.
+    """
+    seed_platform_defaults(storage)
+    org = storage.create_organization(name="Test Clinic 3", slug="test-clinic-3")
+    storage.create_specialty_rule(
+        specialty_code="207RC0000X",
+        organization_id=org.id,
+        display_name="Cardiology (override wins)",
+        source="admin_override",
+    )
+    rules = storage.list_specialty_rules(organization_id=org.id, include_globals=True)
+    # Naive "last wins" merge — dict comprehension keeps the final value
+    # seen for each key. With NULLS FIRST ordering, the org override is
+    # last, so it wins.
+    merged = {r.specialty_code: r for r in rules}
+    cardio = merged["207RC0000X"]
+    assert cardio.organization_id == org.id
+    assert cardio.display_name == "Cardiology (override wins)"
+    assert cardio.source == "admin_override"
+
+
+def test_list_payer_rules_naive_dict_caller_gets_override(
+    storage: Storage,
+) -> None:
+    """Same contract as list_specialty_rules: naive dict-last-wins merge
+    must select the org override, not the platform default."""
+    seed_platform_defaults(storage)
+    org = storage.create_organization(name="Test Clinic 4", slug="test-clinic-4")
+    storage.create_payer_rule(
+        payer_key="Medicare|medicare",
+        organization_id=org.id,
+        display_name="Medicare (local override)",
+        source="admin_override",
+    )
+    rules = storage.list_payer_rules(organization_id=org.id, include_globals=True)
+    merged = {r.payer_key: r for r in rules}
+    medicare = merged["Medicare|medicare"]
+    assert medicare.organization_id == org.id
+    assert medicare.display_name == "Medicare (local override)"
+    assert medicare.source == "admin_override"
