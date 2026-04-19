@@ -1149,13 +1149,21 @@ class PostgresStorage(StorageBase):
         adds ``scope_user_id`` / ``scope_organization_id`` filters for the
         active mode (solo / org).
         """
+        self._require_scoped(scope)
         if scope.is_solo:
             return query.eq("scope_user_id", scope.user_id).is_("scope_organization_id", None)
-        if scope.is_org:
-            return query.eq("scope_organization_id", scope.organization_id).is_(
-                "scope_user_id", None
-            )
-        raise ScopeRequired("Anonymous scope is not allowed for scoped entities")
+        # is_org is the only remaining possibility after _require_scoped.
+        return query.eq("scope_organization_id", scope.organization_id).is_("scope_user_id", None)
+
+    @staticmethod
+    def _require_scoped(scope: Scope) -> None:
+        """Single choke-point for the "insert / write paths need a non-anon
+        scope" rule. Use this instead of inline ``if scope.is_anonymous``
+        checks so the predicate lives in one place (mirrors the SQLite
+        backend's ``scope_sql_clause(scope)`` raise-on-anon behavior).
+        """
+        if scope.is_anonymous:
+            raise ScopeRequired("Anonymous scope is not allowed for scoped entities")
 
     def create_patient(
         self,
@@ -1181,8 +1189,7 @@ class PostgresStorage(StorageBase):
         notes: str | None = None,
         created_by_user_id: int | None = None,
     ) -> Patient:
-        if scope.is_anonymous:
-            raise ScopeRequired("Anonymous scope is not allowed for scoped entities")
+        self._require_scoped(scope)
         row: dict[str, Any] = {
             "scope_user_id": scope.user_id if scope.is_solo else None,
             "scope_organization_id": scope.organization_id if scope.is_org else None,
@@ -1354,8 +1361,7 @@ class PostgresStorage(StorageBase):
         external_source: str = "manual",
         created_by_user_id: int | None = None,
     ) -> Referral:
-        if scope.is_anonymous:
-            raise ScopeRequired("Anonymous scope is not allowed for scoped entities")
+        self._require_scoped(scope)
         if urgency not in URGENCY_VALUES:
             raise ValueError(f"Unknown urgency: {urgency!r}")
         if authorization_status not in AUTH_STATUS_VALUES:
@@ -1366,6 +1372,10 @@ class PostgresStorage(StorageBase):
             raise ValueError(f"Unknown external_source: {external_source!r}")
         if self.get_patient(scope, patient_id) is None:
             raise ValueError(f"Patient {patient_id} not found in scope or soft-deleted")
+        if payer_plan_id is not None and self.get_insurance_plan(scope, payer_plan_id) is None:
+            raise ValueError(
+                f"payer_plan_id={payer_plan_id} not accessible from the caller's scope"
+            )
 
         row: dict[str, Any] = {
             "scope_user_id": scope.user_id if scope.is_solo else None,
@@ -1398,15 +1408,23 @@ class PostgresStorage(StorageBase):
         result = self._t("referrals").insert(row).execute()
         referral = _row_to_referral(result.data[0])
         # Seed a ``created`` event so the timeline is complete from t=0.
-        self._t("referral_events").insert(
-            {
-                "referral_id": referral.id,
-                "event_type": "created",
-                "to_value": status,
-                "actor_user_id": created_by_user_id,
-                "created_at": _now_iso(),
-            }
-        ).execute()
+        # Postgres doesn't give us a single-statement transactional wrapper
+        # over the REST API, so if this event insert fails we compensate by
+        # soft-deleting the referral we just wrote. Callers see an exception
+        # and no dangling referral-without-timeline.
+        try:
+            self._t("referral_events").insert(
+                {
+                    "referral_id": referral.id,
+                    "event_type": "created",
+                    "to_value": status,
+                    "actor_user_id": created_by_user_id,
+                    "created_at": _now_iso(),
+                }
+            ).execute()
+        except Exception:
+            self._t("referrals").update({"deleted_at": _now_iso()}).eq("id", referral.id).execute()
+            raise
         return referral
 
     def get_referral(self, scope: Scope, referral_id: int) -> Referral | None:
@@ -1471,6 +1489,10 @@ class PostgresStorage(StorageBase):
             raise ValueError(f"Unknown urgency: {urgency!r}")
         if authorization_status is not None and authorization_status not in AUTH_STATUS_VALUES:
             raise ValueError(f"Unknown authorization_status: {authorization_status!r}")
+        if payer_plan_id is not None and self.get_insurance_plan(scope, payer_plan_id) is None:
+            raise ValueError(
+                f"payer_plan_id={payer_plan_id} not accessible from the caller's scope"
+            )
         fields: dict[str, Any] = {
             k: v
             for k, v in {
@@ -1535,6 +1557,32 @@ class PostgresStorage(StorageBase):
         result = query.execute()
         return bool(result.data)
 
+    _CLEARABLE_REFERRAL_FIELDS: frozenset[str] = frozenset(
+        {
+            "assigned_to_user_id",
+            "authorization_number",
+            "payer_plan_id",
+            "external_reference_id",
+            "diagnosis_primary_icd",
+            "diagnosis_primary_text",
+        }
+    )
+
+    def clear_referral_field(self, scope: Scope, referral_id: int, field: str) -> Referral | None:
+        if field not in self._CLEARABLE_REFERRAL_FIELDS:
+            raise ValueError(f"Field {field!r} is not clearable on a referral")
+        query = (
+            self._t("referrals")
+            .update({field: None, "updated_at": _now_iso()})
+            .eq("id", referral_id)
+            .is_("deleted_at", None)
+        )
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        if not result.data:
+            return None
+        return _row_to_referral(result.data[0])
+
     # --- Referral events (append-only; scope-transitive) ---
 
     def record_referral_event(
@@ -1588,6 +1636,39 @@ class PostgresStorage(StorageBase):
 
     # --- Diagnoses ---
 
+    def _sync_referral_primary_diagnosis(self, referral_id: int) -> None:
+        """Re-sync ``referrals.diagnosis_primary_{icd,text}`` to match the
+        current ``is_primary=True`` row in ``referral_diagnoses``. Called
+        after every diagnosis mutation so the denormalized headline never
+        drifts from the source-of-truth sub-table. Clears the headline when
+        no primary row exists.
+        """
+        primary = (
+            self._t("referral_diagnoses")
+            .select("icd10_code,icd10_desc")
+            .eq("referral_id", referral_id)
+            .eq("is_primary", True)
+            .limit(1)
+            .execute()
+        )
+        if primary.data:
+            row = primary.data[0]
+            self._t("referrals").update(
+                {
+                    "diagnosis_primary_icd": row["icd10_code"],
+                    "diagnosis_primary_text": row.get("icd10_desc"),
+                    "updated_at": _now_iso(),
+                }
+            ).eq("id", referral_id).execute()
+        else:
+            self._t("referrals").update(
+                {
+                    "diagnosis_primary_icd": None,
+                    "diagnosis_primary_text": None,
+                    "updated_at": _now_iso(),
+                }
+            ).eq("id", referral_id).execute()
+
     def add_referral_diagnosis(
         self,
         scope: Scope,
@@ -1616,6 +1697,8 @@ class PostgresStorage(StorageBase):
             )
             .execute()
         )
+        if is_primary:
+            self._sync_referral_primary_diagnosis(referral_id)
         return _row_to_referral_diagnosis(result.data[0])
 
     def list_referral_diagnoses(self, scope: Scope, referral_id: int) -> list[ReferralDiagnosis]:
@@ -1646,6 +1729,14 @@ class PostgresStorage(StorageBase):
             raise ValueError(f"Unknown source: {source!r}")
         if self.get_referral(scope, referral_id) is None:
             return None
+        pre = (
+            self._t("referral_diagnoses")
+            .select("is_primary")
+            .eq("id", diagnosis_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        was_primary = bool(pre.data[0]["is_primary"]) if pre.data else False
         fields: dict[str, Any] = {}
         if icd10_code is not None:
             fields["icd10_code"] = icd10_code
@@ -1671,21 +1762,25 @@ class PostgresStorage(StorageBase):
             .eq("referral_id", referral_id)
             .execute()
         )
+        if result.data and (is_primary is not None or was_primary):
+            self._sync_referral_primary_diagnosis(referral_id)
         return _row_to_referral_diagnosis(result.data[0]) if result.data else None
 
     def delete_referral_diagnosis(self, scope: Scope, referral_id: int, diagnosis_id: int) -> bool:
         if self.get_referral(scope, referral_id) is None:
             return False
-        # supabase-py .delete() returns empty data — select first to get count.
+        # supabase-py .delete() returns empty data — select first to get count
+        # and to capture whether this row was the primary (for headline sync).
         to_delete = (
             self._t("referral_diagnoses")
-            .select("id")
+            .select("id,is_primary")
             .eq("id", diagnosis_id)
             .eq("referral_id", referral_id)
             .execute()
         )
         if not to_delete.data:
             return False
+        was_primary = bool(to_delete.data[0]["is_primary"])
         (
             self._t("referral_diagnoses")
             .delete()
@@ -1693,6 +1788,8 @@ class PostgresStorage(StorageBase):
             .eq("referral_id", referral_id)
             .execute()
         )
+        if was_primary:
+            self._sync_referral_primary_diagnosis(referral_id)
         return True
 
     # --- Medications ---
@@ -2173,8 +2270,7 @@ class PostgresStorage(StorageBase):
         requires_prior_auth: bool = False,
         notes: str | None = None,
     ) -> InsurancePlan:
-        if scope.is_anonymous:
-            raise ScopeRequired("Anonymous scope is not allowed for scoped entities")
+        self._require_scoped(scope)
         if plan_type not in PLAN_TYPE_VALUES:
             raise ValueError(f"Unknown plan_type: {plan_type!r}")
         now = _now_iso()
@@ -2308,13 +2404,22 @@ class PostgresStorage(StorageBase):
         query = self._t("specialty_rules").select("*")
         if organization_id is None:
             query = query.is_("organization_id", None)
+            result = query.order("specialty_code").order("id").execute()
         elif include_globals:
             # Globals + this org. supabase-py's .or_() takes a PostgREST
             # filter string; safe here because organization_id is an int.
+            # Match the SQLite ordering exactly so the rules engine sees
+            # globals before org overrides when grouping by specialty_code.
             query = query.or_(f"organization_id.is.null,organization_id.eq.{organization_id}")
+            result = (
+                query.order("specialty_code")
+                .order("organization_id", nullsfirst=True)
+                .order("id")
+                .execute()
+            )
         else:
             query = query.eq("organization_id", organization_id)
-        result = query.order("specialty_code").order("id").execute()
+            result = query.order("specialty_code").order("id").execute()
         return [_row_to_specialty_rule(r) for r in result.data]
 
     def update_specialty_rule(
@@ -2329,24 +2434,36 @@ class PostgresStorage(StorageBase):
         common_rejection_reasons: dict[str, Any] | None = None,
         source: str | None = None,
         bump_version: bool = True,
+        overwrite: bool = False,
     ) -> SpecialtyRule | None:
         if source is not None and source not in RULE_SOURCE_VALUES:
             raise ValueError(f"Unknown source: {source!r}")
         fields: dict[str, Any] = {}
-        if display_name is not None:
+        if overwrite:
+            # Write every JSONB / text kwarg literally, including None.
             fields["display_name"] = display_name
-        if required_fields is not None:
             fields["required_fields"] = required_fields
-        if recommended_attachments is not None:
             fields["recommended_attachments"] = recommended_attachments
-        if intake_questions is not None:
             fields["intake_questions"] = intake_questions
-        if urgency_red_flags is not None:
             fields["urgency_red_flags"] = urgency_red_flags
-        if common_rejection_reasons is not None:
             fields["common_rejection_reasons"] = common_rejection_reasons
-        if source is not None:
-            fields["source"] = source
+            if source is not None:
+                fields["source"] = source
+        else:
+            if display_name is not None:
+                fields["display_name"] = display_name
+            if required_fields is not None:
+                fields["required_fields"] = required_fields
+            if recommended_attachments is not None:
+                fields["recommended_attachments"] = recommended_attachments
+            if intake_questions is not None:
+                fields["intake_questions"] = intake_questions
+            if urgency_red_flags is not None:
+                fields["urgency_red_flags"] = urgency_red_flags
+            if common_rejection_reasons is not None:
+                fields["common_rejection_reasons"] = common_rejection_reasons
+            if source is not None:
+                fields["source"] = source
         if not fields:
             return self.get_specialty_rule(rule_id)
         fields["updated_at"] = _now_iso()
@@ -2413,11 +2530,18 @@ class PostgresStorage(StorageBase):
         query = self._t("payer_rules").select("*")
         if organization_id is None:
             query = query.is_("organization_id", None)
+            result = query.order("payer_key").order("id").execute()
         elif include_globals:
             query = query.or_(f"organization_id.is.null,organization_id.eq.{organization_id}")
+            result = (
+                query.order("payer_key")
+                .order("organization_id", nullsfirst=True)
+                .order("id")
+                .execute()
+            )
         else:
             query = query.eq("organization_id", organization_id)
-        result = query.order("payer_key").order("id").execute()
+            result = query.order("payer_key").order("id").execute()
         return [_row_to_payer_rule(r) for r in result.data]
 
     def update_payer_rule(
@@ -2432,24 +2556,35 @@ class PostgresStorage(StorageBase):
         notes: str | None = None,
         source: str | None = None,
         bump_version: bool = True,
+        overwrite: bool = False,
     ) -> PayerRule | None:
         if source is not None and source not in RULE_SOURCE_VALUES:
             raise ValueError(f"Unknown source: {source!r}")
         fields: dict[str, Any] = {}
-        if display_name is not None:
+        if overwrite:
             fields["display_name"] = display_name
-        if referral_required is not None:
             fields["referral_required"] = referral_required
-        if auth_required_services is not None:
             fields["auth_required_services"] = auth_required_services
-        if auth_typical_turnaround_days is not None:
             fields["auth_typical_turnaround_days"] = auth_typical_turnaround_days
-        if records_required is not None:
             fields["records_required"] = records_required
-        if notes is not None:
             fields["notes"] = notes
-        if source is not None:
-            fields["source"] = source
+            if source is not None:
+                fields["source"] = source
+        else:
+            if display_name is not None:
+                fields["display_name"] = display_name
+            if referral_required is not None:
+                fields["referral_required"] = referral_required
+            if auth_required_services is not None:
+                fields["auth_required_services"] = auth_required_services
+            if auth_typical_turnaround_days is not None:
+                fields["auth_typical_turnaround_days"] = auth_typical_turnaround_days
+            if records_required is not None:
+                fields["records_required"] = records_required
+            if notes is not None:
+                fields["notes"] = notes
+            if source is not None:
+                fields["source"] = source
         if not fields:
             return self.get_payer_rule(rule_id)
         fields["updated_at"] = _now_iso()
@@ -2479,8 +2614,7 @@ class PostgresStorage(StorageBase):
         row_count: int = 0,
         mapping: dict[str, Any] | None = None,
     ) -> CsvImport:
-        if scope.is_anonymous:
-            raise ScopeRequired("Anonymous scope is not allowed for scoped entities")
+        self._require_scoped(scope)
         now = _now_iso()
         row = {
             "scope_user_id": scope.user_id if scope.is_solo else None,
@@ -2615,6 +2749,8 @@ class PostgresStorage(StorageBase):
             raise ValueError(f"Unknown row status: {status!r}")
         if self.get_csv_import(scope, import_id) is None:
             return None
+        if referral_id is not None and self.get_referral(scope, referral_id) is None:
+            raise ValueError(f"referral_id={referral_id} not accessible from the caller's scope")
         fields: dict[str, Any] = {}
         if raw_json is not None:
             fields["raw_json"] = raw_json

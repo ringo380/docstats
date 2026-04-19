@@ -254,8 +254,12 @@ class ReferralDiagnosis(BaseModel):
 
     Exactly one row per referral may have ``is_primary = True`` (enforced by a
     partial unique index on ``(referral_id) WHERE is_primary``). The headline
-    diagnosis also lives on ``referrals.diagnosis_primary_icd`` for fast
-    workspace-queue rendering — keep them in sync when the primary changes.
+    diagnosis is also denormalized onto ``referrals.diagnosis_primary_icd`` /
+    ``referrals.diagnosis_primary_text`` for fast workspace-queue rendering.
+    Storage owns that sync: ``add_referral_diagnosis``,
+    ``update_referral_diagnosis``, and ``delete_referral_diagnosis`` all call
+    an internal ``_sync_referral_primary_diagnosis`` helper whenever the
+    primary bit is touched, so the headline never drifts from the sub-table.
     """
 
     id: int

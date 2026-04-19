@@ -107,9 +107,15 @@ def test_seed_platform_defaults_is_idempotent(storage: Storage) -> None:
 
 
 def test_seed_platform_defaults_overwrite(storage: Storage) -> None:
-    """overwrite=True updates existing rows (bumps version_id) rather than skipping."""
+    """overwrite=True restores seed values without bumping version_id.
+
+    The seeder uses ``bump_version=False`` on the overwrite path: a canonical
+    restore shouldn't invalidate the rule-engine cache for a rule whose
+    content is about to become canonical again. Version only changes via
+    real admin edits.
+    """
     seed_platform_defaults(storage)
-    # First the user edits a row as admin_override.
+    # First the user edits a row as admin_override (which DOES bump version).
     cardio = next(
         r
         for r in storage.list_specialty_rules(organization_id=None)
@@ -122,7 +128,6 @@ def test_seed_platform_defaults_overwrite(storage: Storage) -> None:
     )
     before_version = storage.get_specialty_rule(cardio.id).version_id  # type: ignore[union-attr]
 
-    # overwrite=True should push the seed display_name back + bump version.
     result = seed_platform_defaults(storage, overwrite=True)
     assert result["specialty_rules_overwritten"] == 12
 
@@ -130,7 +135,32 @@ def test_seed_platform_defaults_overwrite(storage: Storage) -> None:
     assert after is not None
     assert after.display_name == "Cardiology"  # seed value wins
     assert after.source == "seed"
-    assert after.version_id > before_version
+    # version_id must NOT bump on a canonical restore — caches stay valid.
+    assert after.version_id == before_version
+
+
+def test_seed_overwrite_can_reset_payer_field_to_none(storage: Storage) -> None:
+    """Seed overwrite writes every field literally, so an admin who set
+    Medicare's ``auth_typical_turnaround_days`` to a concrete integer gets
+    it reset back to None (the seed value) on re-run. Regression guard for
+    the None-means-skip gap in the default update path.
+    """
+    seed_platform_defaults(storage)
+    medicare = next(
+        r
+        for r in storage.list_payer_rules(organization_id=None)
+        if r.payer_key == "Medicare|medicare"
+    )
+    # Admin fills in a value the seed intentionally leaves blank.
+    storage.update_payer_rule(medicare.id, auth_typical_turnaround_days=5)
+    assert storage.get_payer_rule(medicare.id).auth_typical_turnaround_days == 5  # type: ignore[union-attr]
+
+    seed_platform_defaults(storage, overwrite=True)
+    after = storage.get_payer_rule(medicare.id)
+    assert after is not None
+    # Seed has auth_typical_turnaround_days=None for Medicare; overwrite=True
+    # must actually write that None back.
+    assert after.auth_typical_turnaround_days is None
 
 
 def test_all_seeded_sources_are_valid(storage: Storage) -> None:

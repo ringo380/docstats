@@ -1969,59 +1969,66 @@ class Storage(StorageBase):
         # FK forgery (e.g. referring to a patient in another org).
         if self.get_patient(scope, patient_id) is None:
             raise ValueError(f"Patient {patient_id} not found in scope or soft-deleted")
+        # payer_plan_id follows the same rule: insurance_plans is scope-owned,
+        # so refuse to attach a plan that isn't readable from this scope.
+        if payer_plan_id is not None and self.get_insurance_plan(scope, payer_plan_id) is None:
+            raise ValueError(
+                f"payer_plan_id={payer_plan_id} not accessible from the caller's scope"
+            )
 
-        cursor = self._conn.execute(
-            """INSERT INTO referrals (
-                scope_user_id, scope_organization_id, patient_id,
-                referring_provider_npi, referring_provider_name, referring_organization,
-                receiving_provider_npi, receiving_organization_name,
-                specialty_code, specialty_desc,
-                reason, clinical_question, urgency, requested_service,
-                diagnosis_primary_icd, diagnosis_primary_text,
-                payer_plan_id, authorization_number, authorization_status,
-                status, assigned_to_user_id,
-                external_reference_id, external_source, created_by_user_id
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            )""",
-            (
-                scope.user_id if scope.is_solo else None,
-                scope.organization_id if scope.is_org else None,
-                patient_id,
-                referring_provider_npi,
-                referring_provider_name,
-                referring_organization,
-                receiving_provider_npi,
-                receiving_organization_name,
-                specialty_code,
-                specialty_desc,
-                reason,
-                clinical_question,
-                urgency,
-                requested_service,
-                diagnosis_primary_icd,
-                diagnosis_primary_text,
-                payer_plan_id,
-                authorization_number,
-                authorization_status,
-                status,
-                assigned_to_user_id,
-                external_reference_id,
-                external_source,
-                created_by_user_id,
-            ),
-        )
-        self._conn.commit()
-        referral_id = cursor.lastrowid
-        assert referral_id is not None
-        # Seed the timeline with a ``created`` event. Callers don't need to
-        # wire this themselves — it's the one event every referral has.
-        self._conn.execute(
-            "INSERT INTO referral_events (referral_id, event_type, to_value, actor_user_id) "
-            "VALUES (?, 'created', ?, ?)",
-            (referral_id, status, created_by_user_id),
-        )
-        self._conn.commit()
+        # Insert referral + seed the ``created`` event atomically. Every
+        # referral must have at least one event from t=0 — a partial write
+        # (referral landed, event didn't) would break the "append-only
+        # timeline" contract.
+        with self._conn:
+            cursor = self._conn.execute(
+                """INSERT INTO referrals (
+                    scope_user_id, scope_organization_id, patient_id,
+                    referring_provider_npi, referring_provider_name, referring_organization,
+                    receiving_provider_npi, receiving_organization_name,
+                    specialty_code, specialty_desc,
+                    reason, clinical_question, urgency, requested_service,
+                    diagnosis_primary_icd, diagnosis_primary_text,
+                    payer_plan_id, authorization_number, authorization_status,
+                    status, assigned_to_user_id,
+                    external_reference_id, external_source, created_by_user_id
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )""",
+                (
+                    scope.user_id if scope.is_solo else None,
+                    scope.organization_id if scope.is_org else None,
+                    patient_id,
+                    referring_provider_npi,
+                    referring_provider_name,
+                    referring_organization,
+                    receiving_provider_npi,
+                    receiving_organization_name,
+                    specialty_code,
+                    specialty_desc,
+                    reason,
+                    clinical_question,
+                    urgency,
+                    requested_service,
+                    diagnosis_primary_icd,
+                    diagnosis_primary_text,
+                    payer_plan_id,
+                    authorization_number,
+                    authorization_status,
+                    status,
+                    assigned_to_user_id,
+                    external_reference_id,
+                    external_source,
+                    created_by_user_id,
+                ),
+            )
+            referral_id = cursor.lastrowid
+            assert referral_id is not None
+            self._conn.execute(
+                "INSERT INTO referral_events (referral_id, event_type, to_value, actor_user_id) "
+                "VALUES (?, 'created', ?, ?)",
+                (referral_id, status, created_by_user_id),
+            )
         row = self._conn.execute("SELECT * FROM referrals WHERE id = ?", (referral_id,)).fetchone()
         return _row_to_referral(row)
 
@@ -2092,6 +2099,10 @@ class Storage(StorageBase):
             raise ValueError(f"Unknown urgency: {urgency!r}")
         if authorization_status is not None and authorization_status not in AUTH_STATUS_VALUES:
             raise ValueError(f"Unknown authorization_status: {authorization_status!r}")
+        if payer_plan_id is not None and self.get_insurance_plan(scope, payer_plan_id) is None:
+            raise ValueError(
+                f"payer_plan_id={payer_plan_id} not accessible from the caller's scope"
+            )
         fields: dict[str, Any] = {
             k: v
             for k, v in {
@@ -2164,6 +2175,31 @@ class Storage(StorageBase):
         self._conn.commit()
         return cursor.rowcount > 0
 
+    _CLEARABLE_REFERRAL_FIELDS: frozenset[str] = frozenset(
+        {
+            "assigned_to_user_id",
+            "authorization_number",
+            "payer_plan_id",
+            "external_reference_id",
+            "diagnosis_primary_icd",
+            "diagnosis_primary_text",
+        }
+    )
+
+    def clear_referral_field(self, scope: Scope, referral_id: int, field: str) -> Referral | None:
+        if field not in self._CLEARABLE_REFERRAL_FIELDS:
+            raise ValueError(f"Field {field!r} is not clearable on a referral")
+        clause, scope_params = scope_sql_clause(scope)
+        cursor = self._conn.execute(
+            f"UPDATE referrals SET {field} = NULL, updated_at = datetime('now') "
+            f"WHERE id = ? AND {clause} AND deleted_at IS NULL",
+            [referral_id, *scope_params],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_referral(scope, referral_id)
+
     # --- Referral events (append-only; scope-transitive) ---
 
     def record_referral_event(
@@ -2215,6 +2251,34 @@ class Storage(StorageBase):
 
     # --- Diagnoses ---
 
+    def _sync_referral_primary_diagnosis(self, referral_id: int) -> None:
+        """Re-sync ``referrals.diagnosis_primary_{icd,text}`` to match the
+        current ``is_primary=True`` row in ``referral_diagnoses``.
+
+        Called after every add/update/delete on the diagnosis sub-table so
+        the denormalized headline columns on ``referrals`` never drift from
+        the source-of-truth sub-table. If no primary row exists, the
+        headline is cleared.
+        """
+        row = self._conn.execute(
+            "SELECT icd10_code, icd10_desc FROM referral_diagnoses "
+            "WHERE referral_id = ? AND is_primary = 1 LIMIT 1",
+            (referral_id,),
+        ).fetchone()
+        if row is not None:
+            self._conn.execute(
+                "UPDATE referrals SET diagnosis_primary_icd = ?, "
+                "diagnosis_primary_text = ?, updated_at = datetime('now') WHERE id = ?",
+                (row["icd10_code"], row["icd10_desc"], referral_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE referrals SET diagnosis_primary_icd = NULL, "
+                "diagnosis_primary_text = NULL, updated_at = datetime('now') WHERE id = ?",
+                (referral_id,),
+            )
+        self._conn.commit()
+
     def add_referral_diagnosis(
         self,
         scope: Scope,
@@ -2236,6 +2300,8 @@ class Storage(StorageBase):
             (referral_id, icd10_code, icd10_desc, 1 if is_primary else 0, source),
         )
         self._conn.commit()
+        if is_primary:
+            self._sync_referral_primary_diagnosis(referral_id)
         row = self._conn.execute(
             "SELECT * FROM referral_diagnoses WHERE id = ?", (cursor.lastrowid,)
         ).fetchone()
@@ -2266,6 +2332,11 @@ class Storage(StorageBase):
             raise ValueError(f"Unknown source: {source!r}")
         if self.get_referral(scope, referral_id) is None:
             return None
+        pre = self._conn.execute(
+            "SELECT is_primary FROM referral_diagnoses WHERE id = ? AND referral_id = ?",
+            (diagnosis_id, referral_id),
+        ).fetchone()
+        was_primary = bool(pre["is_primary"]) if pre is not None else False
         fields: dict[str, Any] = {}
         if icd10_code is not None:
             fields["icd10_code"] = icd10_code
@@ -2289,6 +2360,10 @@ class Storage(StorageBase):
         self._conn.commit()
         if cursor.rowcount == 0:
             return None
+        # Re-sync the headline if primary status touched this row, either
+        # by explicit toggle or by an edit on the currently-primary row.
+        if is_primary is not None or was_primary:
+            self._sync_referral_primary_diagnosis(referral_id)
         row = self._conn.execute(
             "SELECT * FROM referral_diagnoses WHERE id = ?", (diagnosis_id,)
         ).fetchone()
@@ -2297,11 +2372,18 @@ class Storage(StorageBase):
     def delete_referral_diagnosis(self, scope: Scope, referral_id: int, diagnosis_id: int) -> bool:
         if self.get_referral(scope, referral_id) is None:
             return False
+        pre = self._conn.execute(
+            "SELECT is_primary FROM referral_diagnoses WHERE id = ? AND referral_id = ?",
+            (diagnosis_id, referral_id),
+        ).fetchone()
+        was_primary = bool(pre["is_primary"]) if pre is not None else False
         cursor = self._conn.execute(
             "DELETE FROM referral_diagnoses WHERE id = ? AND referral_id = ?",
             (diagnosis_id, referral_id),
         )
         self._conn.commit()
+        if cursor.rowcount > 0 and was_primary:
+            self._sync_referral_primary_diagnosis(referral_id)
         return cursor.rowcount > 0
 
     # --- Medications ---
@@ -2917,24 +2999,48 @@ class Storage(StorageBase):
         common_rejection_reasons: dict[str, Any] | None = None,
         source: str | None = None,
         bump_version: bool = True,
+        overwrite: bool = False,
     ) -> SpecialtyRule | None:
         if source is not None and source not in RULE_SOURCE_VALUES:
             raise ValueError(f"Unknown source: {source!r}")
         fields: dict[str, Any] = {}
-        if display_name is not None:
+        if overwrite:
+            # Write every passed kwarg literally, including None. Keeps seed
+            # re-runs able to restore a column to NULL even if an admin had
+            # edited it.
             fields["display_name"] = display_name
-        if required_fields is not None:
-            fields["required_fields"] = json.dumps(required_fields)
-        if recommended_attachments is not None:
-            fields["recommended_attachments"] = json.dumps(recommended_attachments)
-        if intake_questions is not None:
-            fields["intake_questions"] = json.dumps(intake_questions)
-        if urgency_red_flags is not None:
-            fields["urgency_red_flags"] = json.dumps(urgency_red_flags)
-        if common_rejection_reasons is not None:
-            fields["common_rejection_reasons"] = json.dumps(common_rejection_reasons)
-        if source is not None:
-            fields["source"] = source
+            fields["required_fields"] = (
+                None if required_fields is None else json.dumps(required_fields)
+            )
+            fields["recommended_attachments"] = (
+                None if recommended_attachments is None else json.dumps(recommended_attachments)
+            )
+            fields["intake_questions"] = (
+                None if intake_questions is None else json.dumps(intake_questions)
+            )
+            fields["urgency_red_flags"] = (
+                None if urgency_red_flags is None else json.dumps(urgency_red_flags)
+            )
+            fields["common_rejection_reasons"] = (
+                None if common_rejection_reasons is None else json.dumps(common_rejection_reasons)
+            )
+            if source is not None:
+                fields["source"] = source
+        else:
+            if display_name is not None:
+                fields["display_name"] = display_name
+            if required_fields is not None:
+                fields["required_fields"] = json.dumps(required_fields)
+            if recommended_attachments is not None:
+                fields["recommended_attachments"] = json.dumps(recommended_attachments)
+            if intake_questions is not None:
+                fields["intake_questions"] = json.dumps(intake_questions)
+            if urgency_red_flags is not None:
+                fields["urgency_red_flags"] = json.dumps(urgency_red_flags)
+            if common_rejection_reasons is not None:
+                fields["common_rejection_reasons"] = json.dumps(common_rejection_reasons)
+            if source is not None:
+                fields["source"] = source
         if not fields:
             return self.get_specialty_rule(rule_id)
         set_parts = [f"{k} = ?" for k in fields]
@@ -3040,24 +3146,41 @@ class Storage(StorageBase):
         notes: str | None = None,
         source: str | None = None,
         bump_version: bool = True,
+        overwrite: bool = False,
     ) -> PayerRule | None:
         if source is not None and source not in RULE_SOURCE_VALUES:
             raise ValueError(f"Unknown source: {source!r}")
         fields: dict[str, Any] = {}
-        if display_name is not None:
+        if overwrite:
             fields["display_name"] = display_name
-        if referral_required is not None:
-            fields["referral_required"] = 1 if referral_required else 0
-        if auth_required_services is not None:
-            fields["auth_required_services"] = json.dumps(auth_required_services)
-        if auth_typical_turnaround_days is not None:
+            fields["referral_required"] = (
+                None if referral_required is None else (1 if referral_required else 0)
+            )
+            fields["auth_required_services"] = (
+                None if auth_required_services is None else json.dumps(auth_required_services)
+            )
             fields["auth_typical_turnaround_days"] = auth_typical_turnaround_days
-        if records_required is not None:
-            fields["records_required"] = json.dumps(records_required)
-        if notes is not None:
+            fields["records_required"] = (
+                None if records_required is None else json.dumps(records_required)
+            )
             fields["notes"] = notes
-        if source is not None:
-            fields["source"] = source
+            if source is not None:
+                fields["source"] = source
+        else:
+            if display_name is not None:
+                fields["display_name"] = display_name
+            if referral_required is not None:
+                fields["referral_required"] = 1 if referral_required else 0
+            if auth_required_services is not None:
+                fields["auth_required_services"] = json.dumps(auth_required_services)
+            if auth_typical_turnaround_days is not None:
+                fields["auth_typical_turnaround_days"] = auth_typical_turnaround_days
+            if records_required is not None:
+                fields["records_required"] = json.dumps(records_required)
+            if notes is not None:
+                fields["notes"] = notes
+            if source is not None:
+                fields["source"] = source
         if not fields:
             return self.get_payer_rule(rule_id)
         set_parts = [f"{k} = ?" for k in fields]
@@ -3248,6 +3371,8 @@ class Storage(StorageBase):
             raise ValueError(f"Unknown row status: {status!r}")
         if self.get_csv_import(scope, import_id) is None:
             return None
+        if referral_id is not None and self.get_referral(scope, referral_id) is None:
+            raise ValueError(f"referral_id={referral_id} not accessible from the caller's scope")
         fields: dict[str, Any] = {}
         if raw_json is not None:
             fields["raw_json"] = json.dumps(raw_json)

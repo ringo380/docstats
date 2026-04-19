@@ -8,9 +8,18 @@ common referral-desk practice. Org admins override via
 ``admin_override`` rows (Phase 6 admin UI).
 
 ``seed_platform_defaults(storage)`` is idempotent by default — it
-upserts on ``(specialty_code, NULL organization_id)`` /
-``(payer_key, NULL organization_id)`` via the partial unique indices,
-skipping rows that already exist. Safe to re-run at deploy time.
+pre-fetches the set of global rows (``organization_id IS NULL``) and
+skips any ``specialty_code`` / ``payer_key`` already present. Safe to
+re-run at deploy time. Partial unique indices on
+``(specialty_code) WHERE organization_id IS NULL`` and
+``(payer_key) WHERE organization_id IS NULL`` backstop the Python
+uniqueness check at the DB layer.
+
+When invoked with ``overwrite=True``, existing global rows are updated
+in place with seed values (with ``bump_version=False`` so the
+rule-engine cache isn't invalidated by a canonical restore, and with
+``overwrite=True`` on the storage update so seed fields can reset a
+column to ``None`` that an admin had previously filled in).
 
 Callers from the rules engine read these rows via
 ``storage.list_specialty_rules(organization_id=X)`` /
@@ -570,28 +579,34 @@ def seed_platform_defaults(
         "payer_rules_overwritten": 0,
     }
 
-    existing_specialty_codes = {
-        r.specialty_code for r in storage.list_specialty_rules(organization_id=None)
+    # Build a code → row index once so the overwrite path doesn't re-fetch
+    # the list for every seeded entry (that was O(N²)).
+    existing_specialty_by_code = {
+        r.specialty_code: r for r in storage.list_specialty_rules(organization_id=None)
     }
     for row in SPECIALTY_DEFAULTS:
         code = row["specialty_code"]
-        if code in existing_specialty_codes:
+        live_specialty = existing_specialty_by_code.get(code)
+        if live_specialty is not None:
             if overwrite:
-                # Find the existing row id and update in place.
-                for live_specialty in storage.list_specialty_rules(organization_id=None):
-                    if live_specialty.specialty_code == code:
-                        storage.update_specialty_rule(
-                            live_specialty.id,
-                            display_name=row["display_name"],
-                            required_fields=row["required_fields"],
-                            recommended_attachments=row["recommended_attachments"],
-                            intake_questions=row["intake_questions"],
-                            urgency_red_flags=row["urgency_red_flags"],
-                            common_rejection_reasons=row["common_rejection_reasons"],
-                            source="seed",
-                        )
-                        counts["specialty_rules_overwritten"] += 1
-                        break
+                # ``bump_version=False``: a canonical seed restore should NOT
+                # invalidate every rule-engine cache that holds this version.
+                # ``overwrite=True``: write every seed field literally so a
+                # column set to None in SPECIALTY_DEFAULTS (none today, but
+                # future-proof) can reset back to None.
+                storage.update_specialty_rule(
+                    live_specialty.id,
+                    display_name=row["display_name"],
+                    required_fields=row["required_fields"],
+                    recommended_attachments=row["recommended_attachments"],
+                    intake_questions=row["intake_questions"],
+                    urgency_red_flags=row["urgency_red_flags"],
+                    common_rejection_reasons=row["common_rejection_reasons"],
+                    source="seed",
+                    bump_version=False,
+                    overwrite=True,
+                )
+                counts["specialty_rules_overwritten"] += 1
             else:
                 counts["specialty_rules_skipped"] += 1
             continue
@@ -607,25 +622,25 @@ def seed_platform_defaults(
         )
         counts["specialty_rules_created"] += 1
 
-    existing_payer_keys = {r.payer_key for r in storage.list_payer_rules(organization_id=None)}
+    existing_payer_by_key = {r.payer_key: r for r in storage.list_payer_rules(organization_id=None)}
     for row in PAYER_DEFAULTS:
         key = row["payer_key"]
-        if key in existing_payer_keys:
+        live_payer = existing_payer_by_key.get(key)
+        if live_payer is not None:
             if overwrite:
-                for live_payer in storage.list_payer_rules(organization_id=None):
-                    if live_payer.payer_key == key:
-                        storage.update_payer_rule(
-                            live_payer.id,
-                            display_name=row["display_name"],
-                            referral_required=row["referral_required"],
-                            auth_required_services=row["auth_required_services"],
-                            auth_typical_turnaround_days=row["auth_typical_turnaround_days"],
-                            records_required=row["records_required"],
-                            notes=row["notes"],
-                            source="seed",
-                        )
-                        counts["payer_rules_overwritten"] += 1
-                        break
+                storage.update_payer_rule(
+                    live_payer.id,
+                    display_name=row["display_name"],
+                    referral_required=row["referral_required"],
+                    auth_required_services=row["auth_required_services"],
+                    auth_typical_turnaround_days=row["auth_typical_turnaround_days"],
+                    records_required=row["records_required"],
+                    notes=row["notes"],
+                    source="seed",
+                    bump_version=False,
+                    overwrite=True,
+                )
+                counts["payer_rules_overwritten"] += 1
             else:
                 counts["payer_rules_skipped"] += 1
             continue
