@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Patients — referme.help{% endblock %}
+
+{% block content %}
+<div class="saved-header">
+  <div>
+    <h1>Patients</h1>
+    <div class="sub">{{ patients | length }} patient{% if patients | length != 1 %}s{% endif %}</div>
+  </div>
+  <div>
+    <a href="/patients/new" class="btn btn-primary">+ New patient</a>
+  </div>
+</div>
+
+<form method="get" action="/patients" style="margin-bottom: 16px;">
+  <input type="text" name="search" value="{{ search }}" placeholder="Search by name or MRN..."
+         autocomplete="off" maxlength="100"
+         style="width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.95rem; background: var(--card-bg); color: var(--text);">
+</form>
+
+{% if patients %}
+  {% for p in patients %}
+    <div class="provider-row" id="patient-row-{{ p.id }}">
+      <div class="type-bar"></div>
+      <div class="info">
+        <div class="name">
+          <a href="/patients/{{ p.id }}">{{ p.display_name }}</a>
+        </div>
+        <div class="meta">
+          {% if p.date_of_birth %}DOB {{ p.date_of_birth }}{% endif %}
+          {% if p.mrn %} · MRN {{ p.mrn }}{% endif %}
+          {% if p.sex %} · {{ p.sex }}{% endif %}
+          {% if p.address_city and p.address_state %} · {{ p.address_city }}, {{ p.address_state }}{% endif %}
+        </div>
+        {% if p.notes %}
+          <div class="notes-preview">Note: {{ p.notes }}</div>
+        {% endif %}
+      </div>
+      <div class="row-actions">
+        <a href="/patients/{{ p.id }}" class="btn btn-blue btn-sm">Open</a>
+      </div>
+    </div>
+  {% endfor %}
+{% else %}
+  <div class="empty-state">
+    <div style="font-size: 2.5rem;">🧑‍⚕️</div>
+    {% if search %}
+      <p>No patients match "{{ search }}".</p>
+      <p><a href="/patients">Clear search</a></p>
+    {% else %}
+      <p>No patients yet.</p>
+      <p><a href="/patients/new">Add your first patient</a> to start tracking referrals.</p>
+    {% endif %}
+  </div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,23 @@
+{# Expects: referral (Referral), completeness (CompletenessReport). #}
+<section class="card">
+  <h3>Completeness</h3>
+  {% if completeness.is_complete %}
+    <p class="completeness-ok">✓ Required fields present.</p>
+  {% else %}
+    <p class="completeness-warn">
+      {{ completeness.missing_required | length }} required field{% if completeness.missing_required | length != 1 %}s{% endif %} missing
+    </p>
+  {% endif %}
+  <ul class="completeness-list">
+    {% for item in completeness.items %}
+      <li class="{% if item.satisfied %}sat{% else %}unsat{% endif %} {% if item.required %}req{% endif %}">
+        <span class="mark">{% if item.satisfied %}✓{% else %}{% if item.required %}✗{% else %}○{% endif %}{% endif %}</span>
+        <span>{{ item.label }}{% if item.required %} <em class="sub">(required)</em>{% endif %}</span>
+      </li>
+    {% endfor %}
+  </ul>
+  <button type="button" class="btn btn-sm btn-secondary"
+          hx-get="/referrals/{{ referral.id }}/completeness"
+          hx-target="#completeness-panel"
+          hx-swap="innerHTML">Re-check</button>
+</section>

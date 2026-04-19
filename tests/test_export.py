@@ -46,7 +46,7 @@ def export_client(tmp_path: Path):
 def test_csv_export_empty(export_client):
     """CSV export with no saved providers returns headers only."""
     tc, _, _, _ = export_client
-    resp = tc.get("/saved/export/csv")
+    resp = tc.get("/rolodex/export/csv")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/csv")
     reader = csv.reader(io.StringIO(resp.text))
@@ -59,7 +59,7 @@ def test_csv_export_with_provider(export_client):
     tc, storage, _, user_id = export_client
     result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
     storage.save_provider(result, user_id)
-    resp = tc.get("/saved/export/csv")
+    resp = tc.get("/rolodex/export/csv")
     assert resp.status_code == 200
     reader = csv.reader(io.StringIO(resp.text))
     rows = list(reader)
@@ -69,7 +69,7 @@ def test_csv_export_with_provider(export_client):
 
 def test_json_export_empty(export_client):
     tc, _, _, _ = export_client
-    resp = tc.get("/saved/export/json")
+    resp = tc.get("/rolodex/export/json")
     assert resp.status_code == 200
     data = json.loads(resp.text)
     assert data == []
@@ -79,7 +79,7 @@ def test_json_export_with_provider(export_client):
     tc, storage, _, user_id = export_client
     result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
     storage.save_provider(result, user_id)
-    resp = tc.get("/saved/export/json")
+    resp = tc.get("/rolodex/export/json")
     assert resp.status_code == 200
     data = json.loads(resp.text)
     assert len(data) == 1
@@ -108,5 +108,5 @@ def test_single_provider_text_export_unsaved(export_client):
 
 def test_export_all_page_renders(export_client):
     tc, _, _, _ = export_client
-    resp = tc.get("/saved/export")
+    resp = tc.get("/rolodex/export")
     assert resp.status_code == 200

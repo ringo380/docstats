@@ -1,4 +1,12 @@
-"""Saved providers list and bulk export routes."""
+"""Rolodex routes — personal provider list + bulk export (Phase 2.E rename).
+
+Originally shipped as "My Referrals" at ``/saved`` (Phase 0, the pre-referral-
+platform CRM). Phase 2.E moved the surface to ``/rolodex`` to free up the
+"Referrals" name for the referral workspace (``/referrals``). The old
+``/saved`` paths 301-redirect to ``/rolodex`` — see ``web.py`` for the
+redirect router. External bookmarks / export CSVs linked by users therefore
+still resolve.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +24,7 @@ from docstats.routes._common import MAPBOX_TOKEN, render
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
 
-router = APIRouter(tags=["saved"])
+router = APIRouter(prefix="/rolodex", tags=["rolodex"])
 
 _CSV_FIELDNAMES = [
     "NPI",
@@ -42,8 +50,8 @@ _CSV_FIELDNAMES = [
 ]
 
 
-@router.get("/saved", response_class=HTMLResponse)
-async def saved_list(
+@router.get("", response_class=HTMLResponse)
+async def rolodex_list(
     request: Request,
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
@@ -54,7 +62,7 @@ async def saved_list(
         "saved.html",
         {
             "request": request,
-            "active_page": "saved",
+            "active_page": "rolodex",
             "providers": providers,
             "saved_count": len(providers),
             "mapbox_token": MAPBOX_TOKEN,
@@ -63,7 +71,7 @@ async def saved_list(
     )
 
 
-@router.get("/saved/export/csv")
+@router.get("/export/csv")
 async def export_all_csv(
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
@@ -75,7 +83,7 @@ async def export_all_csv(
     writer.writeheader()
     for p in providers:
         writer.writerow(p.export_fields())
-    filename = f"referrals_{date.today().isoformat()}.csv"
+    filename = f"rolodex_{date.today().isoformat()}.csv"
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="text/csv",
@@ -83,7 +91,7 @@ async def export_all_csv(
     )
 
 
-@router.get("/saved/export/json")
+@router.get("/export/json")
 async def export_all_json(
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
@@ -91,7 +99,7 @@ async def export_all_json(
     user_id = current_user["id"]
     providers = storage.list_providers(user_id)
     data = [p.export_fields() for p in providers]
-    filename = f"referrals_{date.today().isoformat()}.json"
+    filename = f"rolodex_{date.today().isoformat()}.json"
     return Response(
         content=json.dumps(data, indent=2),
         media_type="application/json",
@@ -99,7 +107,7 @@ async def export_all_json(
     )
 
 
-@router.get("/saved/export", response_class=HTMLResponse)
+@router.get("/export", response_class=HTMLResponse)
 async def export_all(
     request: Request,
     current_user: dict = Depends(require_user),
@@ -123,7 +131,7 @@ async def export_all(
         "export_all.html",
         {
             "request": request,
-            "active_page": "saved",
+            "active_page": "rolodex",
             "referrals": referrals,
             "saved_count": len(providers),
             "user": current_user,

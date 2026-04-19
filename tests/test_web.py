@@ -285,7 +285,7 @@ def test_saved_page_renders_search_input(client):
     test_client, storage, mock_client, user_id = client
     result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
     storage.save_provider(result, user_id)
-    resp = test_client.get("/saved")
+    resp = test_client.get("/rolodex")
     assert resp.status_code == 200
     assert 'id="saved-search"' in resp.text
     assert "Smith" in resp.text
@@ -294,7 +294,35 @@ def test_saved_page_renders_search_input(client):
 def test_saved_page_empty_has_no_search(client):
     """Saved page with no providers does not show the search input."""
     test_client, storage, mock_client, user_id = client
-    resp = test_client.get("/saved")
+    resp = test_client.get("/rolodex")
     assert resp.status_code == 200
     assert 'id="saved-search"' not in resp.text
     assert "No providers saved" in resp.text
+
+
+def test_saved_redirects_to_rolodex(client):
+    """Legacy /saved URL 301-redirects to /rolodex."""
+    test_client, _, _, _ = client
+    resp = test_client.get("/saved", follow_redirects=False)
+    assert resp.status_code == 301
+    assert resp.headers["location"] == "/rolodex"
+
+
+def test_saved_export_paths_redirect(client):
+    test_client, _, _, _ = client
+    for old, new in [
+        ("/saved/export", "/rolodex/export"),
+        ("/saved/export/csv", "/rolodex/export/csv"),
+        ("/saved/export/json", "/rolodex/export/json"),
+    ]:
+        resp = test_client.get(old, follow_redirects=False)
+        assert resp.status_code == 301, f"{old} should redirect"
+        assert resp.headers["location"] == new
+
+
+def test_saved_redirect_preserves_query_string(client):
+    """UTM tags / filter params bookmarked against /saved must survive the rename."""
+    test_client, _, _, _ = client
+    resp = test_client.get("/saved?utm_source=email&x=1", follow_redirects=False)
+    assert resp.status_code == 301
+    assert resp.headers["location"] == "/rolodex?utm_source=email&x=1"

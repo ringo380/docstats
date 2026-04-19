@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}New patient — referme.help{% endblock %}
+
+{% block content %}
+<div class="back-link"><a href="/patients">← Patients</a></div>
+<h1>New patient</h1>
+
+{% if errors %}
+  <div class="alert alert-error">
+    <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+{% endif %}
+
+<form method="post" action="/patients" class="patient-form">
+  <fieldset>
+    <legend>Identity</legend>
+    <div class="grid-2">
+      <label>First name *
+        <input type="text" name="first_name" required maxlength="100" value="{{ values.first_name or '' }}">
+      </label>
+      <label>Last name *
+        <input type="text" name="last_name" required maxlength="100" value="{{ values.last_name or '' }}">
+      </label>
+      <label>Middle name
+        <input type="text" name="middle_name" maxlength="100" value="{{ values.middle_name or '' }}">
+      </label>
+      <label>Date of birth
+        <input type="date" name="date_of_birth" maxlength="10" value="{{ values.date_of_birth or '' }}">
+      </label>
+      <label>Sex
+        <select name="sex">
+          <option value="">—</option>
+          {% for s in ['M', 'F', 'O', 'U'] %}
+          <option value="{{ s }}" {% if values.sex == s %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>MRN
+        <input type="text" name="mrn" maxlength="64" value="{{ values.mrn or '' }}">
+      </label>
+      <label>Preferred language
+        <input type="text" name="preferred_language" maxlength="64" value="{{ values.preferred_language or '' }}">
+      </label>
+      <label>Pronouns
+        <input type="text" name="pronouns" maxlength="32" value="{{ values.pronouns or '' }}">
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Contact</legend>
+    <div class="grid-2">
+      <label>Phone
+        <input type="tel" name="phone" maxlength="40" value="{{ values.phone or '' }}">
+      </label>
+      <label>Email
+        <input type="email" name="email" maxlength="254" value="{{ values.email or '' }}">
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Address</legend>
+    <label>Street
+      <input type="text" name="address_line1" maxlength="200" value="{{ values.address_line1 or '' }}">
+    </label>
+    <label>Apt / suite
+      <input type="text" name="address_line2" maxlength="200" value="{{ values.address_line2 or '' }}">
+    </label>
+    <div class="grid-3">
+      <label>City
+        <input type="text" name="address_city" maxlength="100" value="{{ values.address_city or '' }}">
+      </label>
+      <label>State
+        <select name="address_state">
+          <option value="">—</option>
+          {% for code, name in states %}
+          <option value="{{ code }}" {% if values.address_state == code %}selected{% endif %}>{{ code }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>ZIP
+        <input type="text" name="address_zip" maxlength="10" value="{{ values.address_zip or '' }}">
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Emergency contact</legend>
+    <div class="grid-2">
+      <label>Name
+        <input type="text" name="emergency_contact_name" maxlength="100" value="{{ values.emergency_contact_name or '' }}">
+      </label>
+      <label>Phone
+        <input type="tel" name="emergency_contact_phone" maxlength="40" value="{{ values.emergency_contact_phone or '' }}">
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Notes</legend>
+    <label>Free-text notes
+      <textarea name="notes" rows="3" maxlength="2000">{{ values.notes or '' }}</textarea>
+    </label>
+  </fieldset>
+
+  <div class="action-bar">
+    <a href="/patients" class="btn btn-secondary">Cancel</a>
+    <button type="submit" class="btn btn-primary">Create patient</button>
+  </div>
+</form>
+{% endblock %}

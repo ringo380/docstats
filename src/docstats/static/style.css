@@ -254,7 +254,7 @@
   .btn-sm { padding: 4px 10px; font-size: 0.78rem; }
 
   /* ── Forms / Inputs ───────────────────────────────────────────────── */
-  input[type="text"], input[type="search"], input[type="email"], input[type="password"], select, textarea {
+  input[type="text"], input[type="search"], input[type="email"], input[type="password"], input[type="date"], input[type="tel"], select, textarea {
     background: var(--bg-input);
     border: 1.5px solid var(--border);
     border-radius: var(--radius-sm);
@@ -263,7 +263,7 @@
     width: 100%;
     transition: border-color 0.15s;
   }
-  input[type="text"]:focus, input[type="search"]:focus, input[type="email"]:focus, input[type="password"]:focus, select:focus, textarea:focus {
+  input[type="text"]:focus, input[type="search"]:focus, input[type="email"]:focus, input[type="password"]:focus, input[type="date"]:focus, input[type="tel"]:focus, select:focus, textarea:focus {
     outline: none;
     border-color: var(--border-focus);
   }
@@ -655,3 +655,219 @@
     .page-break { page-break-after: always; }
     main { padding: 0; max-width: none; }
   }
+
+/* ── Patient / referral forms (Phase 2) ───────────────────────────────── */
+.patient-form fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  margin: 0 0 14px;
+}
+.patient-form legend {
+  padding: 0 8px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.patient-form label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.patient-form label input,
+.patient-form label select,
+.patient-form label textarea {
+  margin-top: 4px;
+}
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.grid-3 { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px 14px; }
+@media (max-width: 640px) {
+  .grid-2, .grid-3 { grid-template-columns: 1fr; }
+}
+.alert {
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 14px;
+  font-size: 0.9rem;
+}
+.alert-error {
+  background: #3a1f1f;
+  color: #fed7d7;
+  border: 1px solid #742a2a;
+}
+.alert ul { margin: 0; padding-left: 1.2rem; }
+
+/* ── Referrals workspace (Phase 2.B) ──────────────────────────────────── */
+.filter-bar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.filter-bar label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  gap: 4px;
+  min-width: 110px;
+}
+.filter-bar select, .filter-bar input {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.workspace-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.workspace-table th, .workspace-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.workspace-table thead th {
+  background: #111827;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+.workspace-table tbody tr:hover { background: #151a28; }
+.workspace-table tbody tr:last-child td { border-bottom: none; }
+.workspace-table .sub { font-size: 0.75rem; color: var(--text-muted); }
+.workspace-table .muted { color: var(--text-dim); }
+.workspace-table .updated-cell { white-space: nowrap; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.workspace-table .row-actions { text-align: right; }
+.urgency-cell { white-space: nowrap; }
+.urgency-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  background: var(--text-dim);
+}
+.urgency-routine  { background: #4a5568; }
+.urgency-priority { background: var(--blue); }
+.urgency-urgent   { background: var(--orange); }
+.urgency-stat     { background: var(--red); box-shadow: 0 0 0 2px rgba(252,129,129,0.2); }
+.urgency-label { font-size: 0.78rem; color: var(--text-muted); }
+.status-chip {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 12px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.status-draft            { background: var(--bg-card);  color: var(--text-muted); }
+.status-ready            { background: var(--blue-bg);  color: var(--blue);  border-color: var(--blue-dark); }
+.status-sent             { background: var(--blue-bg);  color: var(--blue);  border-color: var(--blue-dark); }
+.status-awaiting_records { background: var(--orange-bg);color: var(--orange);border-color: #7a4e1d; }
+.status-awaiting_auth    { background: var(--orange-bg);color: var(--orange);border-color: #7a4e1d; }
+.status-scheduled        { background: var(--green-bg); color: var(--green); border-color: var(--green-dark); }
+.status-completed        { background: var(--green-bg); color: var(--green); border-color: var(--green-dark); }
+.status-rejected         { background: var(--red-bg);   color: var(--red);   border-color: #742a2a; }
+.status-cancelled        { background: var(--bg-card);  color: var(--text-dim); }
+
+/* ── Detail page (Phase 2.C) ──────────────────────────────────────────── */
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 16px;
+}
+@media (max-width: 720px) {
+  .detail-grid { grid-template-columns: 1fr; }
+}
+.detail-grid h3 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
+dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 0.88rem; }
+dl.kv dt { color: var(--text-muted); }
+dl.kv dd { color: var(--text); margin: 0; }
+
+/* ── Referral detail layout (Phase 2.D) ──────────────────────────────── */
+.detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .detail-layout { grid-template-columns: 1fr; }
+}
+.side-rail { display: flex; flex-direction: column; gap: 12px; }
+.side-rail .card h3 {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
+.status-transitions { display: flex; flex-direction: column; gap: 6px; }
+.status-transitions h3 {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+.inline-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.inline-form label { display: flex; flex-direction: column; font-size: 0.75rem; color: var(--text-muted); }
+.inline-form select { padding: 5px 8px; }
+.completeness-ok   { color: var(--green); font-weight: 600; font-size: 0.85rem; }
+.completeness-warn { color: var(--orange); font-weight: 600; font-size: 0.85rem; }
+.completeness-list { list-style: none; padding: 0; margin: 10px 0; font-size: 0.82rem; }
+.completeness-list li {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 0;
+}
+.completeness-list li.sat .mark { color: var(--green); }
+.completeness-list li.unsat.req .mark { color: var(--red); }
+.completeness-list li.unsat:not(.req) .mark { color: var(--text-dim); }
+.event-log { list-style: none; padding: 0; margin: 0; font-size: 0.82rem; }
+.event-log li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.event-log li:last-child { border-bottom: none; }
+.event-log .event-type { font-weight: 600; color: var(--text); }
+.event-log .sub { font-size: 0.75rem; color: var(--text-muted); }
