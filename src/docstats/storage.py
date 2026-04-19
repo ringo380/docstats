@@ -2046,6 +2046,7 @@ class Storage(StorageBase):
         *,
         patient_id: int | None = None,
         status: str | None = None,
+        urgency: str | None = None,
         assigned_to_user_id: int | None = None,
         include_deleted: bool = False,
         limit: int = 50,
@@ -2061,6 +2062,9 @@ class Storage(StorageBase):
         if status is not None:
             where_parts.append("status = ?")
             params.append(status)
+        if urgency is not None:
+            where_parts.append("urgency = ?")
+            params.append(urgency)
         if assigned_to_user_id is not None:
             where_parts.append("assigned_to_user_id = ?")
             params.append(assigned_to_user_id)

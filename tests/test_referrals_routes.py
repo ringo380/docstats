@@ -365,9 +365,14 @@ def test_update_emits_one_event_per_changed_field(solo_client):
     after = len(events)
     # 2 changed fields → 2 new events
     assert after == before + 2
-    changed_fields = {e.from_value for e in events if e.event_type == "field_edited"}
-    assert "reason" in changed_fields
-    assert "clinical_question" in changed_fields
+    edits = [e for e in events if e.event_type == "field_edited"]
+    # New semantics: note = field name, from_value = old value, to_value = new value
+    notes = {e.note for e in edits}
+    assert "reason" in notes
+    assert "clinical_question" in notes
+    reason_edit = next(e for e in edits if e.note == "reason")
+    assert reason_edit.from_value == "Chest pain eval"
+    assert reason_edit.to_value == "Updated reason"
 
 
 def test_update_no_op(solo_client):
@@ -470,3 +475,75 @@ def test_completeness_shows_required_missing(solo_client):
     resp = client.get(f"/referrals/{r.id}/completeness")
     assert resp.status_code == 200
     assert "required field" in resp.text.lower()
+
+
+# --- Enum validation on update route (review follow-up) ---
+
+
+def test_update_rejects_unknown_urgency(solo_client):
+    client, storage, user_id = solo_client
+    r = _seed_referral(storage, user_id)
+    resp = client.post(f"/referrals/{r.id}", data={"urgency": "on_fire"})
+    assert resp.status_code == 422
+
+
+def test_update_rejects_unknown_auth_status(solo_client):
+    client, storage, user_id = solo_client
+    r = _seed_referral(storage, user_id)
+    resp = client.post(f"/referrals/{r.id}", data={"authorization_status": "bogus"})
+    assert resp.status_code == 422
+
+
+# --- Clear field route (review follow-up) ---
+
+
+def test_clear_auth_number(solo_client):
+    client, storage, user_id = solo_client
+    r = _seed_referral(storage, user_id)
+    scope = Scope(user_id=user_id)
+    storage.update_referral(scope, r.id, authorization_number="AUTH-123")
+    resp = client.post(
+        f"/referrals/{r.id}/clear/authorization_number",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    updated = storage.get_referral(scope, r.id)
+    assert updated.authorization_number is None
+    # Event records old → new=None with note = field name
+    edits = [
+        e
+        for e in storage.list_referral_events(scope, r.id)
+        if e.event_type == "field_edited" and e.note == "authorization_number"
+    ]
+    assert len(edits) == 1
+    assert edits[0].from_value == "AUTH-123"
+    assert edits[0].to_value is None
+
+
+def test_clear_field_rejects_unlisted(solo_client):
+    client, storage, user_id = solo_client
+    r = _seed_referral(storage, user_id)
+    # reason is not in the 4-field clearable allow-list
+    resp = client.post(f"/referrals/{r.id}/clear/reason")
+    assert resp.status_code == 422
+
+
+def test_clear_field_not_found(solo_client):
+    client, _, _ = solo_client
+    resp = client.post("/referrals/99999/clear/authorization_number")
+    assert resp.status_code == 404
+
+
+# --- Storage urgency filter (review follow-up) ---
+
+
+def test_list_referrals_urgency_filter_at_storage(solo_client):
+    _client, storage, user_id = solo_client
+    scope = Scope(user_id=user_id)
+    _seed_referral(storage, user_id, first_name="Alice", urgency="routine")
+    _seed_referral(storage, user_id, first_name="Bob", urgency="urgent")
+    _seed_referral(storage, user_id, first_name="Carol", urgency="stat")
+    routine_only = storage.list_referrals(scope, urgency="routine")
+    assert len(routine_only) == 1
+    urgent_only = storage.list_referrals(scope, urgency="urgent")
+    assert len(urgent_only) == 1

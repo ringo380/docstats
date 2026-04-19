@@ -85,26 +85,34 @@ async def robots_txt():
 # Users bookmarked the old paths pre-rename; 301-redirect permanently so the
 # browser and search engines update their cache. Keeping these as dedicated
 # routes (rather than a catch-all middleware) keeps the surface auditable.
+# Query strings are forwarded so UTM params, filter/sort params, etc.
+# survive the rename.
+
+
+def _rolodex_redirect(request: Request, target: str) -> RedirectResponse:
+    qs = request.url.query
+    dest = f"{target}?{qs}" if qs else target
+    return RedirectResponse(dest, status_code=301)
 
 
 @app.get("/saved")
-async def _saved_redirect():
-    return RedirectResponse("/rolodex", status_code=301)
+async def _saved_redirect(request: Request):
+    return _rolodex_redirect(request, "/rolodex")
 
 
 @app.get("/saved/export")
-async def _saved_export_redirect():
-    return RedirectResponse("/rolodex/export", status_code=301)
+async def _saved_export_redirect(request: Request):
+    return _rolodex_redirect(request, "/rolodex/export")
 
 
 @app.get("/saved/export/csv")
-async def _saved_export_csv_redirect():
-    return RedirectResponse("/rolodex/export/csv", status_code=301)
+async def _saved_export_csv_redirect(request: Request):
+    return _rolodex_redirect(request, "/rolodex/export/csv")
 
 
 @app.get("/saved/export/json")
-async def _saved_export_json_redirect():
-    return RedirectResponse("/rolodex/export/json", status_code=301)
+async def _saved_export_json_redirect(request: Request):
+    return _rolodex_redirect(request, "/rolodex/export/json")
 
 
 # --- Include routers (order matters: specific routes before parameterized) ---

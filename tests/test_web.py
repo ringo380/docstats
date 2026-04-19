@@ -318,3 +318,11 @@ def test_saved_export_paths_redirect(client):
         resp = test_client.get(old, follow_redirects=False)
         assert resp.status_code == 301, f"{old} should redirect"
         assert resp.headers["location"] == new
+
+
+def test_saved_redirect_preserves_query_string(client):
+    """UTM tags / filter params bookmarked against /saved must survive the rename."""
+    test_client, _, _, _ = client
+    resp = test_client.get("/saved?utm_source=email&x=1", follow_redirects=False)
+    assert resp.status_code == 301
+    assert resp.headers["location"] == "/rolodex?utm_source=email&x=1"

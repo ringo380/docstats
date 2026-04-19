@@ -127,6 +127,9 @@
       <div class="grid-2">
         <label>Auth number
           <input type="text" name="authorization_number" maxlength="64" value="{{ referral.authorization_number or '' }}">
+          {% if referral.authorization_number %}
+          <button type="submit" form="clear-auth-number" class="btn btn-secondary btn-sm" style="margin-top:4px;">Clear</button>
+          {% endif %}
         </label>
         <label>Auth status
           <select name="authorization_status">
@@ -143,6 +146,13 @@
       <button type="submit" class="btn btn-primary">Save changes</button>
     </div>
   </form>
+
+  {# Secondary form for clearing the authorization_number back to NULL —
+     the main update form treats blank inputs as "skip", so explicit
+     clearing lives on its own endpoint. #}
+  <form id="clear-auth-number" method="post"
+        action="/referrals/{{ referral.id }}/clear/authorization_number"
+        style="display:none;"></form>
 
   <aside class="side-rail">
     <div id="completeness-panel">

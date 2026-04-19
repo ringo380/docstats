@@ -12,6 +12,7 @@ medications, allergies, attachments) are still a follow-up slice.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Path, Query, Request
@@ -33,6 +34,8 @@ from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
 from docstats.validators import validate_npi
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/referrals", tags=["referrals"])
 
@@ -82,17 +85,14 @@ async def referrals_workspace(
     status_filter = status if status in STATUS_VALUES else None
     urgency_filter = urgency if urgency in URGENCY_VALUES else None
 
-    window = 200 if urgency_filter else 50
     referrals = storage.list_referrals(
         scope,
         patient_id=patient_id,
         status=status_filter,
+        urgency=urgency_filter,
         assigned_to_user_id=assigned_to_user_id,
-        limit=window,
+        limit=50,
     )
-    if urgency_filter:
-        referrals = [r for r in referrals if r.urgency == urgency_filter]
-        referrals = referrals[:50]
 
     patient_ids = {r.patient_id for r in referrals}
     patients_by_id = {
@@ -240,7 +240,7 @@ async def referral_create(
     return Response(status_code=303, headers={"Location": dest})
 
 
-# --- Detail (basic; inline-edit lives in Phase 2.D) ---
+# --- Detail + inline edit (Phase 2.D) ---
 
 
 def _allowed_next_statuses(current: str) -> list[str]:
@@ -320,25 +320,10 @@ async def referral_completeness(
     )
 
 
-# Fields writable via the detail-page update form. Editing the primary
-# diagnosis denormalized columns directly would break the "referral_diagnoses
-# sub-table is source of truth" invariant, so the form exposes them read-only
-# here — diagnosis edits will land with the Phase 2.D follow-up that surfaces
-# the sub-entity CRUD.
-_EDITABLE_FIELDS: tuple[str, ...] = (
-    "reason",
-    "clinical_question",
-    "urgency",
-    "requested_service",
-    "receiving_provider_npi",
-    "receiving_organization_name",
-    "specialty_desc",
-    "specialty_code",
-    "referring_provider_name",
-    "referring_provider_npi",
-    "referring_organization",
-    "authorization_number",
-    "authorization_status",
+# Fields the POST /referrals/{id}/clear/{field} endpoint will set to NULL.
+# Matches ``StorageBase.clear_referral_field``'s allow-list — keep in sync.
+_CLEARABLE_FIELDS: frozenset[str] = frozenset(
+    {"assigned_to_user_id", "authorization_number", "payer_plan_id", "external_reference_id"}
 )
 
 
@@ -367,6 +352,16 @@ async def referral_update(
     if existing is None:
         raise HTTPException(status_code=404, detail="Referral not found.")
 
+    # Route-boundary enum validation — match referral_create's 422 behavior so
+    # both surfaces reject bad enum values consistently instead of letting
+    # storage's ValueError surface as a generic form error.
+    urgency_clean = _clean(urgency)
+    if urgency_clean is not None and urgency_clean not in URGENCY_VALUES:
+        raise HTTPException(status_code=422, detail="Unknown urgency value.")
+    auth_status_clean = _clean(authorization_status)
+    if auth_status_clean is not None and auth_status_clean not in AUTH_STATUS_VALUES:
+        raise HTTPException(status_code=422, detail="Unknown authorization_status value.")
+
     # Validate NPI format at the boundary; blank → skip.
     recv_npi = _validate_optional_npi(receiving_provider_npi, "Receiving provider NPI")
     ref_npi = _validate_optional_npi(referring_provider_npi, "Referring provider NPI")
@@ -376,7 +371,7 @@ async def referral_update(
     desired: dict[str, str | None] = {
         "reason": _clean(reason),
         "clinical_question": _clean(clinical_question),
-        "urgency": _clean(urgency),
+        "urgency": urgency_clean,
         "requested_service": _clean(requested_service),
         "receiving_provider_npi": recv_npi,
         "receiving_organization_name": _clean(receiving_organization_name),
@@ -386,39 +381,63 @@ async def referral_update(
         "referring_provider_npi": ref_npi,
         "referring_organization": _clean(referring_organization),
         "authorization_number": _clean(authorization_number),
-        "authorization_status": _clean(authorization_status),
+        "authorization_status": auth_status_clean,
     }
     # Only pass fields that changed, so we don't rewrite identical values
     # and can emit one event per actual change. Dict typed Any so **unpacking
     # into update_referral's mixed-type signature (str / int / enum) is OK.
+    # We capture old values here (before mutation) so the field_edited event
+    # can log from_value=<old>, to_value=<new> — matching the status_changed
+    # event's semantics instead of overloading from_value with a field name.
     changed: dict[str, Any] = {}
+    old_values: dict[str, Any] = {}
     for k, v in desired.items():
         if v is None:
             continue
-        if getattr(existing, k) != v:
+        current = getattr(existing, k)
+        if current != v:
             changed[k] = v
+            old_values[k] = current
 
     if not changed:
         return _render_detail(request, current_user, storage, scope, referral_id, errors=None)
 
     try:
-        storage.update_referral(scope, referral_id, **changed)
+        updated = storage.update_referral(scope, referral_id, **changed)
     except ValueError as e:
         return _render_detail(request, current_user, storage, scope, referral_id, errors=[str(e)])
+    if updated is None:
+        # Row soft-deleted between the read and the write (TOCTOU). Treat as
+        # 404 rather than emit events against a vanished referral.
+        raise HTTPException(status_code=404, detail="Referral not found.")
 
     # Emit one field_edited event per changed field so the timeline is
-    # fine-grained. ``from_value`` / ``to_value`` carry field name + new value;
-    # the event log isn't a full diff store, just enough to show "coordinator X
-    # updated Reason at 10:42am".
+    # fine-grained. ``from_value`` = previous value, ``to_value`` = new value,
+    # ``note`` = field name — same shape the timeline template expects, and
+    # consistent with the status_changed event's (old, new) semantics.
+    #
+    # Event inserts can fail independently per row (e.g. DB blip between
+    # writes). We catch+log rather than surface a 500 — the update already
+    # landed and the audit_events table still captures the fact of the
+    # update below, so losing a single field_edited row is graceful
+    # degradation, not data loss.
     for k, v in changed.items():
-        storage.record_referral_event(
-            scope,
-            referral_id,
-            event_type="field_edited",
-            from_value=k,
-            to_value=v,
-            actor_user_id=current_user["id"],
-        )
+        try:
+            storage.record_referral_event(
+                scope,
+                referral_id,
+                event_type="field_edited",
+                from_value=None if old_values[k] is None else str(old_values[k]),
+                to_value=None if v is None else str(v),
+                actor_user_id=current_user["id"],
+                note=k,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to record field_edited event for referral %s field %s",
+                referral_id,
+                k,
+            )
     audit_record(
         storage,
         action="referral.update",
@@ -455,15 +474,31 @@ async def referral_set_status(
     except InvalidTransition as e:
         return _render_detail(request, current_user, storage, scope, referral_id, errors=[str(e)])
     old_status = existing.status
-    storage.set_referral_status(scope, referral_id, new_status)
-    storage.record_referral_event(
-        scope,
-        referral_id,
-        event_type="status_changed",
-        from_value=old_status,
-        to_value=new_status,
-        actor_user_id=current_user["id"],
-    )
+    # TOCTOU guard: the referral could have been soft-deleted between our
+    # read above and this write — set_referral_status returns None in that
+    # case. Re-raise as 404 rather than emit a status_changed event for a
+    # vanished row.
+    if storage.set_referral_status(scope, referral_id, new_status) is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    try:
+        storage.record_referral_event(
+            scope,
+            referral_id,
+            event_type="status_changed",
+            from_value=old_status,
+            to_value=new_status,
+            actor_user_id=current_user["id"],
+        )
+    except Exception:
+        # Same degradation posture as referral_update — the status write
+        # landed and the audit_events row below captures the fact of the
+        # transition; losing the referral_events row is non-fatal.
+        logger.exception(
+            "Failed to record status_changed event for referral %s (%s → %s)",
+            referral_id,
+            old_status,
+            new_status,
+        )
     audit_record(
         storage,
         action="referral.status",
@@ -474,6 +509,67 @@ async def referral_set_status(
         entity_type="referral",
         entity_id=str(referral_id),
         metadata={"from": old_status, "to": new_status},
+    )
+    dest = f"/referrals/{referral_id}"
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": dest})
+    return Response(status_code=303, headers={"Location": dest})
+
+
+@router.post("/{referral_id}/clear/{field}", response_class=HTMLResponse)
+async def referral_clear_field(
+    request: Request,
+    referral_id: int = Path(..., ge=1),
+    field: str = Path(..., max_length=64),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Null-out one of the four clearable nullable referral fields.
+
+    Companion to the POST /referrals/{id} update route's "None means skip"
+    semantics — the update form can't distinguish "leave alone" from "set to
+    NULL" for a blank input, so explicit clearing lives here. The allow-list
+    matches ``StorageBase.clear_referral_field``; unknown fields return 422.
+    """
+    if field not in _CLEARABLE_FIELDS:
+        raise HTTPException(status_code=422, detail=f"Field {field!r} is not clearable.")
+    existing = storage.get_referral(scope, referral_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    old_value = getattr(existing, field)
+    try:
+        updated = storage.clear_referral_field(scope, referral_id, field)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    try:
+        storage.record_referral_event(
+            scope,
+            referral_id,
+            event_type="field_edited",
+            from_value=None if old_value is None else str(old_value),
+            to_value=None,
+            actor_user_id=current_user["id"],
+            note=field,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to record field_edited (clear) event for referral %s field %s",
+            referral_id,
+            field,
+        )
+    audit_record(
+        storage,
+        action="referral.update",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral",
+        entity_id=str(referral_id),
+        metadata={"cleared": field},
     )
     dest = f"/referrals/{referral_id}"
     if request.headers.get("HX-Request"):

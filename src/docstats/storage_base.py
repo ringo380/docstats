@@ -407,6 +407,7 @@ class StorageBase(ABC):
         *,
         patient_id: int | None = None,
         status: str | None = None,
+        urgency: str | None = None,
         assigned_to_user_id: int | None = None,
         include_deleted: bool = False,
         limit: int = 50,

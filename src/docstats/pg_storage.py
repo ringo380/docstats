@@ -1450,6 +1450,7 @@ class PostgresStorage(StorageBase):
         *,
         patient_id: int | None = None,
         status: str | None = None,
+        urgency: str | None = None,
         assigned_to_user_id: int | None = None,
         include_deleted: bool = False,
         limit: int = 50,
@@ -1463,6 +1464,8 @@ class PostgresStorage(StorageBase):
             query = query.eq("patient_id", patient_id)
         if status is not None:
             query = query.eq("status", status)
+        if urgency is not None:
+            query = query.eq("urgency", urgency)
         if assigned_to_user_id is not None:
             query = query.eq("assigned_to_user_id", assigned_to_user_id)
         result = (
