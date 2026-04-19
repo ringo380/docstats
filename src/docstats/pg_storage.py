@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import Any, cast
 
 from docstats.domain.audit import AuditEvent
+from docstats.domain.imports import (
+    IMPORT_ROW_STATUS_VALUES,
+    IMPORT_STATUS_VALUES,
+    CsvImport,
+    CsvImportRow,
+)
 from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.patients import Patient
 from docstats.domain.reference import (
@@ -278,6 +284,42 @@ def _parse_jsonb(value: Any) -> dict[str, Any]:
         parsed = json.loads(value) if value else {}
         return cast("dict[str, Any]", parsed)
     return cast("dict[str, Any]", value)
+
+
+def _row_to_csv_import(row: dict) -> CsvImport:
+    created = _parse_ts(row.get("created_at"))
+    updated = _parse_ts(row.get("updated_at"))
+    assert created is not None and updated is not None
+    return CsvImport(
+        id=int(row["id"]),
+        scope_user_id=row.get("scope_user_id"),
+        scope_organization_id=row.get("scope_organization_id"),
+        uploaded_by_user_id=row.get("uploaded_by_user_id"),
+        original_filename=row["original_filename"],
+        row_count=int(row.get("row_count", 0)),
+        status=row["status"],
+        mapping=_parse_jsonb(row.get("mapping")),
+        error_report=_parse_jsonb(row.get("error_report")),
+        created_at=created,
+        updated_at=updated,
+    )
+
+
+def _row_to_csv_import_row(row: dict) -> CsvImportRow:
+    created = _parse_ts(row.get("created_at"))
+    updated = _parse_ts(row.get("updated_at"))
+    assert created is not None and updated is not None
+    return CsvImportRow(
+        id=int(row["id"]),
+        import_id=int(row["import_id"]),
+        row_index=int(row["row_index"]),
+        raw_json=_parse_jsonb(row.get("raw_json")),
+        validation_errors=_parse_jsonb(row.get("validation_errors")),
+        referral_id=row.get("referral_id"),
+        status=row["status"],
+        created_at=created,
+        updated_at=updated,
+    )
 
 
 def _row_to_insurance_plan(row: dict) -> InsurancePlan:
@@ -2424,6 +2466,196 @@ class PostgresStorage(StorageBase):
         if not to_delete.data:
             return False
         self._t("payer_rules").delete().eq("id", rule_id).execute()
+        return True
+
+    # --- CSV imports (scope-owned) + import rows (scope-transitive) ---
+
+    def create_csv_import(
+        self,
+        scope: Scope,
+        *,
+        original_filename: str,
+        uploaded_by_user_id: int | None = None,
+        row_count: int = 0,
+        mapping: dict[str, Any] | None = None,
+    ) -> CsvImport:
+        if scope.is_anonymous:
+            raise ScopeRequired("Anonymous scope is not allowed for scoped entities")
+        now = _now_iso()
+        row = {
+            "scope_user_id": scope.user_id if scope.is_solo else None,
+            "scope_organization_id": scope.organization_id if scope.is_org else None,
+            "uploaded_by_user_id": uploaded_by_user_id,
+            "original_filename": original_filename,
+            "row_count": row_count,
+            "status": "uploaded",
+            "mapping": mapping or {},
+            "error_report": {},
+            "created_at": now,
+            "updated_at": now,
+        }
+        result = self._t("csv_imports").insert(row).execute()
+        return _row_to_csv_import(result.data[0])
+
+    def get_csv_import(self, scope: Scope, import_id: int) -> CsvImport | None:
+        query = self._t("csv_imports").select("*").eq("id", import_id)
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        return _row_to_csv_import(result.data[0]) if result.data else None
+
+    def list_csv_imports(
+        self, scope: Scope, *, limit: int = 50, offset: int = 0
+    ) -> list[CsvImport]:
+        query = self._t("csv_imports").select("*")
+        query = self._apply_scope(query, scope)
+        result = (
+            query.order("created_at", desc=True)
+            .order("id", desc=True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+        return [_row_to_csv_import(r) for r in result.data]
+
+    def update_csv_import(
+        self,
+        scope: Scope,
+        import_id: int,
+        *,
+        status: str | None = None,
+        row_count: int | None = None,
+        mapping: dict[str, Any] | None = None,
+        error_report: dict[str, Any] | None = None,
+    ) -> CsvImport | None:
+        if status is not None and status not in IMPORT_STATUS_VALUES:
+            raise ValueError(f"Unknown import status: {status!r}")
+        fields: dict[str, Any] = {}
+        if status is not None:
+            fields["status"] = status
+        if row_count is not None:
+            fields["row_count"] = row_count
+        if mapping is not None:
+            fields["mapping"] = mapping
+        if error_report is not None:
+            fields["error_report"] = error_report
+        if not fields:
+            return self.get_csv_import(scope, import_id)
+        fields["updated_at"] = _now_iso()
+        query = self._t("csv_imports").update(fields).eq("id", import_id)
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        return _row_to_csv_import(result.data[0]) if result.data else None
+
+    def delete_csv_import(self, scope: Scope, import_id: int) -> bool:
+        # Scope-check first (select) so cross-tenant delete can't succeed.
+        if self.get_csv_import(scope, import_id) is None:
+            return False
+        self._t("csv_imports").delete().eq("id", import_id).execute()
+        return True
+
+    def add_csv_import_row(
+        self,
+        scope: Scope,
+        import_id: int,
+        *,
+        row_index: int,
+        raw_json: dict[str, Any] | None = None,
+        validation_errors: dict[str, Any] | None = None,
+        status: str = "pending",
+    ) -> CsvImportRow | None:
+        if status not in IMPORT_ROW_STATUS_VALUES:
+            raise ValueError(f"Unknown row status: {status!r}")
+        if self.get_csv_import(scope, import_id) is None:
+            return None
+        result = (
+            self._t("csv_import_rows")
+            .insert(
+                {
+                    "import_id": import_id,
+                    "row_index": row_index,
+                    "raw_json": raw_json or {},
+                    "validation_errors": validation_errors or {},
+                    "status": status,
+                    "created_at": _now_iso(),
+                    "updated_at": _now_iso(),
+                }
+            )
+            .execute()
+        )
+        return _row_to_csv_import_row(result.data[0])
+
+    def list_csv_import_rows(
+        self,
+        scope: Scope,
+        import_id: int,
+        *,
+        status: str | None = None,
+        limit: int = 2000,
+        offset: int = 0,
+    ) -> list[CsvImportRow]:
+        if self.get_csv_import(scope, import_id) is None:
+            return []
+        query = self._t("csv_import_rows").select("*").eq("import_id", import_id)
+        if status is not None:
+            query = query.eq("status", status)
+        result = query.order("row_index").order("id").range(offset, offset + limit - 1).execute()
+        return [_row_to_csv_import_row(r) for r in result.data]
+
+    def update_csv_import_row(
+        self,
+        scope: Scope,
+        import_id: int,
+        row_id: int,
+        *,
+        raw_json: dict[str, Any] | None = None,
+        validation_errors: dict[str, Any] | None = None,
+        status: str | None = None,
+        referral_id: int | None = None,
+    ) -> CsvImportRow | None:
+        if status is not None and status not in IMPORT_ROW_STATUS_VALUES:
+            raise ValueError(f"Unknown row status: {status!r}")
+        if self.get_csv_import(scope, import_id) is None:
+            return None
+        fields: dict[str, Any] = {}
+        if raw_json is not None:
+            fields["raw_json"] = raw_json
+        if validation_errors is not None:
+            fields["validation_errors"] = validation_errors
+        if status is not None:
+            fields["status"] = status
+        if referral_id is not None:
+            fields["referral_id"] = referral_id
+        if not fields:
+            result = (
+                self._t("csv_import_rows")
+                .select("*")
+                .eq("id", row_id)
+                .eq("import_id", import_id)
+                .execute()
+            )
+            return _row_to_csv_import_row(result.data[0]) if result.data else None
+        fields["updated_at"] = _now_iso()
+        result = (
+            self._t("csv_import_rows")
+            .update(fields)
+            .eq("id", row_id)
+            .eq("import_id", import_id)
+            .execute()
+        )
+        return _row_to_csv_import_row(result.data[0]) if result.data else None
+
+    def delete_csv_import_row(self, scope: Scope, import_id: int, row_id: int) -> bool:
+        if self.get_csv_import(scope, import_id) is None:
+            return False
+        to_delete = (
+            self._t("csv_import_rows")
+            .select("id")
+            .eq("id", row_id)
+            .eq("import_id", import_id)
+            .execute()
+        )
+        if not to_delete.data:
+            return False
+        (self._t("csv_import_rows").delete().eq("id", row_id).eq("import_id", import_id).execute())
         return True
 
     def close(self) -> None:

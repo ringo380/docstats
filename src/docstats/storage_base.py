@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from docstats.domain.audit import AuditEvent
     from docstats.domain.orgs import Membership, Organization
     from docstats.domain.patients import Patient
+    from docstats.domain.imports import CsvImport, CsvImportRow
     from docstats.domain.reference import InsurancePlan, PayerRule, SpecialtyRule
     from docstats.domain.referrals import (
         Referral,
@@ -823,6 +824,85 @@ class StorageBase(ABC):
 
     @abstractmethod
     def delete_payer_rule(self, rule_id: int) -> bool: ...
+
+    # --- CSV imports (scope-owned) + import rows (scope-transitive) ---
+
+    @abstractmethod
+    def create_csv_import(
+        self,
+        scope: "Scope",
+        *,
+        original_filename: str,
+        uploaded_by_user_id: int | None = None,
+        row_count: int = 0,
+        mapping: dict[str, Any] | None = None,
+    ) -> "CsvImport": ...
+
+    @abstractmethod
+    def get_csv_import(self, scope: "Scope", import_id: int) -> "CsvImport | None": ...
+
+    @abstractmethod
+    def list_csv_imports(
+        self,
+        scope: "Scope",
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list["CsvImport"]: ...
+
+    @abstractmethod
+    def update_csv_import(
+        self,
+        scope: "Scope",
+        import_id: int,
+        *,
+        status: str | None = None,
+        row_count: int | None = None,
+        mapping: dict[str, Any] | None = None,
+        error_report: dict[str, Any] | None = None,
+    ) -> "CsvImport | None": ...
+
+    @abstractmethod
+    def delete_csv_import(self, scope: "Scope", import_id: int) -> bool: ...
+
+    @abstractmethod
+    def add_csv_import_row(
+        self,
+        scope: "Scope",
+        import_id: int,
+        *,
+        row_index: int,
+        raw_json: dict[str, Any] | None = None,
+        validation_errors: dict[str, Any] | None = None,
+        status: str = "pending",
+    ) -> "CsvImportRow | None": ...
+
+    @abstractmethod
+    def list_csv_import_rows(
+        self,
+        scope: "Scope",
+        import_id: int,
+        *,
+        status: str | None = None,
+        limit: int = 2000,
+        offset: int = 0,
+    ) -> list["CsvImportRow"]: ...
+
+    @abstractmethod
+    def update_csv_import_row(
+        self,
+        scope: "Scope",
+        import_id: int,
+        row_id: int,
+        *,
+        raw_json: dict[str, Any] | None = None,
+        validation_errors: dict[str, Any] | None = None,
+        status: str | None = None,
+        referral_id: int | None = None,
+    ) -> "CsvImportRow | None": ...
+
+    @abstractmethod
+    def delete_csv_import_row(self, scope: "Scope", import_id: int, row_id: int) -> bool: ...
 
     @abstractmethod
     def close(self) -> None: ...
