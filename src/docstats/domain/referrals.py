@@ -342,3 +342,86 @@ class ReferralResponse(BaseModel):
     recorded_by_user_id: int | None = None
     created_at: datetime
     updated_at: datetime
+
+
+# --- Completeness (Phase 2.D baseline; replaced by Phase 3 rules engine) ---
+
+
+class CompletenessItem(BaseModel):
+    """A single check result for the completeness panel."""
+
+    code: str  # stable identifier — used as the dedupe key when Phase 3 merges
+    label: str  # human-readable description, shown in the UI
+    required: bool  # True = blocks "ready"; False = recommended-only
+    satisfied: bool
+
+
+class CompletenessReport(BaseModel):
+    """Result of evaluating a referral against a rule set."""
+
+    items: list[CompletenessItem]
+
+    @property
+    def missing_required(self) -> list[CompletenessItem]:
+        return [i for i in self.items if i.required and not i.satisfied]
+
+    @property
+    def missing_recommended(self) -> list[CompletenessItem]:
+        return [i for i in self.items if not i.required and not i.satisfied]
+
+    @property
+    def is_complete(self) -> bool:
+        return not self.missing_required
+
+
+def baseline_completeness(referral: Referral) -> CompletenessReport:
+    """Minimum-viable completeness check — not specialty-aware.
+
+    The Phase 3 rules engine merges specialty + payer rules on top of this
+    baseline. Until then every referral goes through the same check.
+    """
+
+    def _nonblank(v: str | None) -> bool:
+        return bool(v and v.strip())
+
+    items = [
+        CompletenessItem(
+            code="reason",
+            label="Reason for referral",
+            required=True,
+            satisfied=_nonblank(referral.reason),
+        ),
+        CompletenessItem(
+            code="receiving_side",
+            label="Receiving provider (NPI) or organization name",
+            required=True,
+            satisfied=_nonblank(referral.receiving_provider_npi)
+            or _nonblank(referral.receiving_organization_name),
+        ),
+        CompletenessItem(
+            code="specialty",
+            label="Specialty description",
+            required=True,
+            satisfied=_nonblank(referral.specialty_desc),
+        ),
+        CompletenessItem(
+            code="clinical_question",
+            label="Specific clinical question",
+            required=False,
+            satisfied=_nonblank(referral.clinical_question),
+        ),
+        CompletenessItem(
+            code="primary_diagnosis",
+            label="Primary diagnosis (ICD-10)",
+            required=False,
+            satisfied=_nonblank(referral.diagnosis_primary_icd)
+            or _nonblank(referral.diagnosis_primary_text),
+        ),
+        CompletenessItem(
+            code="referring_side",
+            label="Referring provider name",
+            required=False,
+            satisfied=_nonblank(referral.referring_provider_name),
+        ),
+    ]
+    return CompletenessReport(items=items)

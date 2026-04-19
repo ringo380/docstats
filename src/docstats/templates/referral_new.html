@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}New referral — referme.help{% endblock %}
+
+{% block content %}
+<div class="back-link"><a href="/referrals">← Referrals</a></div>
+<h1>New referral</h1>
+
+{% if errors %}
+  <div class="alert alert-error">
+    <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+{% endif %}
+
+{% if not patients %}
+  <div class="alert">
+    <p>You need at least one patient before creating a referral.</p>
+    <p><a href="/patients/new" class="btn btn-primary">+ Create patient first</a></p>
+  </div>
+{% else %}
+
+<form method="post" action="/referrals" class="patient-form">
+  <fieldset>
+    <legend>Patient</legend>
+    <label>Select patient *
+      <select name="patient_id" required>
+        <option value="">— choose —</option>
+        {% for p in patients %}
+          <option value="{{ p.id }}" {% if values.patient_id == p.id|string %}selected{% endif %}>
+            {{ p.display_name }}{% if p.date_of_birth %} · DOB {{ p.date_of_birth }}{% endif %}{% if p.mrn %} · MRN {{ p.mrn }}{% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="sub"><a href="/patients/new">+ Add a new patient</a> (opens patient form)</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Clinical reason</legend>
+    <label>Reason for referral *
+      <input type="text" name="reason" required maxlength="500" value="{{ values.reason or '' }}"
+             placeholder="e.g. Chest pain, rule out cardiac cause">
+    </label>
+    <label>Specific clinical question
+      <textarea name="clinical_question" rows="3" maxlength="2000"
+                placeholder="What question are you asking the specialist to answer?">{{ values.clinical_question or '' }}</textarea>
+    </label>
+    <div class="grid-2">
+      <label>Urgency *
+        <select name="urgency" required>
+          {% for u in urgency_values %}
+            <option value="{{ u }}" {% if (values.urgency or 'routine') == u %}selected{% endif %}>{{ u | title }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Requested service
+        <input type="text" name="requested_service" maxlength="200" value="{{ values.requested_service or '' }}"
+               placeholder="e.g. Consult + echo">
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Receiving specialist</legend>
+    <div class="grid-2">
+      <label>Provider NPI
+        <input type="text" name="receiving_provider_npi" maxlength="10" pattern="\d{10}" value="{{ values.receiving_provider_npi or '' }}"
+               placeholder="10 digits (optional)">
+      </label>
+      <label>Organization / clinic
+        <input type="text" name="receiving_organization_name" maxlength="200" value="{{ values.receiving_organization_name or '' }}"
+               placeholder="e.g. Stanford Cardiology">
+      </label>
+      <label>Specialty description
+        <input type="text" name="specialty_desc" maxlength="200" value="{{ values.specialty_desc or '' }}"
+               placeholder="e.g. Cardiology">
+      </label>
+      <label>Specialty taxonomy code
+        <input type="text" name="specialty_code" maxlength="16" value="{{ values.specialty_code or '' }}"
+               placeholder="e.g. 207RC0000X">
+      </label>
+    </div>
+    <div class="sub">Full NPPES search + typeahead arrives in Phase 2.D. For now, paste the NPI from the <a href="/" target="_blank">search page</a>.</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Referring side <span class="sub">(you or your practice)</span></legend>
+    <div class="grid-2">
+      <label>Provider name
+        <input type="text" name="referring_provider_name" maxlength="200" value="{{ values.referring_provider_name or '' }}">
+      </label>
+      <label>Provider NPI
+        <input type="text" name="referring_provider_npi" maxlength="10" pattern="\d{10}" value="{{ values.referring_provider_npi or '' }}">
+      </label>
+      <label>Organization
+        <input type="text" name="referring_organization" maxlength="200" value="{{ values.referring_organization or '' }}">
+      </label>
+    </div>
+  </fieldset>
+
+  <div class="action-bar">
+    <a href="/referrals" class="btn btn-secondary">Cancel</a>
+    <button type="submit" class="btn btn-primary">Create as draft</button>
+  </div>
+</form>
+
+{% endif %}
+{% endblock %}

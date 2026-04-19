@@ -23,7 +23,9 @@ from docstats.routes._common import MAPBOX_TOKEN, US_STATES, get_client, render,
 from docstats.routes.api import router as api_router
 from docstats.routes.auth import router as auth_router
 from docstats.routes.onboarding import router as onboarding_router
+from docstats.routes.patients import router as patients_router
 from docstats.routes.profile import router as profile_router
+from docstats.routes.referrals import router as referrals_router
 from docstats.routes.providers import router as providers_router
 from docstats.routes.saved import router as saved_router
 from docstats.routes.search import router as search_router
@@ -79,6 +81,32 @@ async def robots_txt():
     return "User-agent: *\nDisallow: /\n"
 
 
+# --- /saved → /rolodex legacy redirects (Phase 2.E).
+# Users bookmarked the old paths pre-rename; 301-redirect permanently so the
+# browser and search engines update their cache. Keeping these as dedicated
+# routes (rather than a catch-all middleware) keeps the surface auditable.
+
+
+@app.get("/saved")
+async def _saved_redirect():
+    return RedirectResponse("/rolodex", status_code=301)
+
+
+@app.get("/saved/export")
+async def _saved_export_redirect():
+    return RedirectResponse("/rolodex/export", status_code=301)
+
+
+@app.get("/saved/export/csv")
+async def _saved_export_csv_redirect():
+    return RedirectResponse("/rolodex/export/csv", status_code=301)
+
+
+@app.get("/saved/export/json")
+async def _saved_export_json_redirect():
+    return RedirectResponse("/rolodex/export/json", status_code=301)
+
+
 # --- Include routers (order matters: specific routes before parameterized) ---
 
 app.include_router(auth_router)
@@ -86,6 +114,8 @@ app.include_router(onboarding_router)
 app.include_router(profile_router)
 app.include_router(search_router)
 app.include_router(api_router)
+app.include_router(patients_router)
+app.include_router(referrals_router)
 app.include_router(saved_router)
 app.include_router(providers_router)
 

@@ -1,0 +1,36 @@
+{# Single row in the workspace queue. Expects: r (Referral), patients_by_id (dict). #}
+{% set patient = patients_by_id.get(r.patient_id) %}
+<tr class="referral-row">
+  <td class="urgency-cell">
+    <span class="urgency-dot urgency-{{ r.urgency }}" title="{{ r.urgency | title }}"></span>
+    <span class="urgency-label">{{ r.urgency | title }}</span>
+  </td>
+  <td>
+    {% if patient %}
+      <a href="/patients/{{ patient.id }}">{{ patient.display_name }}</a>
+      {% if patient.date_of_birth %}<div class="sub">DOB {{ patient.date_of_birth }}</div>{% endif %}
+    {% else %}
+      <span class="muted">Patient {{ r.patient_id }}</span>
+    {% endif %}
+  </td>
+  <td>
+    <span class="status-chip status-{{ r.status }}">{{ r.status | replace('_', ' ') | title }}</span>
+  </td>
+  <td>
+    {% if r.specialty_desc %}{{ r.specialty_desc }}{% else %}<span class="muted">—</span>{% endif %}
+  </td>
+  <td>
+    {% if r.receiving_organization_name %}{{ r.receiving_organization_name }}
+    {% elif r.receiving_provider_npi %}NPI {{ r.receiving_provider_npi }}
+    {% else %}<span class="muted">—</span>{% endif %}
+  </td>
+  <td>
+    {% if r.diagnosis_primary_text %}{{ r.diagnosis_primary_text }}
+    {% elif r.diagnosis_primary_icd %}{{ r.diagnosis_primary_icd }}
+    {% else %}<span class="muted">—</span>{% endif %}
+  </td>
+  <td class="updated-cell">{{ r.updated_at.strftime('%Y-%m-%d') }}</td>
+  <td class="row-actions">
+    <a href="/referrals/{{ r.id }}" class="btn btn-blue btn-sm">Open</a>
+  </td>
+</tr>

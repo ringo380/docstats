@@ -1,17 +1,17 @@
 {% extends "base.html" %}
-{% block title %}My Referrals — referme.help{% endblock %}
+{% block title %}Rolodex — referme.help{% endblock %}
 
 {% block content %}
   <div class="saved-header">
     <div>
-      <h1>My Referrals</h1>
+      <h1>Rolodex</h1>
       <div class="sub" id="saved-count">{{ providers | length }} provider{% if providers | length != 1 %}s{% endif %} saved</div>
     </div>
     {% if providers %}
       <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-        <a href="/saved/export" class="btn btn-blue">⬇ Export All (PDF)</a>
-        <a href="/saved/export/csv" class="btn btn-blue" download>⬇ CSV</a>
-        <a href="/saved/export/json" class="btn btn-blue" download>⬇ JSON</a>
+        <a href="/rolodex/export" class="btn btn-blue">⬇ Export All (PDF)</a>
+        <a href="/rolodex/export/csv" class="btn btn-blue" download>⬇ CSV</a>
+        <a href="/rolodex/export/json" class="btn btn-blue" download>⬇ JSON</a>
       </div>
     {% endif %}
   </div>

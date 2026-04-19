@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}Referral #{{ referral.id }} — referme.help{% endblock %}
+
+{% block content %}
+<div class="back-link"><a href="/referrals">← Referrals</a></div>
+
+<div class="saved-header">
+  <div>
+    <h1>Referral #{{ referral.id }}</h1>
+    <div class="sub">
+      {% if patient %}
+        <a href="/patients/{{ patient.id }}">{{ patient.display_name }}</a>
+        {% if patient.date_of_birth %} · DOB {{ patient.date_of_birth }}{% endif %}
+      {% else %}
+        <span class="muted">Patient {{ referral.patient_id }}</span>
+      {% endif %}
+      &nbsp;·&nbsp;
+      <span class="urgency-dot urgency-{{ referral.urgency }}"></span>
+      <span class="urgency-label">{{ referral.urgency | title }}</span>
+      &nbsp;·&nbsp;
+      <span class="status-chip status-{{ referral.status }}">{{ referral.status | replace('_', ' ') | title }}</span>
+    </div>
+  </div>
+  <div>
+    <button type="button" class="btn btn-danger"
+            hx-delete="/referrals/{{ referral.id }}"
+            hx-confirm="Soft-delete this referral? Events remain in the audit trail.">Delete</button>
+  </div>
+</div>
+
+{% if errors %}
+  <div class="alert alert-error">
+    <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+{% endif %}
+
+{# --- Status transitions --- #}
+<div class="status-transitions card" style="margin-bottom:14px;">
+  <h3>Status</h3>
+  {% if allowed_next %}
+    <form method="post" action="/referrals/{{ referral.id }}/status" class="inline-form">
+      <label>Move to:
+        <select name="new_status">
+          {% for s in allowed_next %}
+            <option value="{{ s }}">{{ s | replace('_', ' ') | title }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="btn btn-primary btn-sm">Transition</button>
+    </form>
+  {% else %}
+    <p class="sub">Terminal status — no further transitions.</p>
+  {% endif %}
+</div>
+
+<div class="detail-layout">
+  <form method="post" action="/referrals/{{ referral.id }}" class="patient-form">
+    <fieldset>
+      <legend>Clinical reason</legend>
+      <label>Reason
+        <input type="text" name="reason" maxlength="500" value="{{ referral.reason or '' }}">
+      </label>
+      <label>Clinical question
+        <textarea name="clinical_question" rows="3" maxlength="2000">{{ referral.clinical_question or '' }}</textarea>
+      </label>
+      <div class="grid-2">
+        <label>Urgency
+          <select name="urgency">
+            {% for u in urgency_values %}
+              <option value="{{ u }}" {% if referral.urgency == u %}selected{% endif %}>{{ u | title }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Requested service
+          <input type="text" name="requested_service" maxlength="200" value="{{ referral.requested_service or '' }}">
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Primary diagnosis <span class="sub">(read-only here — edit via the diagnoses sub-table)</span></legend>
+      <div class="grid-2">
+        <label>ICD-10 code
+          <input type="text" value="{{ referral.diagnosis_primary_icd or '' }}" readonly>
+        </label>
+        <label>Description
+          <input type="text" value="{{ referral.diagnosis_primary_text or '' }}" readonly>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Receiving specialist</legend>
+      <div class="grid-2">
+        <label>Provider NPI
+          <input type="text" name="receiving_provider_npi" maxlength="10" pattern="\d{10}" value="{{ referral.receiving_provider_npi or '' }}">
+        </label>
+        <label>Organization / clinic
+          <input type="text" name="receiving_organization_name" maxlength="200" value="{{ referral.receiving_organization_name or '' }}">
+        </label>
+        <label>Specialty description
+          <input type="text" name="specialty_desc" maxlength="200" value="{{ referral.specialty_desc or '' }}">
+        </label>
+        <label>Specialty taxonomy code
+          <input type="text" name="specialty_code" maxlength="16" value="{{ referral.specialty_code or '' }}">
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Referring side</legend>
+      <div class="grid-2">
+        <label>Provider name
+          <input type="text" name="referring_provider_name" maxlength="200" value="{{ referral.referring_provider_name or '' }}">
+        </label>
+        <label>Provider NPI
+          <input type="text" name="referring_provider_npi" maxlength="10" pattern="\d{10}" value="{{ referral.referring_provider_npi or '' }}">
+        </label>
+        <label>Organization
+          <input type="text" name="referring_organization" maxlength="200" value="{{ referral.referring_organization or '' }}">
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Authorization</legend>
+      <div class="grid-2">
+        <label>Auth number
+          <input type="text" name="authorization_number" maxlength="64" value="{{ referral.authorization_number or '' }}">
+        </label>
+        <label>Auth status
+          <select name="authorization_status">
+            {% for s in auth_status_values %}
+              <option value="{{ s }}" {% if referral.authorization_status == s %}selected{% endif %}>{{ s | replace('_', ' ') | title }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+    </fieldset>
+
+    <div class="action-bar">
+      <a href="/referrals" class="btn btn-secondary">Back</a>
+      <button type="submit" class="btn btn-primary">Save changes</button>
+    </div>
+  </form>
+
+  <aside class="side-rail">
+    <div id="completeness-panel">
+      {% include "_referral_completeness.html" %}
+    </div>
+
+    <section class="card">
+      <h3>Timeline</h3>
+      {% if events %}
+        <ol class="event-log">
+          {% for e in events %}
+            <li>
+              <span class="event-type">{{ e.event_type | replace('_', ' ') | title }}</span>
+              {% if e.from_value or e.to_value %}
+                <div class="sub">
+                  {% if e.event_type == 'field_edited' %}
+                    {{ e.from_value }}: {{ e.to_value or '—' }}
+                  {% elif e.event_type == 'status_changed' %}
+                    {{ e.from_value }} → {{ e.to_value }}
+                  {% else %}
+                    {{ e.to_value or e.from_value }}
+                  {% endif %}
+                </div>
+              {% endif %}
+              <div class="sub">{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+            </li>
+          {% endfor %}
+        </ol>
+      {% else %}
+        <p class="sub">No events yet.</p>
+      {% endif %}
+    </section>
+  </aside>
+</div>
+{% endblock %}
