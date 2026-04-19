@@ -17,6 +17,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from docstats.domain.audit import AuditEvent
+from docstats.domain.imports import (
+    IMPORT_ROW_STATUS_VALUES,
+    IMPORT_STATUS_VALUES,
+    CsvImport,
+    CsvImportRow,
+)
 from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.patients import Patient
 from docstats.domain.reference import (
@@ -261,6 +267,42 @@ def _row_to_referral_attachment(row: sqlite3.Row) -> ReferralAttachment:
     )
 
 
+def _row_to_csv_import(row: sqlite3.Row) -> CsvImport:
+    created = _parse_sqlite_utc(row["created_at"])
+    updated = _parse_sqlite_utc(row["updated_at"])
+    assert created is not None and updated is not None
+    return CsvImport(
+        id=int(row["id"]),
+        scope_user_id=row["scope_user_id"],
+        scope_organization_id=row["scope_organization_id"],
+        uploaded_by_user_id=row["uploaded_by_user_id"],
+        original_filename=row["original_filename"],
+        row_count=int(row["row_count"]),
+        status=row["status"],
+        mapping=json.loads(row["mapping"]) if row["mapping"] else {},
+        error_report=json.loads(row["error_report"]) if row["error_report"] else {},
+        created_at=created,
+        updated_at=updated,
+    )
+
+
+def _row_to_csv_import_row(row: sqlite3.Row) -> CsvImportRow:
+    created = _parse_sqlite_utc(row["created_at"])
+    updated = _parse_sqlite_utc(row["updated_at"])
+    assert created is not None and updated is not None
+    return CsvImportRow(
+        id=int(row["id"]),
+        import_id=int(row["import_id"]),
+        row_index=int(row["row_index"]),
+        raw_json=json.loads(row["raw_json"]) if row["raw_json"] else {},
+        validation_errors=json.loads(row["validation_errors"]) if row["validation_errors"] else {},
+        referral_id=row["referral_id"],
+        status=row["status"],
+        created_at=created,
+        updated_at=updated,
+    )
+
+
 def _row_to_referral_response(row: sqlite3.Row) -> ReferralResponse:
     created = _parse_sqlite_utc(row["created_at"])
     updated = _parse_sqlite_utc(row["updated_at"])
@@ -474,6 +516,7 @@ class Storage(StorageBase):
         self._migrate_referral_clinical()
         self._migrate_referral_responses()
         self._migrate_reference_data()
+        self._migrate_csv_imports()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -967,6 +1010,56 @@ class Storage(StorageBase):
             CREATE UNIQUE INDEX IF NOT EXISTS idx_payer_rules_org_key
                 ON payer_rules(organization_id, payer_key)
                 WHERE organization_id IS NOT NULL;
+        """)
+        self._conn.commit()
+
+    def _migrate_csv_imports(self) -> None:
+        """Create csv_imports + csv_import_rows (Phase 1.F)."""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS csv_imports (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_user_id            INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                scope_organization_id    INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+                uploaded_by_user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                original_filename        TEXT NOT NULL,
+                row_count                INTEGER NOT NULL DEFAULT 0,
+                status                   TEXT NOT NULL DEFAULT 'uploaded'
+                    CHECK (status IN ('uploaded','mapped','validated','committed','failed')),
+                mapping                  TEXT NOT NULL DEFAULT '{}',
+                error_report             TEXT NOT NULL DEFAULT '{}',
+                created_at               TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (
+                    (scope_user_id IS NOT NULL AND scope_organization_id IS NULL)
+                    OR (scope_user_id IS NULL AND scope_organization_id IS NOT NULL)
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_csv_imports_scope_user
+                ON csv_imports(scope_user_id, created_at DESC)
+                WHERE scope_user_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_csv_imports_scope_org
+                ON csv_imports(scope_organization_id, created_at DESC)
+                WHERE scope_organization_id IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS csv_import_rows (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                import_id           INTEGER NOT NULL REFERENCES csv_imports(id) ON DELETE CASCADE,
+                row_index           INTEGER NOT NULL,
+                raw_json            TEXT NOT NULL DEFAULT '{}',
+                validation_errors   TEXT NOT NULL DEFAULT '{}',
+                referral_id         INTEGER REFERENCES referrals(id) ON DELETE SET NULL,
+                status              TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','valid','error','committed','skipped')),
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_csv_import_rows_import
+                ON csv_import_rows(import_id, row_index);
+            CREATE INDEX IF NOT EXISTS idx_csv_import_rows_status
+                ON csv_import_rows(import_id, status)
+                WHERE status IN ('error','pending');
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_csv_import_rows_unique_index
+                ON csv_import_rows(import_id, row_index);
         """)
         self._conn.commit()
 
@@ -2984,6 +3077,211 @@ class Storage(StorageBase):
 
     def delete_payer_rule(self, rule_id: int) -> bool:
         cursor = self._conn.execute("DELETE FROM payer_rules WHERE id = ?", (rule_id,))
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- CSV imports (scope-owned) + import rows (scope-transitive) ---
+
+    def create_csv_import(
+        self,
+        scope: Scope,
+        *,
+        original_filename: str,
+        uploaded_by_user_id: int | None = None,
+        row_count: int = 0,
+        mapping: dict[str, Any] | None = None,
+    ) -> CsvImport:
+        scope_sql_clause(scope)  # raises on anonymous
+        cursor = self._conn.execute(
+            """INSERT INTO csv_imports
+               (scope_user_id, scope_organization_id, uploaded_by_user_id,
+                original_filename, row_count, mapping)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                scope.user_id if scope.is_solo else None,
+                scope.organization_id if scope.is_org else None,
+                uploaded_by_user_id,
+                original_filename,
+                row_count,
+                json.dumps(mapping or {}),
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM csv_imports WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_csv_import(row)
+
+    def get_csv_import(self, scope: Scope, import_id: int) -> CsvImport | None:
+        clause, params = scope_sql_clause(scope)
+        row = self._conn.execute(
+            f"SELECT * FROM csv_imports WHERE id = ? AND {clause}",
+            [import_id, *params],
+        ).fetchone()
+        return _row_to_csv_import(row) if row else None
+
+    def list_csv_imports(
+        self, scope: Scope, *, limit: int = 50, offset: int = 0
+    ) -> list[CsvImport]:
+        clause, params = scope_sql_clause(scope)
+        rows = self._conn.execute(
+            f"SELECT * FROM csv_imports WHERE {clause} "
+            "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            [*params, int(limit), int(offset)],
+        ).fetchall()
+        return [_row_to_csv_import(r) for r in rows]
+
+    def update_csv_import(
+        self,
+        scope: Scope,
+        import_id: int,
+        *,
+        status: str | None = None,
+        row_count: int | None = None,
+        mapping: dict[str, Any] | None = None,
+        error_report: dict[str, Any] | None = None,
+    ) -> CsvImport | None:
+        if status is not None and status not in IMPORT_STATUS_VALUES:
+            raise ValueError(f"Unknown import status: {status!r}")
+        fields: dict[str, Any] = {}
+        if status is not None:
+            fields["status"] = status
+        if row_count is not None:
+            fields["row_count"] = row_count
+        if mapping is not None:
+            fields["mapping"] = json.dumps(mapping)
+        if error_report is not None:
+            fields["error_report"] = json.dumps(error_report)
+        if not fields:
+            return self.get_csv_import(scope, import_id)
+        clause, scope_params = scope_sql_clause(scope)
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        cursor = self._conn.execute(
+            f"UPDATE csv_imports SET {set_clause}, updated_at = datetime('now') "
+            f"WHERE id = ? AND {clause}",
+            [*fields.values(), import_id, *scope_params],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_csv_import(scope, import_id)
+
+    def delete_csv_import(self, scope: Scope, import_id: int) -> bool:
+        # Hard delete — an import is ephemeral staging data. Audit log
+        # captures the batch_committed / batch_failed event separately.
+        clause, params = scope_sql_clause(scope)
+        cursor = self._conn.execute(
+            f"DELETE FROM csv_imports WHERE id = ? AND {clause}",
+            [import_id, *params],
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def add_csv_import_row(
+        self,
+        scope: Scope,
+        import_id: int,
+        *,
+        row_index: int,
+        raw_json: dict[str, Any] | None = None,
+        validation_errors: dict[str, Any] | None = None,
+        status: str = "pending",
+    ) -> CsvImportRow | None:
+        if status not in IMPORT_ROW_STATUS_VALUES:
+            raise ValueError(f"Unknown row status: {status!r}")
+        if self.get_csv_import(scope, import_id) is None:
+            return None
+        cursor = self._conn.execute(
+            """INSERT INTO csv_import_rows
+               (import_id, row_index, raw_json, validation_errors, status)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                import_id,
+                row_index,
+                json.dumps(raw_json or {}),
+                json.dumps(validation_errors or {}),
+                status,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM csv_import_rows WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _row_to_csv_import_row(row)
+
+    def list_csv_import_rows(
+        self,
+        scope: Scope,
+        import_id: int,
+        *,
+        status: str | None = None,
+        limit: int = 2000,
+        offset: int = 0,
+    ) -> list[CsvImportRow]:
+        if self.get_csv_import(scope, import_id) is None:
+            return []
+        where = ["import_id = ?"]
+        params: list[Any] = [import_id]
+        if status is not None:
+            where.append("status = ?")
+            params.append(status)
+        params.extend([int(limit), int(offset)])
+        rows = self._conn.execute(
+            f"SELECT * FROM csv_import_rows WHERE {' AND '.join(where)} "
+            "ORDER BY row_index ASC, id ASC LIMIT ? OFFSET ?",
+            params,
+        ).fetchall()
+        return [_row_to_csv_import_row(r) for r in rows]
+
+    def update_csv_import_row(
+        self,
+        scope: Scope,
+        import_id: int,
+        row_id: int,
+        *,
+        raw_json: dict[str, Any] | None = None,
+        validation_errors: dict[str, Any] | None = None,
+        status: str | None = None,
+        referral_id: int | None = None,
+    ) -> CsvImportRow | None:
+        if status is not None and status not in IMPORT_ROW_STATUS_VALUES:
+            raise ValueError(f"Unknown row status: {status!r}")
+        if self.get_csv_import(scope, import_id) is None:
+            return None
+        fields: dict[str, Any] = {}
+        if raw_json is not None:
+            fields["raw_json"] = json.dumps(raw_json)
+        if validation_errors is not None:
+            fields["validation_errors"] = json.dumps(validation_errors)
+        if status is not None:
+            fields["status"] = status
+        if referral_id is not None:
+            fields["referral_id"] = referral_id
+        if not fields:
+            row = self._conn.execute(
+                "SELECT * FROM csv_import_rows WHERE id = ? AND import_id = ?",
+                (row_id, import_id),
+            ).fetchone()
+            return _row_to_csv_import_row(row) if row else None
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        cursor = self._conn.execute(
+            f"UPDATE csv_import_rows SET {set_clause}, updated_at = datetime('now') "
+            "WHERE id = ? AND import_id = ?",
+            [*fields.values(), row_id, import_id],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = self._conn.execute("SELECT * FROM csv_import_rows WHERE id = ?", (row_id,)).fetchone()
+        return _row_to_csv_import_row(row) if row else None
+
+    def delete_csv_import_row(self, scope: Scope, import_id: int, row_id: int) -> bool:
+        if self.get_csv_import(scope, import_id) is None:
+            return False
+        cursor = self._conn.execute(
+            "DELETE FROM csv_import_rows WHERE id = ? AND import_id = ?",
+            (row_id, import_id),
+        )
         self._conn.commit()
         return cursor.rowcount > 0
 
