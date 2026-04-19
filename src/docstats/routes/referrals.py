@@ -25,8 +25,12 @@ from docstats.domain.referrals import (
     STATUS_VALUES,
     URGENCY_VALUES,
     InvalidTransition,
-    baseline_completeness,
     require_transition,
+)
+from docstats.domain.rules import (
+    detect_red_flags_in_text,
+    resolve_specialty_rule,
+    rules_based_completeness,
 )
 from docstats.phi import require_phi_consent
 from docstats.routes._common import get_scope, render, saved_count
@@ -122,6 +126,46 @@ async def referrals_workspace(
 # --- Create (Phase 2.C) ---
 
 
+@router.get("/intake-questions", response_class=HTMLResponse)
+async def referral_intake_questions(
+    request: Request,
+    specialty_code: str = Query("", max_length=16),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """htmx partial: specialty-aware intake prompts for the create wizard.
+
+    Empty `specialty_code` returns an empty fragment (the caller hides the
+    panel). Unknown code also returns empty.
+    """
+    rule = resolve_specialty_rule(storage, scope.organization_id, _clean(specialty_code))
+    prompts: list[str] = []
+    rejection_hints: list[str] = []
+    if rule is not None:
+        raw = rule.intake_questions.get("prompts", []) if rule.intake_questions else []
+        if isinstance(raw, list):
+            prompts = [str(p) for p in raw if isinstance(p, str)]
+        raw_reasons = (
+            rule.common_rejection_reasons.get("reasons", [])
+            if rule.common_rejection_reasons
+            else []
+        )
+        if isinstance(raw_reasons, list):
+            rejection_hints = [str(x) for x in raw_reasons if isinstance(x, str)]
+    return render(
+        "_referral_intake_questions.html",
+        _ctx(
+            request,
+            current_user,
+            storage,
+            specialty_rule=rule,
+            prompts=prompts,
+            rejection_hints=rejection_hints,
+        ),
+    )
+
+
 @router.get("/new", response_class=HTMLResponse)
 async def referral_new_form(
     request: Request,
@@ -202,18 +246,32 @@ async def referral_create(
     recv_npi = _validate_optional_npi(receiving_provider_npi, "Receiving provider NPI")
     ref_npi = _validate_optional_npi(referring_provider_npi, "Referring provider NPI")
 
+    # Red-flag auto-escalation: scan reason + clinical_question against the
+    # picked specialty's urgency_red_flags keywords. If the user left urgency
+    # at "routine" and we hit a flag, bump to "urgent". Higher user-set
+    # urgency (priority/stat) is preserved — we never downgrade or override
+    # an explicit coordinator judgment.
+    final_urgency = urgency
+    red_flag_hits: list[str] = []
+    specialty_code_clean = _clean(specialty_code)
+    if specialty_code_clean:
+        rule = resolve_specialty_rule(storage, scope.organization_id, specialty_code_clean)
+        red_flag_hits = detect_red_flags_in_text(reason_clean, _clean(clinical_question), rule)
+        if red_flag_hits and urgency == "routine":
+            final_urgency = "urgent"
+
     try:
         referral = storage.create_referral(
             scope,
             patient_id=patient_id,
             reason=reason_clean,
             clinical_question=_clean(clinical_question),
-            urgency=urgency,
+            urgency=final_urgency,
             requested_service=_clean(requested_service),
             receiving_provider_npi=recv_npi,
             receiving_organization_name=_clean(receiving_organization_name),
             specialty_desc=_clean(specialty_desc),
-            specialty_code=_clean(specialty_code),
+            specialty_code=specialty_code_clean,
             referring_provider_name=_clean(referring_provider_name),
             referring_provider_npi=ref_npi,
             referring_organization=_clean(referring_organization),
@@ -222,6 +280,21 @@ async def referral_create(
     except ValueError as e:
         # Cross-scope patient_id or unknown enum value.
         return _rerender([str(e)])
+
+    # If we escalated, record a field_edited event so the timeline shows why.
+    if final_urgency != urgency:
+        try:
+            storage.record_referral_event(
+                scope,
+                referral.id,
+                event_type="field_edited",
+                from_value=urgency,
+                to_value=final_urgency,
+                actor_user_id=current_user["id"],
+                note=f"urgency (auto-escalated: red flags {', '.join(red_flag_hits)})",
+            )
+        except Exception:
+            logger.exception("Failed to record auto-urgency event for referral %s", referral.id)
 
     audit_record(
         storage,
@@ -232,7 +305,12 @@ async def referral_create(
         scope_organization_id=scope.organization_id,
         entity_type="referral",
         entity_id=str(referral.id),
-        metadata={"patient_id": patient_id, "urgency": urgency},
+        metadata={
+            "patient_id": patient_id,
+            "urgency": final_urgency,
+            "urgency_escalated": final_urgency != urgency,
+            "red_flags": red_flag_hits,
+        },
     )
     dest = f"/referrals/{referral.id}"
     if request.headers.get("HX-Request"):
@@ -266,7 +344,7 @@ def _render_detail(
         raise HTTPException(status_code=404, detail="Referral not found.")
     patient = storage.get_patient(scope, referral.patient_id)
     events = storage.list_referral_events(scope, referral_id, limit=50)
-    completeness = baseline_completeness(referral)
+    completeness = rules_based_completeness(storage, scope, referral)
     return render(
         "referral_detail.html",
         _ctx(
@@ -307,7 +385,7 @@ async def referral_completeness(
     referral = storage.get_referral(scope, referral_id)
     if referral is None:
         raise HTTPException(status_code=404, detail="Referral not found.")
-    completeness = baseline_completeness(referral)
+    completeness = rules_based_completeness(storage, scope, referral)
     return render(
         "_referral_completeness.html",
         _ctx(

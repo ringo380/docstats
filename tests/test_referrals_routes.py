@@ -477,6 +477,116 @@ def test_completeness_shows_required_missing(solo_client):
     assert "required field" in resp.text.lower()
 
 
+def test_create_escalates_urgency_on_red_flag(solo_client):
+    """Routine urgency + a seeded red-flag keyword in reason auto-escalates
+    to 'urgent' and emits a field_edited event on the timeline."""
+    from docstats.domain.seed import seed_platform_defaults
+
+    client, storage, user_id = solo_client
+    seed_platform_defaults(storage)
+    scope = Scope(user_id=user_id)
+    patient = storage.create_patient(
+        scope, first_name="Red", last_name="Flag", created_by_user_id=user_id
+    )
+    resp = client.post(
+        "/referrals",
+        data={
+            "patient_id": patient.id,
+            "reason": "chest pain and syncope",
+            "urgency": "routine",
+            "specialty_code": "207RC0000X",
+            "specialty_desc": "Cardiology",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    referral_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    r = storage.get_referral(scope, referral_id)
+    assert r.urgency == "urgent"
+    # Timeline captures the escalation
+    events = storage.list_referral_events(scope, referral_id)
+    assert any(
+        e.event_type == "field_edited"
+        and e.to_value == "urgent"
+        and "auto-escalated" in (e.note or "")
+        for e in events
+    )
+
+
+def test_create_preserves_higher_urgency(solo_client):
+    """User-set urgency higher than 'routine' is never overridden by
+    auto-escalation."""
+    from docstats.domain.seed import seed_platform_defaults
+
+    client, storage, user_id = solo_client
+    seed_platform_defaults(storage)
+    scope = Scope(user_id=user_id)
+    patient = storage.create_patient(
+        scope, first_name="A", last_name="B", created_by_user_id=user_id
+    )
+    resp = client.post(
+        "/referrals",
+        data={
+            "patient_id": patient.id,
+            "reason": "chest pain",
+            "urgency": "stat",  # user picked higher than urgent
+            "specialty_code": "207RC0000X",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    r = storage.get_referral(scope, int(resp.headers["location"].rsplit("/", 1)[-1]))
+    assert r.urgency == "stat"  # not downgraded
+
+
+def test_intake_questions_endpoint(solo_client):
+    from docstats.domain.seed import seed_platform_defaults
+
+    client, storage, _ = solo_client
+    seed_platform_defaults(storage)
+    resp = client.get("/referrals/intake-questions", params={"specialty_code": "207RC0000X"})
+    assert resp.status_code == 200
+    # Cardiology intake prompts seeded in SPECIALTY_DEFAULTS
+    assert "Family history" in resp.text or "cardiac" in resp.text.lower()
+
+
+def test_intake_questions_unknown_code_empty(solo_client):
+    client, _, _ = solo_client
+    resp = client.get("/referrals/intake-questions", params={"specialty_code": "BOGUS"})
+    assert resp.status_code == 200
+    # Empty specialty → template renders blank wrapper
+    assert "intake-panel" not in resp.text.lower() or resp.text.strip() == ""
+
+
+def test_completeness_surfaces_red_flags(solo_client):
+    """With cardiology rules seeded, a chest-pain referral surfaces the
+    red-flag section in the rendered partial."""
+    from docstats.domain.seed import seed_platform_defaults
+
+    client, storage, user_id = solo_client
+    seed_platform_defaults(storage)
+    scope = Scope(user_id=user_id)
+    patient = storage.create_patient(
+        scope, first_name="P", last_name="Q", created_by_user_id=user_id
+    )
+    r = storage.create_referral(
+        scope,
+        patient_id=patient.id,
+        reason="New-onset chest pain with syncope",
+        specialty_code="207RC0000X",
+        specialty_desc="Cardiology",
+        receiving_organization_name="Heart Clinic",
+        created_by_user_id=user_id,
+    )
+    resp = client.get(f"/referrals/{r.id}/completeness")
+    assert resp.status_code == 200
+    assert "Red-flag" in resp.text or "red-flag" in resp.text.lower()
+    assert "chest pain" in resp.text.lower()
+    assert "Cardiology" in resp.text
+    # Rejection hints section appears
+    assert "rejection" in resp.text.lower()
+
+
 # --- Enum validation on update route (review follow-up) ---
 
 

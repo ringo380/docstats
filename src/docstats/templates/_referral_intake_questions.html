@@ -1,0 +1,17 @@
+{# Expects: specialty_rule (SpecialtyRule | None), prompts (list[str]), rejection_hints (list[str]). #}
+{% if specialty_rule and (prompts or rejection_hints) %}
+  <div class="intake-panel">
+    <h4>{{ specialty_rule.display_name or specialty_rule.specialty_code }} intake</h4>
+    {% if prompts %}
+      <ul class="intake-prompts">
+        {% for p in prompts %}<li>{{ p }}</li>{% endfor %}
+      </ul>
+    {% endif %}
+    {% if rejection_hints %}
+      <div class="sub intake-rejections">
+        <strong>Avoid:</strong>
+        <ul>{% for h in rejection_hints %}<li>{{ h }}</li>{% endfor %}</ul>
+      </div>
+    {% endif %}
+  </div>
+{% endif %}

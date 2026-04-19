@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from pathlib import Path
 
 from docstats.storage import Storage
 from docstats.cache import ResponseCache
+
+# Default-skip the lifespan rule seed in tests — the FastAPI lifespan runs
+# BEFORE per-request dependency overrides, so TestClient(app) would otherwise
+# seed the production ``~/.local/share/docstats/docstats.db`` on every test
+# that enters the client. Specific tests that exercise the lifespan itself
+# (see tests/test_rules_engine.py) unset this themselves.
+os.environ.setdefault("DOCSTATS_SKIP_BOOT_SEED", "1")
 
 
 SAMPLE_NPI1_RESULT = {
