@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Depends, Request
 from passlib.context import CryptContext
 
+from docstats.domain.orgs import has_role_at_least
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
 
@@ -88,7 +89,26 @@ def get_current_user(
             except Exception:
                 logger.exception("Session touch failed for %s", session_id)
 
-    return storage.get_user_by_id(user_id)
+    user = storage.get_user_by_id(user_id)
+    if user is None:
+        return None
+
+    # Enrich with active-org admin flag so templates (notably base.html nav)
+    # can show/hide the Admin link without every route computing it. Costs
+    # one membership lookup per authenticated request when active_org_id is
+    # set; no cost for solo users. Lookup failures degrade to False (user
+    # won't see the Admin link) — same fail-closed posture as get_session.
+    user["is_org_admin"] = False
+    active_org_id = user.get("active_org_id")
+    if active_org_id is not None:
+        try:
+            membership = storage.get_membership(active_org_id, user_id)
+            if membership is not None and membership.is_active:
+                user["is_org_admin"] = has_role_at_least(membership.role, "admin")
+        except Exception:
+            logger.exception("Admin-flag membership lookup failed user_id=%s", user_id)
+
+    return user
 
 
 def require_user(user: dict | None = Depends(get_current_user)) -> dict:
