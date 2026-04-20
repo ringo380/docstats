@@ -167,6 +167,97 @@ def test_evaluate_cardiology_adds_diagnosis_required(seeded_storage: Storage, us
     assert report.specialty_display_name == "Cardiology"
 
 
+def test_evaluate_icd_requirement_not_satisfied_by_free_text_only(
+    seeded_storage: Storage, user_id: int
+) -> None:
+    """Regression: specialty requiring ``diagnosis_primary_icd`` must NOT be
+    marked satisfied when only ``diagnosis_primary_text`` is present.
+
+    Baseline ``primary_diagnosis`` is satisfied by EITHER the ICD code OR
+    the free-text field. But when a specialty rule names
+    ``diagnosis_primary_icd`` specifically in ``required_fields``, the
+    promoted baseline item must tighten its satisfaction check to the ICD
+    column alone — otherwise an admin enforcing "ICD code required" gets a
+    false-complete result whenever coordinators fill only the text field.
+    """
+    # Cardiology's seeded rule includes diagnosis_primary_icd as required.
+    scope = Scope(user_id=user_id)
+    patient = seeded_storage.create_patient(
+        scope, first_name="Jane", last_name="Doe", created_by_user_id=user_id
+    )
+    r = seeded_storage.create_referral(
+        scope,
+        patient_id=patient.id,
+        reason="Chest pain",
+        clinical_question="Needs cards eval",
+        specialty_code="207RC0000X",
+        specialty_desc="Cardiology",
+        receiving_organization_name="Heart Clinic",
+        created_by_user_id=user_id,
+    )
+    # Populate ONLY the free-text diagnosis field — no ICD code.
+    seeded_storage.add_referral_diagnosis(
+        scope,
+        r.id,
+        icd10_code="",
+        icd10_desc="Angina (no code yet)",
+        is_primary=True,
+        source="user_entered",
+    )
+    r = seeded_storage.get_referral(scope, r.id)
+    assert r is not None
+    # Precondition: free text present, ICD code empty.
+    assert r.diagnosis_primary_text and r.diagnosis_primary_text.strip()
+    assert not r.diagnosis_primary_icd
+
+    ruleset = resolve_ruleset(seeded_storage, scope, r)
+    report = evaluate(r, ruleset)
+    diag = next(i for i in report.items if i.code == "primary_diagnosis")
+    assert diag.required is True
+    # The bug before this fix: satisfied=True because baseline is permissive.
+    assert diag.satisfied is False, (
+        "Specialty-required ICD code should NOT be marked satisfied by free-text diagnosis alone."
+    )
+
+
+def test_evaluate_icd_requirement_satisfied_when_icd_present(
+    seeded_storage: Storage, user_id: int
+) -> None:
+    """Companion to the regression above: when the ICD code IS present, the
+    promoted baseline item is satisfied. Both free-text-only and
+    code-only-or-both should not mark the same item satisfied when the
+    specialty tightened the check."""
+    scope = Scope(user_id=user_id)
+    patient = seeded_storage.create_patient(
+        scope, first_name="Jane", last_name="Doe", created_by_user_id=user_id
+    )
+    r = seeded_storage.create_referral(
+        scope,
+        patient_id=patient.id,
+        reason="Chest pain",
+        clinical_question="Needs cards eval",
+        specialty_code="207RC0000X",
+        specialty_desc="Cardiology",
+        receiving_organization_name="Heart Clinic",
+        created_by_user_id=user_id,
+    )
+    seeded_storage.add_referral_diagnosis(
+        scope,
+        r.id,
+        icd10_code="I20.9",
+        icd10_desc="Angina pectoris, unspecified",
+        is_primary=True,
+        source="user_entered",
+    )
+    r = seeded_storage.get_referral(scope, r.id)
+    assert r is not None
+    ruleset = resolve_ruleset(seeded_storage, scope, r)
+    report = evaluate(r, ruleset)
+    diag = next(i for i in report.items if i.code == "primary_diagnosis")
+    assert diag.required is True
+    assert diag.satisfied is True
+
+
 def test_evaluate_red_flags_populate(seeded_storage: Storage, user_id: int) -> None:
     r = _make_referral(
         seeded_storage,

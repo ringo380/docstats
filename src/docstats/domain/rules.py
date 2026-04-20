@@ -265,15 +265,32 @@ def evaluate(referral: Referral, ruleset: ResolvedRuleSet) -> CompletenessReport
                 continue
             baseline_code = _FIELD_TO_BASELINE_CODE.get(field_name)
             if baseline_code and baseline_code in items_by_code:
-                # Promote the baseline item to required (if it wasn't already).
+                # Promote the baseline item to required AND tighten its
+                # satisfaction check to the specialty-specific field.
+                #
+                # The baseline item's ``satisfied`` is often more permissive
+                # than what the specialty actually demands — e.g. baseline
+                # ``primary_diagnosis`` is satisfied by EITHER
+                # ``diagnosis_primary_icd`` OR ``diagnosis_primary_text``, so
+                # a specialty rule requiring the ICD code specifically would
+                # otherwise mark the item "satisfied" when only free-text
+                # diagnosis is present (false-complete). The same latent gap
+                # affects ``receiving_provider_npi`` and
+                # ``receiving_organization_name`` mapped to ``receiving_side``
+                # (baseline satisfied by either; specialty may want a
+                # specific one). Intersect the two checks: the field must
+                # pass BOTH the baseline requirement AND the specialty's
+                # field-specific non-blank check.
                 idx = items_by_code[baseline_code]
                 existing = items[idx]
-                if not existing.required:
+                specialty_satisfied = _check_referral_field(referral, field_name)
+                new_satisfied = existing.satisfied and specialty_satisfied
+                if not existing.required or existing.satisfied != new_satisfied:
                     items[idx] = CompletenessItem(
                         code=existing.code,
                         label=existing.label,
                         required=True,
-                        satisfied=existing.satisfied,
+                        satisfied=new_satisfied,
                     )
                 continue
             code = f"specialty_required_{field_name}"
