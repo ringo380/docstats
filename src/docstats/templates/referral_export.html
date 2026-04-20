@@ -57,6 +57,14 @@
       </li>
       {% endfor %}
     </ul>
+    <h2 style="margin-top:14px;">Machine-readable</h2>
+    <p class="sub">FHIR-ish JSON bundle (Patient + ServiceRequest + related resources).</p>
+    <ul class="export-single-list">
+      <li>
+        <a href="/referrals/{{ referral.id }}/export.json"
+           target="_blank" rel="noopener">FHIR Bundle (JSON)</a>
+      </li>
+    </ul>
   </section>
 </div>
 

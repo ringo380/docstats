@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from docstats.domain.audit import record as audit_record
 from docstats.domain.rules import rules_based_completeness
@@ -38,6 +38,7 @@ from docstats.exports import (
     ARTIFACT_PATIENT_SUMMARY,
     ARTIFACT_REFERRAL_SUMMARY,
     ARTIFACT_SCHEDULING_SUMMARY,
+    build_referral_bundle,
     render_attachments_checklist,
     render_fax_cover,
     render_missing_info,
@@ -252,6 +253,81 @@ async def referral_export_preview(
             "patient": patient,
             "artifact_rows": artifact_rows,
             "default_include": ",".join(_DEFAULT_PACKET_INCLUDE),
+        },
+    )
+
+
+@router.get("/{referral_id}/export.json")
+async def referral_export_json(
+    request: Request,
+    referral_id: int = Path(..., ge=1),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+) -> Response:
+    """FHIR-ish JSON export for interop (Phase 5.D).
+
+    Returns a FHIR R4-shaped Bundle (type=document) with Patient +
+    ServiceRequest + related resources. Not guaranteed to pass a strict
+    FHIR validator — Phase 12 (SMART-on-FHIR) hardens the mapping.
+    """
+    referral = storage.get_referral(scope, referral_id)
+    if referral is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+
+    patient = storage.get_patient(scope, referral.patient_id)
+    if patient is None:
+        raise HTTPException(status_code=409, detail="Patient record unavailable.")
+
+    diagnoses = storage.list_referral_diagnoses(scope, referral_id)
+    medications = storage.list_referral_medications(scope, referral_id)
+    allergies = storage.list_referral_allergies(scope, referral_id)
+    attachments = storage.list_referral_attachments(scope, referral_id)
+
+    # TOCTOU re-check — same pattern as the PDF route.
+    if storage.get_referral(scope, referral_id) is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+
+    generated_at = datetime.now(tz=timezone.utc)
+    bundle = build_referral_bundle(
+        referral=referral,
+        patient=patient,
+        diagnoses=diagnoses,
+        medications=medications,
+        allergies=allergies,
+        attachments=attachments,
+        generated_at=generated_at,
+    )
+
+    audit_record(
+        storage,
+        action="referral.export",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral",
+        entity_id=str(referral_id),
+        metadata={"artifact": "fhir_bundle", "format": "json", "entries": len(bundle["entry"])},
+    )
+    try:
+        storage.record_referral_event(
+            scope,
+            referral_id,
+            event_type="exported",
+            actor_user_id=current_user["id"],
+            note="fhir_bundle (json)",
+        )
+    except Exception:
+        logger.exception("Failed to record export event for referral %s", referral_id)
+
+    filename = f"referral-{referral_id}-bundle.json"
+    return JSONResponse(
+        content=bundle,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
         },
     )
 
