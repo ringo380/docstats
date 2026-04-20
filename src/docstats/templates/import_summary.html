@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Summary — Import #{{ csv_import.id }}{% endblock %}
+
+{% block content %}
+<div class="back-link"><a href="/imports">← Imports</a></div>
+<div class="saved-header">
+  <div>
+    <h1>Summary — {{ csv_import.original_filename }}</h1>
+    <div class="sub">
+      <span class="status-chip status-{{ csv_import.status }}">{{ csv_import.status | title }}</span>
+      &nbsp;·&nbsp;
+      {{ csv_import.row_count }} total rows
+    </div>
+  </div>
+  {% if counts.error %}
+  <div>
+    <a href="/imports/{{ csv_import.id }}/error-report.csv" class="btn btn-blue" download>⬇ Error report CSV</a>
+  </div>
+  {% endif %}
+</div>
+
+<div class="detail-grid" style="margin-top: 16px;">
+  <section class="card">
+    <h3>Outcome</h3>
+    <dl class="kv">
+      <dt>Committed</dt><dd><strong>{{ counts.committed or 0 }}</strong> referral{% if (counts.committed or 0) != 1 %}s{% endif %} created</dd>
+      <dt>Skipped (validation)</dt><dd>{{ counts.error or 0 }} row{% if (counts.error or 0) != 1 %}s{% endif %} with errors</dd>
+      <dt>Skipped (coordinator)</dt><dd>{{ counts.skipped or 0 }}</dd>
+      <dt>Still pending</dt><dd>{{ counts.pending or 0 }}</dd>
+      <dt>Still valid (uncommitted)</dt><dd>{{ counts.valid or 0 }}</dd>
+    </dl>
+  </section>
+
+  <section class="card">
+    <h3>Next steps</h3>
+    {% if counts.error %}
+      <p>Fix errored rows offline (download the CSV on the right) and re-upload — new imports are independent, so errors don't carry over.</p>
+    {% else %}
+      <p>All rows processed.</p>
+    {% endif %}
+    <p>
+      <a href="/referrals" class="btn btn-primary btn-sm">View referrals workspace</a>
+      <a href="/imports" class="btn btn-secondary btn-sm">Another import</a>
+    </p>
+  </section>
+</div>
+
+{% if rows %}
+  <h2 style="margin-top: 24px;">Row outcomes</h2>
+  <div class="table-wrap">
+    <table class="workspace-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Status</th>
+          <th>Referral</th>
+          <th>Errors</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>{{ r.row_index }}</td>
+          <td><span class="status-chip status-{{ r.status }}">{{ r.status | title }}</span></td>
+          <td>
+            {% if r.referral_id %}
+              <a href="/referrals/{{ r.referral_id }}">Referral #{{ r.referral_id }}</a>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if r.validation_errors %}
+              <ul class="row-errors">
+                {% for field, msg in r.validation_errors.items() %}
+                  <li><strong>{{ field }}</strong>: {{ msg }}</li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
+{% endblock %}

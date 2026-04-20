@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Bulk imports — referme.help{% endblock %}
+
+{% block content %}
+<div class="saved-header">
+  <div>
+    <h1>Bulk imports</h1>
+    <div class="sub">Upload a CSV of referrals. Up to {{ max_rows }} rows / {{ (max_bytes // (1024 * 1024)) }} MB per file.</div>
+  </div>
+</div>
+
+<form method="post" action="/imports" enctype="multipart/form-data" class="patient-form" style="margin-bottom: 20px;">
+  <fieldset>
+    <legend>Upload</legend>
+    <label>CSV file
+      <input type="file" name="file" accept=".csv,text/csv" required>
+    </label>
+    <div class="sub">
+      Need a template? See <a href="/imports/template.csv">/imports/template.csv</a> (Phase 4.E).
+    </div>
+    <div class="action-bar" style="margin-top: 12px;">
+      <button type="submit" class="btn btn-primary">Upload &amp; parse</button>
+    </div>
+  </fieldset>
+</form>
+
+{% if imports %}
+  <h2>Recent imports</h2>
+  <div class="table-wrap">
+    <table class="workspace-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Filename</th>
+          <th>Rows</th>
+          <th>Status</th>
+          <th>Uploaded</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for imp in imports %}
+        <tr>
+          <td>{{ imp.id }}</td>
+          <td>{{ imp.original_filename }}</td>
+          <td>{{ imp.row_count }}</td>
+          <td><span class="status-chip status-{{ imp.status }}">{{ imp.status | replace('_', ' ') | title }}</span></td>
+          <td class="updated-cell">{{ imp.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="row-actions">
+            <a href="/imports/{{ imp.id }}/map" class="btn btn-blue btn-sm">Open</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <div class="empty-state">
+    <div style="font-size: 2.5rem;">📥</div>
+    <p>No imports yet.</p>
+    <p>Upload a CSV above to create referrals in bulk.</p>
+  </div>
+{% endif %}
+
+{% if preview_rows %}
+  <h2 style="margin-top: 24px;">Preview (first {{ preview_rows | length }} rows)</h2>
+  <div class="table-wrap">
+    <table class="workspace-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Raw row (JSON)</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in preview_rows %}
+        <tr>
+          <td>{{ r.row_index }}</td>
+          <td><code style="font-size: 0.72rem;">{{ r.raw_json }}</code></td>
+          <td><span class="status-chip status-{{ r.status }}">{{ r.status | title }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="sub" style="margin-top: 12px;">Column mapping UI lands in Phase 4.B.</p>
+{% endif %}
+{% endblock %}

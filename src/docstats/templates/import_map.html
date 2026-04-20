@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Map columns — Import #{{ csv_import.id }}{% endblock %}
+
+{% block content %}
+<div class="back-link"><a href="/imports">← Imports</a></div>
+<div class="saved-header">
+  <div>
+    <h1>Map columns — {{ csv_import.original_filename }}</h1>
+    <div class="sub">
+      {{ csv_import.row_count }} row{% if csv_import.row_count != 1 %}s{% endif %} ·
+      <span class="status-chip status-{{ csv_import.status }}">{{ csv_import.status | title }}</span>
+    </div>
+  </div>
+</div>
+
+<p class="sub">
+  Match each CSV column to a target field. Leave as <em>— unmapped —</em> to skip a column.
+  Auto-match pre-populates the picker based on the column name — review before saving.
+</p>
+
+<form method="post" action="/imports/{{ csv_import.id }}/map" class="patient-form">
+  <fieldset>
+    <legend>Column mapping</legend>
+    <div class="mapping-grid">
+      {% for header in headers %}
+        <div class="mapping-row">
+          <div class="mapping-src">
+            <strong>{{ header }}</strong>
+            {% if preview_rows %}
+              {% set sample = preview_rows[0].raw_json.get(header, '') %}
+              {% if sample %}<div class="sub">e.g. {{ sample }}</div>{% endif %}
+            {% endif %}
+          </div>
+          <div class="mapping-arrow">→</div>
+          <div class="mapping-target">
+            <select name="col__{{ header }}">
+              <option value="">— unmapped —</option>
+              {% for group_label, items in target_groups %}
+                <optgroup label="{{ group_label }}">
+                  {% for key, label in items %}
+                    <option value="{{ key }}" {% if current_mapping.get(header) == key %}selected{% endif %}>
+                      {{ label }}
+                    </option>
+                  {% endfor %}
+                </optgroup>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  </fieldset>
+
+  <div class="action-bar">
+    <a href="/imports" class="btn btn-secondary">Cancel</a>
+    <button type="submit" class="btn btn-primary">Save mapping</button>
+  </div>
+</form>
+
+<p class="sub" style="margin-top: 16px;">
+  Row-level validation + review land in Phase 4.C — once you save the mapping,
+  the next click runs the validators and surfaces per-row errors.
+</p>
+{% endblock %}
