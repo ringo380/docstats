@@ -745,3 +745,227 @@ def test_export_preview_page_requires_phi_consent(tmp_path: Path):
         assert resp.status_code in (302, 303, 307)
     finally:
         app.dependency_overrides.clear()
+
+
+# ==========================================================================
+# Phase 5.D — FHIR-ish JSON export
+# ==========================================================================
+
+
+def test_build_referral_bundle_smoke():
+    """The FHIR bundle builder returns the expected resource types and status map."""
+    from docstats.domain.referrals import (
+        ReferralAllergy,
+        ReferralAttachment,
+        ReferralMedication,
+    )
+    from docstats.exports import build_referral_bundle
+
+    patient, referral, now = _fixture_patient_referral()
+    meds = [
+        ReferralMedication(
+            id=1,
+            referral_id=referral.id,
+            name="Metoprolol",
+            dose="25mg",
+            route="PO",
+            frequency="BID",
+            source="user_entered",
+            created_at=now,
+        )
+    ]
+    allergies = [
+        ReferralAllergy(
+            id=1,
+            referral_id=referral.id,
+            substance="Penicillin",
+            reaction="Hives",
+            severity="moderate",
+            source="user_entered",
+            created_at=now,
+        )
+    ]
+    atts = [
+        ReferralAttachment(
+            id=1,
+            referral_id=referral.id,
+            kind="lab",
+            label="CBC",
+            checklist_only=False,
+            source="user_entered",
+            created_at=now,
+        ),
+        ReferralAttachment(
+            id=2,
+            referral_id=referral.id,
+            kind="imaging",
+            label="Echo",
+            checklist_only=True,
+            source="user_entered",
+            created_at=now,
+        ),
+    ]
+
+    bundle = build_referral_bundle(
+        referral=referral,
+        patient=patient,
+        medications=meds,
+        allergies=allergies,
+        attachments=atts,
+        generated_at=now,
+    )
+
+    assert bundle["resourceType"] == "Bundle"
+    assert bundle["type"] == "document"
+    types = [e["resource"]["resourceType"] for e in bundle["entry"]]
+    # Order matters: Patient first, ServiceRequest second — downstream
+    # consumers rely on it.
+    assert types[0] == "Patient"
+    assert types[1] == "ServiceRequest"
+    # All expected resources present.
+    assert "Practitioner" in types  # referring_provider_* populated
+    assert "Organization" in types  # receiving_organization_name populated
+    assert "Condition" in types  # diagnosis_primary_* populated
+    assert "MedicationStatement" in types
+    assert "AllergyIntolerance" in types
+    # Two attachments → two DocumentReferences.
+    assert types.count("DocumentReference") == 2
+    # Status + priority correctly mapped.
+    sr = bundle["entry"][1]["resource"]
+    assert sr["status"] == "active"  # our "ready" → FHIR "active"
+    assert sr["priority"] == "urgent"
+    # Checklist-only attachment must be preliminary, included one must
+    # be current.
+    doc_refs = [
+        e["resource"]
+        for e in bundle["entry"]
+        if e["resource"]["resourceType"] == "DocumentReference"
+    ]
+    statuses = sorted(d["status"] for d in doc_refs)
+    assert statuses == ["current", "preliminary"]
+
+
+def test_build_referral_bundle_minimal():
+    """A referral with only required fields should still produce a valid bundle."""
+    from datetime import datetime, timezone as tz
+
+    from docstats.domain.patients import Patient as P
+    from docstats.domain.referrals import Referral as R
+    from docstats.exports import build_referral_bundle
+
+    now = datetime(2026, 4, 20, tzinfo=tz.utc)
+    patient = P(
+        id=1, scope_user_id=1, first_name="John", last_name="Roe", created_at=now, updated_at=now
+    )
+    referral = R(id=1, scope_user_id=1, patient_id=1, created_at=now, updated_at=now)
+    bundle = build_referral_bundle(referral=referral, patient=patient, generated_at=now)
+    types = [e["resource"]["resourceType"] for e in bundle["entry"]]
+    # Only Patient + ServiceRequest are always emitted — everything
+    # else is optional.
+    assert types == ["Patient", "ServiceRequest"]
+
+
+def test_build_referral_bundle_status_map():
+    """Every status in STATUS_VALUES should map to a valid FHIR status."""
+    from docstats.domain.referrals import STATUS_VALUES
+    from docstats.exports.fhir import _STATUS_MAP
+
+    valid_fhir = {
+        "draft",
+        "active",
+        "on-hold",
+        "revoked",
+        "completed",
+        "entered-in-error",
+        "unknown",
+    }
+    for status in STATUS_VALUES:
+        mapped = _STATUS_MAP.get(status, "unknown")
+        assert mapped in valid_fhir, f"{status} → {mapped} is not a FHIR ServiceRequest.status"
+
+
+# ---------- Route: JSON export ----------
+
+
+def test_export_json_happy_path(solo_client):
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+
+    resp = client.get(f"/referrals/{referral.id}/export.json")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    assert f"referral-{referral.id}-bundle.json" in resp.headers["content-disposition"]
+    assert resp.headers.get("cache-control") == "private, no-store"
+    bundle = resp.json()
+    assert bundle["resourceType"] == "Bundle"
+    assert bundle["type"] == "document"
+    assert any(e["resource"]["resourceType"] == "Patient" for e in bundle["entry"])
+    assert any(e["resource"]["resourceType"] == "ServiceRequest" for e in bundle["entry"])
+
+
+def test_export_json_audit_and_event(solo_client):
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+
+    resp = client.get(f"/referrals/{referral.id}/export.json")
+    assert resp.status_code == 200
+
+    audit_rows = storage.list_audit_events(limit=10)
+    json_audits = [
+        a
+        for a in audit_rows
+        if a.action == "referral.export"
+        and a.metadata.get("format") == "json"
+        and a.metadata.get("artifact") == "fhir_bundle"
+    ]
+    assert len(json_audits) == 1
+    # Bundle entry count should be recorded for observability.
+    assert isinstance(json_audits[0].metadata.get("entries"), int)
+    assert json_audits[0].metadata["entries"] >= 2
+
+    events = storage.list_referral_events(Scope(user_id=user_id), referral.id, limit=20)
+    assert any(e.event_type == "exported" and "fhir_bundle" in (e.note or "") for e in events)
+
+
+def test_export_json_missing_referral_404(solo_client):
+    client, _, _ = solo_client
+    resp = client.get("/referrals/999999/export.json")
+    assert resp.status_code == 404
+
+
+def test_export_json_cross_tenant_404(tmp_path: Path):
+    storage = Storage(db_path=tmp_path / "test.db")
+    tenant_a = storage.create_user("a@example.com", "pw")
+    tenant_b = storage.create_user("b@example.com", "pw")
+    for uid in (tenant_a, tenant_b):
+        storage.record_phi_consent(
+            user_id=uid,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+    _, referral_a = _seed_referral(storage, tenant_a)
+
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _fake_user(tenant_b, email="b@example.com")
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/referrals/{referral_a.id}/export.json")
+        assert resp.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_export_json_requires_phi_consent(tmp_path: Path):
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_id = storage.create_user("a@example.com", "pw")
+    _, referral = _seed_referral(storage, user_id)
+
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _fake_user(user_id, consent=False)
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/referrals/{referral.id}/export.json", follow_redirects=False)
+        assert resp.status_code in (302, 303, 307)
+    finally:
+        app.dependency_overrides.clear()
