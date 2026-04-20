@@ -189,3 +189,62 @@ h2 {
     padding-top: 4pt;
     margin-top: 10pt;
 }
+
+/* ── Scheduling Summary (5.B): hero card ──────────────────────── */
+.hero-card {
+    border: 1.5pt solid #111;
+    background: #fafafa;
+    border-radius: 3pt;
+    padding: 10pt 12pt;
+    margin-bottom: 10pt;
+    page-break-inside: avoid;
+}
+.hero-card h2 { border-bottom-color: #111; }
+.hero-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8pt 16pt;
+}
+.hero-value {
+    font-size: 12pt;
+    font-weight: 700;
+}
+
+/* ── Patient-Friendly Summary (5.B) ──────────────────────────── */
+.patient-doc { font-size: 11.5pt; line-height: 1.5; }
+.patient-doc h1 { font-size: 20pt; }
+.patient-doc h2 { font-size: 13pt; text-transform: none; letter-spacing: 0; color: #111; }
+.patient-header { border-bottom-width: 1.5pt; }
+.patient-card { padding: 10pt 12pt 12pt 12pt; }
+.patient-lead { font-size: 13pt; margin: 4pt 0 6pt 0; }
+.patient-body { margin: 4pt 0 0 0; }
+.patient-sub { margin: 6pt 0 0 0; color: #444; }
+.patient-note {
+    margin: 8pt 0 0 0;
+    padding: 6pt 9pt;
+    background: #fff7e0;
+    border-left: 2pt solid #b07a10;
+    font-size: 11pt;
+}
+.patient-list {
+    margin: 6pt 0 0 0;
+    padding-left: 18pt;
+}
+.patient-list li {
+    margin-bottom: 3pt;
+}
+
+/* ── Missing-Info Checklist (5.B): alert card ────────────────── */
+.alert-card {
+    border-color: #b07a10;
+    background: #fff7e0;
+}
+.alert-card h2 { color: #7a4b00; border-bottom-color: #e5c788; }
+.chk-meta {
+    display: inline-block;
+    margin-left: 6pt;
+    font-size: 8pt;
+}
+.chk-label {
+    font-weight: 500;
+}

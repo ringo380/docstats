@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Specialist Scheduling Summary — Referral #{{ referral.id }}</title>
+</head>
+<body class="pdf-doc">
+<div class="watermark">CONFIDENTIAL PHI</div>
+
+<header class="doc-header">
+  <div class="doc-title">
+    <h1>Specialist Scheduling Summary</h1>
+    <div class="doc-subtitle">Referral #{{ referral.id }}</div>
+  </div>
+  <div class="doc-meta">
+    <div><span class="label">Urgency:</span> <span class="urgency urgency-{{ referral.urgency }}">{{ referral.urgency|upper }}</span></div>
+    <div><span class="label">Auth:</span> {{ referral.authorization_status|replace('_', ' ')|upper }}</div>
+    <div><span class="label">Generated:</span> {{ generated_at.strftime('%Y-%m-%d %H:%M UTC') }}</div>
+  </div>
+</header>
+
+<section class="hero-card">
+  <h2>Contact &amp; Authorization</h2>
+  <div class="hero-grid">
+    <div>
+      <span class="label">Receiving organization</span>
+      <div class="value hero-value">{{ referral.receiving_organization_name or '—' }}</div>
+    </div>
+    <div>
+      <span class="label">Receiving provider NPI</span>
+      <div class="value mono hero-value">{{ referral.receiving_provider_npi or '—' }}</div>
+    </div>
+    <div>
+      <span class="label">Specialty</span>
+      <div class="value">
+        {{ referral.specialty_desc or '—' }}
+        {% if referral.specialty_code %}<span class="muted mono">[{{ referral.specialty_code }}]</span>{% endif %}
+      </div>
+    </div>
+    <div>
+      <span class="label">Authorization #</span>
+      <div class="value mono hero-value">{{ referral.authorization_number or '—' }}</div>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Patient</h2>
+  <div class="grid-2">
+    <div><span class="label">Name</span><div class="value">{{ patient.display_name }}</div></div>
+    <div>
+      <span class="label">DOB</span>
+      <div class="value">
+        {{ patient.date_of_birth or '—' }}
+        {% if patient_age is not none %}<span class="muted">({{ patient_age }} y)</span>{% endif %}
+      </div>
+    </div>
+    <div><span class="label">MRN</span><div class="value">{{ patient.mrn or '—' }}</div></div>
+    <div><span class="label">Phone</span><div class="value">{{ patient_phone or '—' }}</div></div>
+    <div><span class="label">Sex</span><div class="value">{{ patient.sex or '—' }}</div></div>
+    <div><span class="label">Preferred language</span><div class="value">{{ patient.preferred_language or '—' }}</div></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Referring Office</h2>
+  <div class="grid-2">
+    <div><span class="label">Organization</span><div class="value">{{ referral.referring_organization or '—' }}</div></div>
+    <div><span class="label">Provider</span><div class="value">{{ referral.referring_provider_name or '—' }}</div></div>
+    <div><span class="label">NPI</span><div class="value mono">{{ referral.referring_provider_npi or '—' }}</div></div>
+    <div><span class="label">Reason for referral</span><div class="value">{{ referral.reason or '—' }}</div></div>
+  </div>
+</section>
+
+{% if referral.requested_service %}
+<section class="card">
+  <h2>Requested Service</h2>
+  <div class="value">{{ referral.requested_service }}</div>
+</section>
+{% endif %}
+
+<footer class="doc-footer">
+  <span>Referral #{{ referral.id }}</span>
+  <span>{{ patient.display_name }}</span>
+  <span>Confidential — contains protected health information.</span>
+</footer>
+
+</body>
+</html>

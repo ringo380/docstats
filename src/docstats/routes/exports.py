@@ -1,20 +1,21 @@
-"""Referral export routes (Phase 5.A).
+"""Referral export routes (Phase 5.A + 5.B).
 
-Ships a single artifact for now — the Referral Request Summary PDF. 5.B adds
-the remaining clinical artifacts; 5.C adds the preview UI with per-artifact
-toggles + fax cover; 5.D JSON; 5.E CSV + batch-export.
+5.A shipped the Referral Request Summary PDF. 5.B expands the artifact set
+with scheduling/patient-friendly summaries, attachments checklist, and a
+rules-engine-driven missing-info checklist. Each artifact rides the same
+route surface — ``GET /referrals/{id}/export.pdf?artifact=<name>`` —
+dispatched via :data:`_ARTIFACT_RENDERERS`.
 
 Route contract:
 
-- ``GET /referrals/{id}/export.pdf?artifact=summary`` — streams a PDF of the
-  Referral Request Summary. PHI-consent gated (first callers alongside the
-  Phase 2 patients/referrals routes). Scope-enforced via ``get_scope``;
-  cross-tenant IDs 404.
+- PHI-consent gated (``require_phi_consent``).
+- Scope-enforced via ``get_scope``; cross-tenant IDs 404.
+- WeasyPrint rendering runs in the default thread executor so the CPU-bound
+  HTML→PDF pipeline doesn't block uvicorn's event loop.
+- Best-effort audit (``referral.export``) + referral event (``exported``).
 
-Audit emits ``referral.export`` with the artifact name + byte count so the
-trail tells us what left the system and how large. WeasyPrint rendering runs
-in a thread executor to keep the event loop responsive — matches the
-``NPPESClient`` sync-in-async pattern already used across the app.
+5.C adds the preview UI with per-artifact toggles + fax cover; 5.D JSON;
+5.E CSV + batch-export.
 """
 
 from __future__ import annotations
@@ -22,12 +23,25 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import Response
 
 from docstats.domain.audit import record as audit_record
-from docstats.exports import ARTIFACT_REFERRAL_SUMMARY, render_referral_summary
+from docstats.domain.rules import rules_based_completeness
+from docstats.exports import (
+    ARTIFACT_ATTACHMENTS_CHECKLIST,
+    ARTIFACT_MISSING_INFO,
+    ARTIFACT_PATIENT_SUMMARY,
+    ARTIFACT_REFERRAL_SUMMARY,
+    ARTIFACT_SCHEDULING_SUMMARY,
+    render_attachments_checklist,
+    render_missing_info,
+    render_patient_summary,
+    render_referral_summary,
+    render_scheduling_summary,
+)
 from docstats.phi import require_phi_consent
 from docstats.routes._common import get_scope
 from docstats.scope import Scope
@@ -38,8 +52,75 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/referrals", tags=["exports"])
 
-# Artifacts wired in Phase 5.A. 5.B/5.C grow this set.
-_SUPPORTED_ARTIFACTS = frozenset({ARTIFACT_REFERRAL_SUMMARY})
+
+# Per-artifact bundles describe: what storage calls to make, which renderer
+# to invoke, and what filename stem to stamp on the download. The route
+# handler stays dumb — it just fetches what the bundle asks for and calls
+# the renderer. Adding a new artifact (fax cover in 5.C, etc.) means adding
+# one more bundle.
+#
+# ``fetcher`` returns the kwargs dict passed to the renderer. Every fetcher
+# receives the same inputs (storage, scope, referral, patient) + the base
+# header args (``generated_at`` / ``generated_by_label``). Returning only
+# the extra kwargs keeps each bundle readable.
+
+
+def _fetch_for_summary(
+    *,
+    storage: StorageBase,
+    scope: Scope,
+    referral: Any,
+    patient: Any,
+) -> dict[str, Any]:
+    return {
+        "diagnoses": storage.list_referral_diagnoses(scope, referral.id),
+        "medications": storage.list_referral_medications(scope, referral.id),
+        "allergies": storage.list_referral_allergies(scope, referral.id),
+        "attachments": storage.list_referral_attachments(scope, referral.id),
+    }
+
+
+def _fetch_for_attachments(
+    *,
+    storage: StorageBase,
+    scope: Scope,
+    referral: Any,
+    patient: Any,
+) -> dict[str, Any]:
+    return {"attachments": storage.list_referral_attachments(scope, referral.id)}
+
+
+def _fetch_for_missing_info(
+    *,
+    storage: StorageBase,
+    scope: Scope,
+    referral: Any,
+    patient: Any,
+) -> dict[str, Any]:
+    return {"completeness": rules_based_completeness(storage, scope, referral)}
+
+
+def _fetch_none(
+    *,
+    storage: StorageBase,
+    scope: Scope,
+    referral: Any,
+    patient: Any,
+) -> dict[str, Any]:
+    return {}
+
+
+_ARTIFACT_RENDERERS: dict[str, tuple[Callable[..., Any], Callable[..., bytes], str]] = {
+    ARTIFACT_REFERRAL_SUMMARY: (_fetch_for_summary, render_referral_summary, "summary"),
+    ARTIFACT_SCHEDULING_SUMMARY: (_fetch_none, render_scheduling_summary, "scheduling"),
+    ARTIFACT_PATIENT_SUMMARY: (_fetch_none, render_patient_summary, "patient"),
+    ARTIFACT_ATTACHMENTS_CHECKLIST: (
+        _fetch_for_attachments,
+        render_attachments_checklist,
+        "attachments",
+    ),
+    ARTIFACT_MISSING_INFO: (_fetch_for_missing_info, render_missing_info, "missing-info"),
+}
 
 
 def _generated_by_label(user: dict) -> str | None:
@@ -51,10 +132,10 @@ def _generated_by_label(user: dict) -> str | None:
     return user.get("display_name") or user.get("email")
 
 
-def _safe_pdf_filename(referral_id: int) -> str:
+def _safe_pdf_filename(referral_id: int, stem: str) -> str:
     """Content-Disposition filenames must survive ``require_valid_npi``-grade
-    paranoia. We control the stem entirely — no PHI in the filename."""
-    return f"referral-{referral_id}-summary.pdf"
+    paranoia. We control both the referral id and stem — no PHI leaks."""
+    return f"referral-{referral_id}-{stem}.pdf"
 
 
 @router.get("/{referral_id}/export.pdf")
@@ -66,8 +147,10 @@ async def referral_export_pdf(
     scope: Scope = Depends(get_scope),
     storage: StorageBase = Depends(get_storage),
 ) -> Response:
-    if artifact not in _SUPPORTED_ARTIFACTS:
+    bundle = _ARTIFACT_RENDERERS.get(artifact)
+    if bundle is None:
         raise HTTPException(status_code=400, detail=f"Unsupported artifact '{artifact}'.")
+    fetcher, renderer, stem = bundle
 
     referral = storage.get_referral(scope, referral_id)
     if referral is None:
@@ -75,47 +158,37 @@ async def referral_export_pdf(
 
     patient = storage.get_patient(scope, referral.patient_id)
     if patient is None:
-        # Patient was soft-deleted between scope check and export. Referral
-        # FK is RESTRICT in theory but defensive: we never want to render
-        # a summary against a missing patient.
         raise HTTPException(status_code=409, detail="Patient record unavailable.")
 
-    diagnoses = storage.list_referral_diagnoses(scope, referral_id)
-    medications = storage.list_referral_medications(scope, referral_id)
-    allergies = storage.list_referral_allergies(scope, referral_id)
-    attachments = storage.list_referral_attachments(scope, referral_id)
+    extra_kwargs = fetcher(storage=storage, scope=scope, referral=referral, patient=patient)
 
     # TOCTOU re-check: if the referral was soft-deleted between the initial
-    # read and the sub-entity fetches, the sub-entity lists come back empty
-    # and we'd otherwise render a valid-looking PDF with blank clinical
-    # sections. Re-reading here collapses the race to "deleted between this
-    # line and write_pdf" — tiny and graceful.
+    # read and the sub-entity / rules-engine fetches, those calls quietly
+    # return empty data. Re-reading collapses the race to "deleted between
+    # this line and write_pdf" — tiny and graceful.
     if storage.get_referral(scope, referral_id) is None:
         raise HTTPException(status_code=404, detail="Referral not found.")
 
     generated_at = datetime.now(tz=timezone.utc)
     generated_by_label = _generated_by_label(current_user)
 
-    # WeasyPrint is CPU-bound (HTML parse + layout + PDF writer). Offloading
-    # to the default executor keeps uvicorn's loop free for other requests
-    # while the render churns. Same pattern as NPPES sync wrappers.
+    render_kwargs: dict[str, Any] = {
+        "referral": referral,
+        "patient": patient,
+        "generated_at": generated_at,
+        "generated_by_label": generated_by_label,
+        **extra_kwargs,
+    }
+
+    # WeasyPrint is CPU-bound — offload to the default executor so the
+    # uvicorn event loop stays free for other requests.
     try:
         loop = asyncio.get_running_loop()
-        pdf_bytes = await loop.run_in_executor(
-            None,
-            lambda: render_referral_summary(
-                referral=referral,
-                patient=patient,
-                diagnoses=diagnoses,
-                medications=medications,
-                allergies=allergies,
-                attachments=attachments,
-                generated_at=generated_at,
-                generated_by_label=generated_by_label,
-            ),
-        )
+        pdf_bytes = await loop.run_in_executor(None, lambda: renderer(**render_kwargs))
     except Exception:
-        logger.exception("WeasyPrint render failed for referral %s", referral_id)
+        logger.exception(
+            "WeasyPrint render failed for referral %s artifact %s", referral_id, artifact
+        )
         raise HTTPException(status_code=500, detail="Failed to render PDF.")
 
     # ``audit_record`` swallows its own errors; no outer try/except needed.
@@ -148,7 +221,7 @@ async def referral_export_pdf(
     except Exception:
         logger.exception("Failed to record export event for referral %s", referral_id)
 
-    filename = _safe_pdf_filename(referral_id)
+    filename = _safe_pdf_filename(referral_id, stem)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

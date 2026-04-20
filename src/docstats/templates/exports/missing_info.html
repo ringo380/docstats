@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Missing-Information Checklist — Referral #{{ referral.id }}</title>
+</head>
+<body class="pdf-doc">
+<div class="watermark">CONFIDENTIAL PHI</div>
+
+<header class="doc-header">
+  <div class="doc-title">
+    <h1>Missing-Information Checklist</h1>
+    <div class="doc-subtitle">Referral #{{ referral.id }} · {{ patient.display_name }}</div>
+  </div>
+  <div class="doc-meta">
+    <div>
+      <span class="label">Status:</span>
+      {% if completeness.is_complete %}
+        <span class="urgency urgency-routine">READY</span>
+      {% else %}
+        <span class="urgency urgency-urgent">INCOMPLETE</span>
+      {% endif %}
+    </div>
+    <div><span class="label">Generated:</span> {{ generated_at.strftime('%Y-%m-%d %H:%M UTC') }}</div>
+    {% if completeness.specialty_display_name %}
+    <div><span class="label">Specialty rule:</span> {{ completeness.specialty_display_name }}</div>
+    {% endif %}
+    {% if completeness.payer_display_name %}
+    <div><span class="label">Payer rule:</span> {{ completeness.payer_display_name }}</div>
+    {% endif %}
+  </div>
+</header>
+
+{% if completeness.red_flags %}
+<section class="card alert-card">
+  <h2>Red flags</h2>
+  <p class="sub">Language in this referral matched red-flag patterns. Coordinator should review urgency.</p>
+  <ul class="chk-list">
+    {% for flag in completeness.red_flags %}
+      <li><span class="chk off">!</span> <span class="chk-label">{{ flag }}</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Required — not yet satisfied</h2>
+  {% if missing_required %}
+  <ul class="chk-list">
+    {% for item in missing_required %}
+      <li>
+        <span class="chk off">☐</span>
+        <span class="chk-label">{{ item.label }}</span>
+        <span class="muted chk-meta mono">{{ item.code }}</span>
+      </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+    <p class="muted">All required items are present.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Recommended — consider adding</h2>
+  {% if missing_recommended %}
+  <ul class="chk-list">
+    {% for item in missing_recommended %}
+      <li>
+        <span class="chk off">☐</span>
+        <span class="chk-label">{{ item.label }}</span>
+        <span class="muted chk-meta mono">{{ item.code }}</span>
+      </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+    <p class="muted">All recommended items are present.</p>
+  {% endif %}
+</section>
+
+{% if completeness.recommended_attachments %}
+<section class="card">
+  <h2>Specialty recommends these attachments</h2>
+  <ul class="chk-list">
+    {% for a in completeness.recommended_attachments %}
+      <li><span class="chk off">☐</span> <span class="chk-label">{{ a }}</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if completeness.rejection_hints %}
+<section class="card">
+  <h2>Common rejection reasons to avoid</h2>
+  <ul class="chk-list">
+    {% for hint in completeness.rejection_hints %}
+      <li><span class="muted">•</span> <span class="chk-label">{{ hint }}</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if satisfied_items %}
+<section class="card">
+  <h2>Satisfied</h2>
+  <ul class="chk-list">
+    {% for item in satisfied_items %}
+      <li>
+        <span class="chk on">✓</span>
+        <span class="chk-label">{{ item.label }}</span>
+        <span class="muted chk-meta mono">{{ item.code }}</span>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<footer class="doc-footer">
+  <span>Referral #{{ referral.id }}</span>
+  <span>{{ patient.display_name }}</span>
+  <span>Confidential — contains protected health information.</span>
+</footer>
+
+</body>
+</html>

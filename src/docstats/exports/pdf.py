@@ -7,6 +7,11 @@ related rows and get back PDF bytes. Scope gating + row fetches live in
 WeasyPrint needs system libraries (``libpango``, ``libcairo``, ``libharfbuzz``)
 which are declared in ``railpack.json``. Local macOS dev typically needs
 ``brew install pango cairo``.
+
+Phase 5.A shipped the Referral Request Summary. Phase 5.B adds four more:
+scheduling summary (phone/fax-first for specialist front desks),
+patient-friendly summary (plain language for the patient), attachments
+checklist, and missing-info checklist (rules-engine driven).
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ if TYPE_CHECKING:
         ReferralDiagnosis,
         ReferralMedication,
     )
+    from docstats.domain.rules import CompletenessReportV2
 
 
 _TEMPLATE_DIR = Path(__file__).parents[1] / "templates" / "exports"
@@ -39,7 +45,13 @@ _env = Environment(
 )
 
 
+# Artifact identifiers — used as the ``?artifact=`` query value + the filename
+# stem in ``Content-Disposition``. Keep these short, kebab-less, and stable.
 ARTIFACT_REFERRAL_SUMMARY = "summary"
+ARTIFACT_SCHEDULING_SUMMARY = "scheduling"
+ARTIFACT_PATIENT_SUMMARY = "patient"
+ARTIFACT_ATTACHMENTS_CHECKLIST = "attachments"
+ARTIFACT_MISSING_INFO = "missing_info"
 
 
 def _fmt_phone(raw: str | None) -> str | None:
@@ -67,31 +79,45 @@ def _age_years(dob: str | None, as_of: datetime | None = None) -> int | None:
     return max(years, 0)
 
 
-def _build_summary_context(
+def _render_pdf(template_name: str, context: dict[str, Any]) -> bytes:
+    """Shared WeasyPrint render path: Jinja -> HTML -> PDF bytes.
+
+    Lazy-imports ``weasyprint`` so the package stays importable without the
+    system libs (e.g. lint-only CI shards).
+    """
+    from weasyprint import CSS, HTML  # type: ignore[import-untyped]
+
+    template = _env.get_template(template_name)
+    html_str = template.render(**context)
+
+    stylesheet_path = _STATIC_DIR / "print.css"
+    stylesheets = [CSS(filename=str(stylesheet_path))] if stylesheet_path.exists() else []
+
+    pdf_bytes = HTML(string=html_str, base_url=str(_STATIC_DIR)).write_pdf(stylesheets=stylesheets)
+    if pdf_bytes is None:
+        raise RuntimeError("WeasyPrint returned empty output")
+    return bytes(pdf_bytes)
+
+
+def _base_context(
     *,
     referral: "Referral",
     patient: "Patient",
-    diagnoses: list["ReferralDiagnosis"],
-    medications: list["ReferralMedication"],
-    allergies: list["ReferralAllergy"],
-    attachments: list["ReferralAttachment"],
     generated_at: datetime,
     generated_by_label: str | None,
 ) -> dict[str, Any]:
+    """Context keys every artifact template expects (header/footer/meta)."""
     return {
         "referral": referral,
         "patient": patient,
         "patient_age": _age_years(patient.date_of_birth, as_of=generated_at),
         "patient_phone": _fmt_phone(patient.phone),
-        "diagnoses": diagnoses,
-        "medications": medications,
-        "allergies": allergies,
-        "attachments": attachments,
-        "pending_attachments": [a for a in attachments if a.checklist_only],
-        "included_attachments": [a for a in attachments if not a.checklist_only],
         "generated_at": generated_at,
         "generated_by_label": generated_by_label,
     }
+
+
+# ---------- Referral Request Summary (5.A) ----------
 
 
 def render_referral_summary(
@@ -105,37 +131,143 @@ def render_referral_summary(
     generated_at: datetime | None = None,
     generated_by_label: str | None = None,
 ) -> bytes:
-    """Render the Referral Request Summary artifact as a PDF.
-
-    Returns raw PDF bytes. Raises :class:`weasyprint.WeasyPrintError` or
-    an ``OSError`` if the WeasyPrint system libraries are unavailable —
-    the route layer surfaces these as HTTP 500 so the failure is visible.
-    """
-    # Lazy import so ``docstats.exports`` stays importable in environments
-    # without the system libs (e.g. lint-only CI shards). The web route path
-    # hits this import before any response body is produced, so a missing
-    # dep surfaces as a 500 with a clear traceback.
-    from weasyprint import CSS, HTML  # type: ignore[import-untyped]
-
-    context = _build_summary_context(
+    """Clinical summary artifact — the 5.A anchor artifact."""
+    attachments = list(attachments or [])
+    now = generated_at or datetime.now(tz=timezone.utc)
+    context = _base_context(
         referral=referral,
         patient=patient,
-        diagnoses=list(diagnoses or []),
-        medications=list(medications or []),
-        allergies=list(allergies or []),
-        attachments=list(attachments or []),
-        generated_at=generated_at or datetime.now(tz=timezone.utc),
+        generated_at=now,
         generated_by_label=generated_by_label,
     )
+    context.update(
+        {
+            "diagnoses": list(diagnoses or []),
+            "medications": list(medications or []),
+            "allergies": list(allergies or []),
+            "attachments": attachments,
+            "pending_attachments": [a for a in attachments if a.checklist_only],
+            "included_attachments": [a for a in attachments if not a.checklist_only],
+        }
+    )
+    return _render_pdf("referral_summary.html", context)
 
-    template = _env.get_template("referral_summary.html")
-    html_str = template.render(**context)
 
-    stylesheet_path = _STATIC_DIR / "print.css"
-    stylesheets = [CSS(filename=str(stylesheet_path))] if stylesheet_path.exists() else []
+# ---------- Scheduling Summary (5.B) ----------
 
-    pdf_bytes = HTML(string=html_str, base_url=str(_STATIC_DIR)).write_pdf(stylesheets=stylesheets)
-    if pdf_bytes is None:
-        # write_pdf can return None in some configurations; tighten the type.
-        raise RuntimeError("WeasyPrint returned empty output")
-    return bytes(pdf_bytes)
+
+def render_scheduling_summary(
+    *,
+    referral: "Referral",
+    patient: "Patient",
+    generated_at: datetime | None = None,
+    generated_by_label: str | None = None,
+) -> bytes:
+    """Receiving-side front-desk artifact.
+
+    Leads with phone/fax/authorization so a scheduler can act in seconds;
+    clinical detail is intentionally minimal (reason + urgency only). If
+    they want the full context, they pull the Referral Request Summary.
+    """
+    now = generated_at or datetime.now(tz=timezone.utc)
+    context = _base_context(
+        referral=referral,
+        patient=patient,
+        generated_at=now,
+        generated_by_label=generated_by_label,
+    )
+    return _render_pdf("scheduling_summary.html", context)
+
+
+# ---------- Patient-Friendly Summary (5.B) ----------
+
+
+def render_patient_summary(
+    *,
+    referral: "Referral",
+    patient: "Patient",
+    generated_at: datetime | None = None,
+    generated_by_label: str | None = None,
+) -> bytes:
+    """Plain-language summary the coordinator can hand or email to the patient.
+
+    Larger type, no acronyms, no ICD codes. Focus on: who you're seeing,
+    why, what to bring, and how to reach them.
+    """
+    now = generated_at or datetime.now(tz=timezone.utc)
+    context = _base_context(
+        referral=referral,
+        patient=patient,
+        generated_at=now,
+        generated_by_label=generated_by_label,
+    )
+    return _render_pdf("patient_summary.html", context)
+
+
+# ---------- Attachments Checklist (5.B) ----------
+
+
+def render_attachments_checklist(
+    *,
+    referral: "Referral",
+    patient: "Patient",
+    attachments: list["ReferralAttachment"] | None = None,
+    generated_at: datetime | None = None,
+    generated_by_label: str | None = None,
+) -> bytes:
+    """Single-page checklist — what's attached, what's pending.
+
+    Designed to tape to a fax cover. Pending items (checklist-only rows)
+    appear with empty checkboxes so the scheduler can verify receipt.
+    """
+    attachments = list(attachments or [])
+    now = generated_at or datetime.now(tz=timezone.utc)
+    context = _base_context(
+        referral=referral,
+        patient=patient,
+        generated_at=now,
+        generated_by_label=generated_by_label,
+    )
+    context.update(
+        {
+            "attachments": attachments,
+            "pending_attachments": [a for a in attachments if a.checklist_only],
+            "included_attachments": [a for a in attachments if not a.checklist_only],
+        }
+    )
+    return _render_pdf("attachments_checklist.html", context)
+
+
+# ---------- Missing-Info Checklist (5.B) ----------
+
+
+def render_missing_info(
+    *,
+    referral: "Referral",
+    patient: "Patient",
+    completeness: "CompletenessReportV2",
+    generated_at: datetime | None = None,
+    generated_by_label: str | None = None,
+) -> bytes:
+    """Coordinator-facing gap report — what's required vs recommended vs filled.
+
+    Uses :class:`CompletenessReportV2` from the Phase 3 rules engine. The
+    route layer builds the report via ``rules_based_completeness`` and passes
+    it in so this module stays FastAPI-/storage-free.
+    """
+    now = generated_at or datetime.now(tz=timezone.utc)
+    context = _base_context(
+        referral=referral,
+        patient=patient,
+        generated_at=now,
+        generated_by_label=generated_by_label,
+    )
+    context.update(
+        {
+            "completeness": completeness,
+            "missing_required": completeness.missing_required,
+            "missing_recommended": completeness.missing_recommended,
+            "satisfied_items": [i for i in completeness.items if i.satisfied],
+        }
+    )
+    return _render_pdf("missing_info.html", context)

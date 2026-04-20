@@ -25,8 +25,15 @@ pytest.importorskip("weasyprint", reason="WeasyPrint system libs not installed")
 
 from docstats.auth import get_current_user  # noqa: E402
 from docstats.domain.patients import Patient  # noqa: E402
-from docstats.domain.referrals import Referral  # noqa: E402
-from docstats.exports import render_referral_summary  # noqa: E402
+from docstats.domain.referrals import CompletenessItem, Referral  # noqa: E402
+from docstats.domain.rules import CompletenessReportV2  # noqa: E402
+from docstats.exports import (  # noqa: E402
+    render_attachments_checklist,
+    render_missing_info,
+    render_patient_summary,
+    render_referral_summary,
+    render_scheduling_summary,
+)
 from docstats.phi import CURRENT_PHI_CONSENT_VERSION  # noqa: E402
 from docstats.scope import Scope  # noqa: E402
 from docstats.storage import Storage, get_storage  # noqa: E402
@@ -379,3 +386,167 @@ def test_export_requires_phi_consent(tmp_path: Path):
         assert "/auth/login" in resp.headers.get("location", "")
     finally:
         app.dependency_overrides.clear()
+
+
+# ==========================================================================
+# Phase 5.B — Scheduling / Patient / Attachments / Missing-Info artifacts
+# ==========================================================================
+
+
+# ---------- Unit tests: each new renderer returns valid PDF bytes ----------
+
+
+def test_render_scheduling_summary_bytes():
+    patient, referral, now = _fixture_patient_referral()
+    pdf = render_scheduling_summary(
+        referral=referral, patient=patient, generated_at=now, generated_by_label="Tester"
+    )
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 2000
+
+
+def test_render_patient_summary_bytes():
+    patient, referral, now = _fixture_patient_referral()
+    pdf = render_patient_summary(
+        referral=referral, patient=patient, generated_at=now, generated_by_label="Tester"
+    )
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 2000
+
+
+def test_render_attachments_checklist_bytes():
+    from docstats.domain.referrals import ReferralAttachment
+
+    patient, referral, now = _fixture_patient_referral()
+    attachments = [
+        ReferralAttachment(
+            id=1,
+            referral_id=referral.id,
+            kind="lab",
+            label="CBC 2026-04-01",
+            checklist_only=False,
+            source="user_entered",
+            created_at=now,
+        ),
+        ReferralAttachment(
+            id=2,
+            referral_id=referral.id,
+            kind="imaging",
+            label="Echo report",
+            checklist_only=True,
+            source="user_entered",
+            created_at=now,
+        ),
+    ]
+    pdf = render_attachments_checklist(
+        referral=referral,
+        patient=patient,
+        attachments=attachments,
+        generated_at=now,
+    )
+    assert pdf.startswith(b"%PDF-")
+
+
+def test_render_attachments_checklist_empty_state():
+    """No attachments should still render cleanly with a helpful empty state."""
+    patient, referral, now = _fixture_patient_referral()
+    pdf = render_attachments_checklist(
+        referral=referral, patient=patient, attachments=None, generated_at=now
+    )
+    assert pdf.startswith(b"%PDF-")
+
+
+def test_render_missing_info_bytes():
+    patient, referral, now = _fixture_patient_referral()
+    report = CompletenessReportV2(
+        items=[
+            CompletenessItem(
+                code="primary_diagnosis",
+                label="Primary diagnosis",
+                required=True,
+                satisfied=False,
+            ),
+            CompletenessItem(
+                code="reason",
+                label="Reason for referral",
+                required=True,
+                satisfied=True,
+            ),
+        ],
+        red_flags=["chest pain"],
+        recommended_attachments=["ECG within 30 days"],
+        rejection_hints=["Missing insurance card"],
+        specialty_display_name="Cardiology",
+    )
+    pdf = render_missing_info(
+        referral=referral, patient=patient, completeness=report, generated_at=now
+    )
+    assert pdf.startswith(b"%PDF-")
+    # Incomplete reports should render larger than minimal complete ones
+    # because they emit the red-flag + required-missing sections.
+    complete_report = CompletenessReportV2(
+        items=[
+            CompletenessItem(
+                code="reason",
+                label="Reason for referral",
+                required=True,
+                satisfied=True,
+            ),
+        ],
+        red_flags=[],
+        recommended_attachments=[],
+        rejection_hints=[],
+    )
+    smaller = render_missing_info(
+        referral=referral, patient=patient, completeness=complete_report, generated_at=now
+    )
+    assert len(pdf) > len(smaller)
+
+
+# ---------- Route tests: each artifact returns a PDF + correct filename stem ----------
+
+
+@pytest.mark.parametrize(
+    "artifact,expected_stem",
+    [
+        ("summary", "summary"),
+        ("scheduling", "scheduling"),
+        ("patient", "patient"),
+        ("attachments", "attachments"),
+        ("missing_info", "missing-info"),
+    ],
+)
+def test_export_route_all_artifacts(solo_client, artifact, expected_stem):
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+
+    resp = client.get(f"/referrals/{referral.id}/export.pdf", params={"artifact": artifact})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.content.startswith(b"%PDF-")
+    assert f"referral-{referral.id}-{expected_stem}.pdf" in resp.headers["content-disposition"]
+    assert resp.headers.get("cache-control") == "private, no-store"
+
+
+def test_export_missing_info_surfaces_completeness(solo_client):
+    """Missing-info artifact exercises the rules engine end-to-end."""
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+    resp = client.get(f"/referrals/{referral.id}/export.pdf", params={"artifact": "missing_info"})
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF-")
+
+
+def test_export_audit_captures_artifact_name(solo_client):
+    """Each artifact kind should appear in the audit log by name."""
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+
+    for artifact in ("summary", "scheduling", "patient", "attachments", "missing_info"):
+        resp = client.get(f"/referrals/{referral.id}/export.pdf", params={"artifact": artifact})
+        assert resp.status_code == 200
+
+    audit_rows = storage.list_audit_events(limit=50)
+    export_rows = [a for a in audit_rows if a.action == "referral.export"]
+    artifacts_logged = {a.metadata.get("artifact") for a in export_rows}
+    assert {"summary", "scheduling", "patient", "attachments", "missing_info"} <= artifacts_logged

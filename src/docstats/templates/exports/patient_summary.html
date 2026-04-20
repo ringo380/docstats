@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Your Referral — #{{ referral.id }}</title>
+</head>
+<body class="pdf-doc patient-doc">
+<div class="watermark">CONFIDENTIAL PHI</div>
+
+<header class="doc-header patient-header">
+  <div class="doc-title">
+    <h1>Your Referral</h1>
+    <div class="doc-subtitle">For {{ patient.display_name }}</div>
+  </div>
+  <div class="doc-meta">
+    <div><span class="label">Date:</span> {{ generated_at.strftime('%B %d, %Y') }}</div>
+    <div><span class="label">Reference:</span> #{{ referral.id }}</div>
+  </div>
+</header>
+
+<section class="card patient-card">
+  <h2>Who you're seeing</h2>
+  <p class="patient-lead">
+    {% if referral.receiving_organization_name %}
+      You've been referred to <strong>{{ referral.receiving_organization_name }}</strong>
+    {% else %}
+      You've been referred to a specialist
+    {% endif %}
+    {% if referral.specialty_desc %}for <strong>{{ referral.specialty_desc|lower }}</strong>{% endif %}.
+  </p>
+  {% if referral.referring_provider_name or referral.referring_organization %}
+  <p class="patient-sub">
+    This referral was sent by
+    {% if referral.referring_provider_name %}{{ referral.referring_provider_name }}{% endif %}
+    {% if referral.referring_organization %}at {{ referral.referring_organization }}{% endif %}.
+  </p>
+  {% endif %}
+</section>
+
+<section class="card patient-card">
+  <h2>Why</h2>
+  <p class="patient-body">{{ referral.reason or 'Your care team will explain the reason at your visit.' }}</p>
+  {% if referral.requested_service %}
+  <p class="patient-sub"><strong>Requested:</strong> {{ referral.requested_service }}</p>
+  {% endif %}
+</section>
+
+<section class="card patient-card">
+  <h2>What to bring</h2>
+  <ul class="patient-list">
+    <li>A photo ID.</li>
+    <li>Your insurance card.</li>
+    <li>A list of medications you take, including doses.</li>
+    <li>Any recent test results or images your primary team gave you.</li>
+    <li>Questions you want to ask the specialist.</li>
+  </ul>
+</section>
+
+<section class="card patient-card">
+  <h2>About your appointment</h2>
+  <p class="patient-body">
+    {% if referral.urgency == 'stat' %}
+      This referral is <strong>urgent</strong>. Please call the specialist's office as soon as possible to schedule.
+    {% elif referral.urgency == 'urgent' %}
+      This referral is marked <strong>urgent</strong>. We recommend calling within a few days to schedule.
+    {% elif referral.urgency == 'priority' %}
+      This is a <strong>priority</strong> referral — please call within a week.
+    {% else %}
+      This is a <strong>routine</strong> referral. Call when convenient to schedule.
+    {% endif %}
+  </p>
+  {% if referral.authorization_status == 'required_pending' %}
+  <p class="patient-note">
+    Your insurance plan may require prior authorization. Our office is working on it — please wait to hear from us before scheduling if possible.
+  </p>
+  {% elif referral.authorization_status == 'obtained' %}
+  <p class="patient-note">
+    Prior authorization has been approved.
+    {% if referral.authorization_number %}Reference: <span class="mono">{{ referral.authorization_number }}</span>.{% endif %}
+  </p>
+  {% endif %}
+</section>
+
+{% if patient_phone %}
+<section class="card patient-card">
+  <h2>Our records show</h2>
+  <p class="patient-sub">
+    Phone on file: {{ patient_phone }}.
+    {% if patient.preferred_language %}Preferred language: {{ patient.preferred_language }}.{% endif %}
+    If anything is out of date, please let us know.
+  </p>
+</section>
+{% endif %}
+
+<footer class="doc-footer">
+  <span>Referral #{{ referral.id }}</span>
+  <span>Keep this page for your records.</span>
+  <span>Not medical advice — talk with your care team.</span>
+</footer>
+
+</body>
+</html>

@@ -405,6 +405,38 @@
     align-items: center;
     flex-wrap: wrap;
   }
+  .export-menu {
+    position: relative;
+  }
+  .export-menu > summary {
+    list-style: none;
+    cursor: pointer;
+  }
+  .export-menu > summary::-webkit-details-marker { display: none; }
+  .export-menu-list {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px;
+    min-width: 240px;
+    display: flex;
+    flex-direction: column;
+    z-index: 20;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+  }
+  .export-menu-list a {
+    padding: 6px 10px;
+    border-radius: 4px;
+    color: var(--text);
+    text-decoration: none;
+    font-size: 0.88rem;
+  }
+  .export-menu-list a:hover {
+    background: var(--bg-hover, rgba(127,127,127,0.12));
+  }
   .provider-row {
     background: var(--bg-card);
     border: 1px solid var(--border);
