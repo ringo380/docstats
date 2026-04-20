@@ -7,7 +7,9 @@
     <h1>Referrals</h1>
     <div class="sub">{{ referrals | length }} referral{% if referrals | length != 1 %}s{% endif %}</div>
   </div>
-  <div>
+  <div class="header-actions">
+    <a href="/referrals/export.csv{% if request.url.query %}?{{ request.url.query }}{% endif %}"
+       class="btn btn-secondary">Download CSV</a>
     <a href="/referrals/new" class="btn btn-primary">+ New referral</a>
   </div>
 </div>

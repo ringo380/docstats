@@ -1,4 +1,4 @@
-"""Referral export routes (Phase 5.A–5.C).
+"""Referral export routes (Phase 5.A–5.E).
 
 Ships via a single dispatch map so new artifacts are one-tuple appends:
 
@@ -6,6 +6,9 @@ Ships via a single dispatch map so new artifacts are one-tuple appends:
 - 5.B — ``scheduling``, ``patient``, ``attachments``, ``missing_info``
 - 5.C — ``fax_cover`` + ``packet`` (concatenated bundle) + preview UI at
         ``GET /referrals/{id}/export``
+- 5.D — ``GET /referrals/{id}/export.json`` (FHIR-ish Bundle)
+- 5.E — ``GET /referrals/export.csv`` (workspace flat CSV) +
+        ``POST /referrals/batch-export.pdf`` (multi-referral packet)
 
 Route contract:
 
@@ -14,21 +17,22 @@ Route contract:
 - WeasyPrint rendering runs in the default thread executor so the CPU-bound
   HTML→PDF pipeline doesn't block uvicorn's event loop.
 - Best-effort audit (``referral.export``) + referral event (``exported``).
-
-Phase 5.D adds JSON; 5.E CSV + batch-export.
 """
 
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Path, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from docstats.domain.audit import record as audit_record
+from docstats.domain.referrals import STATUS_VALUES, URGENCY_VALUES
 from docstats.domain.rules import rules_based_completeness
 from docstats.exports import (
     ARTIFACT_ATTACHMENTS_CHECKLIST,
@@ -38,7 +42,9 @@ from docstats.exports import (
     ARTIFACT_PATIENT_SUMMARY,
     ARTIFACT_REFERRAL_SUMMARY,
     ARTIFACT_SCHEDULING_SUMMARY,
+    CSV_FIELDNAMES,
     build_referral_bundle,
+    referral_to_csv_row,
     render_attachments_checklist,
     render_fax_cover,
     render_missing_info,
@@ -213,6 +219,263 @@ def _parse_include(raw: str | None) -> list[str]:
             raise HTTPException(400, detail=f"Unknown artifact in include: '{tok}'")
         seen[tok] = None
     return list(seen)
+
+
+# ==========================================================================
+# Phase 5.E — workspace-level CSV + batch PDF
+# ==========================================================================
+#
+# These literal-path routes MUST be declared BEFORE the ``/{referral_id}/...``
+# routes below. FastAPI matches routes in declaration order inside a router,
+# and the parameterized ``{referral_id}`` path would otherwise try to coerce
+# "export.csv" / "batch-export.pdf" to an int and reject the request.
+
+_BATCH_EXPORT_MAX = 50
+_CSV_EXPORT_MAX_ROWS = 2000
+
+
+@router.get("/export.csv")
+async def referrals_csv_export(
+    request: Request,
+    status: str | None = Query(None, max_length=32),
+    urgency: str | None = Query(None, max_length=16),
+    patient_id: int | None = Query(None, ge=1),
+    assigned_to_user_id: int | None = Query(None, ge=1),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+) -> StreamingResponse:
+    """Flat CSV — one row per referral, same filters as the workspace list."""
+    status_filter = status if status in STATUS_VALUES else None
+    urgency_filter = urgency if urgency in URGENCY_VALUES else None
+
+    referrals = storage.list_referrals(
+        scope,
+        patient_id=patient_id,
+        status=status_filter,
+        urgency=urgency_filter,
+        assigned_to_user_id=assigned_to_user_id,
+        limit=_CSV_EXPORT_MAX_ROWS,
+    )
+    # Batch-fetch patients to avoid N+1.
+    patient_ids = {r.patient_id for r in referrals}
+    patients_by_id = {
+        pid: p for pid in patient_ids if (p := storage.get_patient(scope, pid)) is not None
+    }
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(CSV_FIELDNAMES))
+    writer.writeheader()
+    for referral in referrals:
+        writer.writerow(referral_to_csv_row(referral, patients_by_id.get(referral.patient_id)))
+
+    audit_record(
+        storage,
+        action="referral.export",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral",
+        entity_id=None,
+        metadata={
+            "artifact": "referrals_csv",
+            "format": "csv",
+            "rows": len(referrals),
+            "filters": {
+                k: v
+                for k, v in {
+                    "status": status_filter,
+                    "urgency": urgency_filter,
+                    "patient_id": patient_id,
+                    "assigned_to_user_id": assigned_to_user_id,
+                }.items()
+                if v is not None
+            },
+        },
+    )
+
+    filename = f"referrals-{datetime.now(tz=timezone.utc).strftime('%Y%m%d')}.csv"
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/batch-export.pdf")
+async def referrals_batch_export(
+    request: Request,
+    referral_ids: str = Form(..., max_length=512),
+    artifact: str = Form(ARTIFACT_REFERRAL_SUMMARY, max_length=32),
+    include: str | None = Form(None, max_length=256),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+) -> Response:
+    """Concatenate N referrals' PDFs into a single download.
+
+    ``referral_ids`` is a comma-separated list of positive integers. This
+    keeps the browser-form wire format simple and dodges FastAPI's
+    list-form parsing quirks. Default per-referral artifact is
+    ``summary`` so the stream is tight; pass ``artifact=packet``
+    (+ optional ``include=...``) to bundle each referral as a packet.
+    Capped at :data:`_BATCH_EXPORT_MAX` referral IDs per request.
+    """
+    raw_tokens = [t.strip() for t in referral_ids.split(",") if t.strip()]
+    if not raw_tokens:
+        raise HTTPException(400, detail="referral_ids is required")
+    if len(raw_tokens) > _BATCH_EXPORT_MAX:
+        raise HTTPException(400, detail=f"at most {_BATCH_EXPORT_MAX} referrals per batch")
+    parsed_ids: list[int] = []
+    for tok in raw_tokens:
+        try:
+            val = int(tok)
+        except ValueError:
+            raise HTTPException(400, detail=f"invalid referral_id '{tok}'")
+        if val < 1:
+            raise HTTPException(400, detail="referral_ids must be positive integers")
+        parsed_ids.append(val)
+
+    if artifact not in _ARTIFACT_BUNDLES and artifact != ARTIFACT_PACKET:
+        raise HTTPException(400, detail=f"Unsupported artifact '{artifact}'.")
+    parts_order: list[str] = []
+    if artifact == ARTIFACT_PACKET:
+        parts_order = _parse_include(include)
+
+    # De-duplicate while preserving caller order.
+    seen: dict[int, None] = {}
+    for rid in parsed_ids:
+        seen[rid] = None
+    ordered_ids = list(seen)
+
+    generated_at = datetime.now(tz=timezone.utc)
+    generated_by_label = _generated_by_label(current_user)
+    loop = asyncio.get_running_loop()
+
+    pdf_parts: list[bytes] = []
+    rendered_ids: list[int] = []
+    # Errors on individual referrals (missing / wrong-scope / dead patient)
+    # are logged and skipped so one bad ID doesn't kill the batch.
+    skipped: list[dict[str, Any]] = []
+
+    for rid in ordered_ids:
+        ref = storage.get_referral(scope, rid)
+        if ref is None:
+            skipped.append({"referral_id": rid, "reason": "not found"})
+            continue
+        pat = storage.get_patient(scope, ref.patient_id)
+        if pat is None:
+            skipped.append({"referral_id": rid, "reason": "patient unavailable"})
+            continue
+
+        try:
+            if artifact == ARTIFACT_PACKET:
+                sub_parts: list[bytes] = []
+                for name in parts_order:
+                    part = await loop.run_in_executor(
+                        None,
+                        lambda n=name, r=ref, p=pat: _render_one(  # type: ignore[misc]
+                            storage=storage,
+                            scope=scope,
+                            referral=r,
+                            patient=p,
+                            generated_at=generated_at,
+                            generated_by_label=generated_by_label,
+                            artifact=n,
+                        ),
+                    )
+                    sub_parts.append(part)
+                merged = await loop.run_in_executor(
+                    None,
+                    lambda r=ref, p=pat, parts=sub_parts: render_packet(  # type: ignore[misc]
+                        referral=r,
+                        patient=p,
+                        parts=parts,
+                        generated_at=generated_at,
+                        generated_by_label=generated_by_label,
+                    ),
+                )
+                pdf_parts.append(merged)
+            else:
+                part = await loop.run_in_executor(
+                    None,
+                    lambda r=ref, p=pat: _render_one(  # type: ignore[misc]
+                        storage=storage,
+                        scope=scope,
+                        referral=r,
+                        patient=p,
+                        generated_at=generated_at,
+                        generated_by_label=generated_by_label,
+                        artifact=artifact,
+                    ),
+                )
+                pdf_parts.append(part)
+            rendered_ids.append(rid)
+        except Exception:
+            logger.exception("Batch export render failed for referral %s", rid)
+            skipped.append({"referral_id": rid, "reason": "render failed"})
+
+    if not pdf_parts:
+        raise HTTPException(404, detail="No renderable referrals in batch.")
+
+    # Concatenate with pypdf; pass the first referral/patient as the dummy
+    # reference arg — render_packet only uses them for the signature.
+    first_referral = storage.get_referral(scope, rendered_ids[0])
+    first_patient = None
+    if first_referral is not None:
+        first_patient = storage.get_patient(scope, first_referral.patient_id)
+    try:
+        pdf_bytes = await loop.run_in_executor(
+            None,
+            lambda: render_packet(
+                referral=first_referral,  # type: ignore[arg-type]
+                patient=first_patient,  # type: ignore[arg-type]
+                parts=pdf_parts,
+                generated_at=generated_at,
+                generated_by_label=generated_by_label,
+            ),
+        )
+    except Exception:
+        logger.exception("Batch concatenation failed")
+        raise HTTPException(500, detail="Failed to render batch PDF.")
+
+    audit_record(
+        storage,
+        action="referral.export",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral",
+        entity_id=None,
+        metadata={
+            "artifact": f"batch:{artifact}",
+            "format": "pdf",
+            "bytes": len(pdf_bytes),
+            "rendered": rendered_ids,
+            "skipped": skipped,
+        },
+    )
+
+    filename = f"referrals-batch-{generated_at.strftime('%Y%m%d-%H%M%S')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+            # Expose skipped IDs so a programmatic caller can retry them.
+            "X-Export-Rendered": ",".join(str(i) for i in rendered_ids),
+            "X-Export-Skipped": ",".join(str(s["referral_id"]) for s in skipped),
+        },
+    )
 
 
 @router.get("/{referral_id}/export", response_class=HTMLResponse)
