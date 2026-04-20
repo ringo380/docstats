@@ -221,7 +221,13 @@ def test_export_oversized_artifact_param_422(solo_client):
 
 
 def test_export_with_clinical_sub_entities(solo_client):
-    """Seed diagnoses/meds/allergies/attachments so the {% if %} branches fire."""
+    """Seed diagnoses/meds/allergies/attachments so the {% if %} branches fire.
+
+    The route smoke-tests end-to-end wiring; the byte-size assertion that
+    actually proves the {% if %} blocks emitted content lives in
+    ``test_render_summary_with_sub_entities_is_larger`` where timestamps are
+    pinned deterministically.
+    """
     client, storage, user_id = solo_client
     _, referral = _seed_referral(storage, user_id)
     scope = Scope(user_id=user_id)
@@ -241,10 +247,70 @@ def test_export_with_clinical_sub_entities(solo_client):
     resp = client.get(f"/referrals/{referral.id}/export.pdf")
     assert resp.status_code == 200
     assert resp.content.startswith(b"%PDF-")
-    # Sanity: PDF with sub-entities is materially larger than a bare one.
-    baseline = client.get(f"/referrals/{referral.id}/export.pdf")
-    # Both requests have the same referral so size parity confirms stability.
-    assert len(resp.content) == len(baseline.content)
+
+
+def test_render_summary_with_sub_entities_is_larger():
+    """Pin ``generated_at`` so PDF metadata matches and only body bytes differ."""
+    from docstats.domain.referrals import (
+        ReferralAllergy,
+        ReferralAttachment,
+        ReferralDiagnosis,
+        ReferralMedication,
+    )
+
+    patient, referral, now = _fixture_patient_referral()
+    bare = render_referral_summary(referral=referral, patient=patient, generated_at=now)
+    enriched = render_referral_summary(
+        referral=referral,
+        patient=patient,
+        diagnoses=[
+            ReferralDiagnosis(
+                id=1,
+                referral_id=referral.id,
+                icd10_code="R07.9",
+                icd10_desc="Chest pain unspecified",
+                is_primary=True,
+                source="user_entered",
+                created_at=now,
+            )
+        ],
+        medications=[
+            ReferralMedication(
+                id=1,
+                referral_id=referral.id,
+                name="Metoprolol",
+                dose="25mg",
+                route="PO",
+                frequency="BID",
+                source="user_entered",
+                created_at=now,
+            )
+        ],
+        allergies=[
+            ReferralAllergy(
+                id=1,
+                referral_id=referral.id,
+                substance="Penicillin",
+                reaction="Hives",
+                severity="moderate",
+                source="user_entered",
+                created_at=now,
+            )
+        ],
+        attachments=[
+            ReferralAttachment(
+                id=1,
+                referral_id=referral.id,
+                kind="lab",
+                label="CBC 2026-04-01",
+                checklist_only=True,
+                source="user_entered",
+                created_at=now,
+            )
+        ],
+        generated_at=now,
+    )
+    assert len(enriched) > len(bare)
 
 
 def test_export_missing_patient_409(solo_client):
