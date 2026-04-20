@@ -42,9 +42,12 @@ from docstats.scope import Scope
 from docstats.storage_base import StorageBase
 
 # Map from referral_fields in rule.required_fields["fields"] to a
-# (label, satisfaction-check) pair. Keeping the map explicit avoids a
-# runtime-getattr loop that silently no-ops on a typo.
-_REQUIRED_FIELD_CHECKS: dict[str, str] = {
+# human-readable label. Keeping the map explicit avoids a runtime-getattr
+# loop that silently no-ops on a typo. Public (no leading underscore) so
+# the admin UI (Phase 6.B) can render the same vocabulary in its
+# checkbox group for the specialty-rule editor — the rules engine silently
+# ignores unknown field names, so we want the UI bounded to this map.
+REQUIRED_FIELD_CHECKS: dict[str, str] = {
     "reason": "Reason for referral",
     "clinical_question": "Specific clinical question",
     "diagnosis_primary_icd": "Primary diagnosis (ICD-10)",
@@ -56,6 +59,9 @@ _REQUIRED_FIELD_CHECKS: dict[str, str] = {
     "authorization_status": "Authorization status",
     "referring_provider_name": "Referring provider name",
 }
+# Alias for back-compat with internal callers; remove in Phase 7 after
+# any vendored imports migrate.
+_REQUIRED_FIELD_CHECKS = REQUIRED_FIELD_CHECKS
 
 
 @dataclass(frozen=True)

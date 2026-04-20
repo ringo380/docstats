@@ -1,0 +1,402 @@
+"""Route-level tests for admin specialty-rules editor (Phase 6.B)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from docstats.auth import get_current_user
+from docstats.storage import Storage, get_storage
+from docstats.web import app
+
+
+def _fake_user(
+    user_id: int,
+    email: str,
+    *,
+    active_org_id: int | None = None,
+    is_org_admin: bool = False,
+) -> dict:
+    return {
+        "id": user_id,
+        "email": email,
+        "display_name": None,
+        "first_name": None,
+        "last_name": None,
+        "github_id": None,
+        "github_login": None,
+        "password_hash": "hashed",
+        "created_at": "2026-01-01",
+        "last_login_at": None,
+        "terms_accepted_at": "2026-01-01",
+        "active_org_id": active_org_id,
+        "is_org_admin": is_org_admin,
+    }
+
+
+@pytest.fixture
+def storage(tmp_path: Path) -> Storage:
+    return Storage(db_path=tmp_path / "admin_specialty.db")
+
+
+@pytest.fixture
+def org_admin(storage: Storage):
+    """Set up an org with a single admin user + one global specialty rule."""
+    user_id = storage.create_user("admin@example.com", "hashed")
+    org = storage.create_organization(name="Acme Cardiology", slug="acme-cardio")
+    storage.create_membership(organization_id=org.id, user_id=user_id, role="admin")
+    storage.set_active_org(user_id, org.id)
+    # Seed a global Cardiology rule to exercise the override workflow.
+    storage.create_specialty_rule(
+        specialty_code="207RC0000X",
+        organization_id=None,
+        display_name="Cardiology",
+        required_fields={"fields": ["reason", "clinical_question"]},
+        recommended_attachments={
+            "kinds": ["lab", "imaging"],
+            "labels": ["Recent EKG", "Lipid panel"],
+        },
+        intake_questions={"prompts": ["Duration of symptoms?"]},
+        urgency_red_flags={"keywords": ["chest pain", "syncope"]},
+        common_rejection_reasons={"reasons": ["Missing recent EKG"]},
+        source="seed",
+    )
+    user = _fake_user(user_id, "admin@example.com", active_org_id=org.id, is_org_admin=True)
+    return user_id, org, user
+
+
+def _client_with(storage: Storage, user: dict | None) -> TestClient:
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: user
+    return TestClient(app)
+
+
+def _cleanup() -> None:
+    app.dependency_overrides.clear()
+
+
+# --- Role enforcement (mirrors 6.A coverage for the new surface) ---
+
+
+def test_list_rejects_solo_user(storage: Storage) -> None:
+    user_id = storage.create_user("solo@example.com", "hashed")
+    user = _fake_user(user_id, "solo@example.com", active_org_id=None)
+    try:
+        resp = _client_with(storage, user).get("/admin/specialty-rules")
+        assert resp.status_code == 403
+    finally:
+        _cleanup()
+
+
+@pytest.mark.parametrize("role", ["read_only", "staff", "clinician", "coordinator"])
+def test_list_rejects_sub_admin(storage: Storage, role: str) -> None:
+    user_id = storage.create_user(f"{role}@example.com", "hashed")
+    org = storage.create_organization(name="R", slug=f"r-{role}")
+    storage.create_membership(organization_id=org.id, user_id=user_id, role=role)
+    storage.set_active_org(user_id, org.id)
+    user = _fake_user(user_id, f"{role}@example.com", active_org_id=org.id, is_org_admin=False)
+    try:
+        resp = _client_with(storage, user).get("/admin/specialty-rules")
+        assert resp.status_code == 403
+    finally:
+        _cleanup()
+
+
+def test_edit_rejects_anonymous(storage: Storage) -> None:
+    try:
+        resp = _client_with(storage, None).get(
+            "/admin/specialty-rules/207RC0000X", follow_redirects=False
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/auth/login"
+    finally:
+        _cleanup()
+
+
+def test_save_rejects_non_admin(storage: Storage) -> None:
+    user_id = storage.create_user("staff@example.com", "hashed")
+    org = storage.create_organization(name="S", slug="s-org")
+    storage.create_membership(organization_id=org.id, user_id=user_id, role="staff")
+    storage.set_active_org(user_id, org.id)
+    user = _fake_user(user_id, "staff@example.com", active_org_id=org.id, is_org_admin=False)
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X", data={"display_name": "X"}
+        )
+        assert resp.status_code == 403
+    finally:
+        _cleanup()
+
+
+# --- List view ---
+
+
+def test_list_shows_globals_with_no_override(storage: Storage, org_admin) -> None:
+    _, _, user = org_admin
+    try:
+        resp = _client_with(storage, user).get("/admin/specialty-rules")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Cardiology" in body
+        assert "207RC0000X" in body
+        assert "Platform default" in body
+        # The "Edit override" button reads "Create override" when no override exists yet.
+        assert "Create override" in body
+        assert "Revert" not in body
+    finally:
+        _cleanup()
+
+
+def test_list_highlights_existing_override(storage: Storage, org_admin) -> None:
+    _, org, user = org_admin
+    storage.create_specialty_rule(
+        specialty_code="207RC0000X",
+        organization_id=org.id,
+        display_name="Cardiology (org)",
+        required_fields={"fields": ["reason"]},
+        source="admin_override",
+    )
+    try:
+        resp = _client_with(storage, user).get("/admin/specialty-rules")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Org override" in body
+        # Override display_name wins over global.
+        assert "Cardiology (org)" in body
+        assert "Edit override" in body
+        assert "Revert" in body
+    finally:
+        _cleanup()
+
+
+# --- Edit form GET ---
+
+
+def test_edit_form_prepopulates_from_global_when_no_override(storage: Storage, org_admin) -> None:
+    _, _, user = org_admin
+    try:
+        resp = _client_with(storage, user).get("/admin/specialty-rules/207RC0000X")
+        assert resp.status_code == 200
+        body = resp.text
+        # Values seeded from the global rule.
+        assert 'value="Cardiology"' in body
+        assert "Recent EKG" in body
+        assert "Lipid panel" in body
+        assert "chest pain" in body
+        assert "Missing recent EKG" in body
+        # Required-field checkboxes: the two from global should be checked.
+        assert 'name="required_field" value="reason"' in body
+        assert 'name="required_field" value="clinical_question"' in body
+        # Button label reflects "Create override" flow.
+        assert "Create override" in body
+    finally:
+        _cleanup()
+
+
+def test_edit_form_prepopulates_from_override_when_present(storage: Storage, org_admin) -> None:
+    _, org, user = org_admin
+    storage.create_specialty_rule(
+        specialty_code="207RC0000X",
+        organization_id=org.id,
+        display_name="Cardiology — Internal Med heavy",
+        required_fields={"fields": ["reason"]},
+        recommended_attachments={"kinds": [], "labels": ["Custom label"]},
+        intake_questions={"prompts": ["Custom prompt?"]},
+        urgency_red_flags={"keywords": ["org-keyword"]},
+        common_rejection_reasons={"reasons": ["org-reason"]},
+        source="admin_override",
+    )
+    try:
+        resp = _client_with(storage, user).get("/admin/specialty-rules/207RC0000X")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Cardiology — Internal Med heavy" in body
+        assert "Custom label" in body
+        assert "Custom prompt?" in body
+        assert "org-keyword" in body
+        assert "org-reason" in body
+        # Global-only values should NOT appear when an override is seeding the
+        # form. "Lipid panel" is a global-seeded textarea value; it would only
+        # appear in the form if the override-seeding path leaked global data.
+        # (The help-text "Recent EKG" example is a literal in the template,
+        # so we assert on a global-only value that doesn't appear in help text.)
+        assert "Lipid panel" not in body
+        assert "Save override" in body
+    finally:
+        _cleanup()
+
+
+def test_edit_form_404_when_neither_global_nor_override_exists(storage: Storage, org_admin) -> None:
+    _, _, user = org_admin
+    try:
+        resp = _client_with(storage, user).get("/admin/specialty-rules/999BOGUSX")
+        assert resp.status_code == 404
+    finally:
+        _cleanup()
+
+
+# --- Save (create override) ---
+
+
+def test_save_creates_org_override(storage: Storage, org_admin) -> None:
+    _, org, user = org_admin
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X",
+            data={
+                "display_name": "Cardiology — Team override",
+                "required_field": ["reason", "diagnosis_primary_icd"],
+                "recommended_attachment_labels": "EKG\nStress test",
+                "intake_question_prompts": "How long?\nAny syncope?",
+                "urgency_red_flag_keywords": "chest pain\ndyspnea at rest",
+                "common_rejection_reasons": "No EKG",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/admin/specialty-rules"
+
+        overrides = storage.list_specialty_rules(organization_id=org.id, include_globals=False)
+        assert len(overrides) == 1
+        o = overrides[0]
+        assert o.display_name == "Cardiology — Team override"
+        assert o.required_fields == {"fields": ["reason", "diagnosis_primary_icd"]}
+        assert o.recommended_attachments["labels"] == ["EKG", "Stress test"]
+        # Kinds preserved from the seeding source (the global rule in this test).
+        assert o.recommended_attachments["kinds"] == ["lab", "imaging"]
+        assert o.intake_questions == {"prompts": ["How long?", "Any syncope?"]}
+        assert o.urgency_red_flags == {"keywords": ["chest pain", "dyspnea at rest"]}
+        assert o.common_rejection_reasons == {"reasons": ["No EKG"]}
+        assert o.source == "admin_override"
+
+        events = storage.list_audit_events(scope_organization_id=org.id)
+        actions = [e.action for e in events]
+        assert "admin.specialty_rule.create_override" in actions
+    finally:
+        _cleanup()
+
+
+def test_save_filters_unknown_required_fields(storage: Storage, org_admin) -> None:
+    _, org, user = org_admin
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X",
+            data={
+                "display_name": "Cardiology",
+                # First is valid, second is not in _REQUIRED_FIELD_CHECKS and
+                # should be silently dropped at the route boundary.
+                "required_field": ["reason", "bogus_field"],
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        overrides = storage.list_specialty_rules(organization_id=org.id, include_globals=False)
+        assert overrides[0].required_fields == {"fields": ["reason"]}
+    finally:
+        _cleanup()
+
+
+def test_save_updates_existing_override(storage: Storage, org_admin) -> None:
+    _, org, user = org_admin
+    # Pre-existing override the admin is editing.
+    before = storage.create_specialty_rule(
+        specialty_code="207RC0000X",
+        organization_id=org.id,
+        display_name="Old name",
+        required_fields={"fields": ["reason"]},
+        recommended_attachments={"kinds": ["keep"], "labels": ["Old label"]},
+        source="admin_override",
+    )
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X",
+            data={
+                "display_name": "New name",
+                "required_field": ["reason", "clinical_question"],
+                "recommended_attachment_labels": "New label",
+                "intake_question_prompts": "",
+                "urgency_red_flag_keywords": "",
+                "common_rejection_reasons": "",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        after = storage.get_specialty_rule(before.id)
+        assert after is not None
+        assert after.display_name == "New name"
+        assert after.required_fields == {"fields": ["reason", "clinical_question"]}
+        assert after.recommended_attachments["labels"] == ["New label"]
+        # Kinds preserved from the override's own prior state, not re-seeded from global.
+        assert after.recommended_attachments["kinds"] == ["keep"]
+        # Empty textareas land as empty lists (not None).
+        assert after.intake_questions == {"prompts": []}
+        assert after.urgency_red_flags == {"keywords": []}
+        assert after.common_rejection_reasons == {"reasons": []}
+        # version_id bumped (was 1 on create, should now be 2).
+        assert after.version_id > before.version_id
+
+        events = storage.list_audit_events(scope_organization_id=org.id)
+        assert any(e.action == "admin.specialty_rule.update_override" for e in events)
+    finally:
+        _cleanup()
+
+
+def test_save_404_on_unknown_code(storage: Storage, org_admin) -> None:
+    _, _, user = org_admin
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/999BOGUSX",
+            data={"display_name": "Nope"},
+        )
+        assert resp.status_code == 404
+    finally:
+        _cleanup()
+
+
+# --- Revert ---
+
+
+def test_revert_deletes_override(storage: Storage, org_admin) -> None:
+    _, org, user = org_admin
+    storage.create_specialty_rule(
+        specialty_code="207RC0000X",
+        organization_id=org.id,
+        display_name="Override to revert",
+        source="admin_override",
+    )
+    assert len(storage.list_specialty_rules(organization_id=org.id, include_globals=False)) == 1
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X/revert",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert len(storage.list_specialty_rules(organization_id=org.id, include_globals=False)) == 0
+        # Global still present.
+        globals_ = storage.list_specialty_rules(
+            organization_id=None, include_globals=True, specialty_code="207RC0000X"
+        )
+        assert len(globals_) == 1
+
+        events = storage.list_audit_events(scope_organization_id=org.id)
+        assert any(e.action == "admin.specialty_rule.revert_override" for e in events)
+    finally:
+        _cleanup()
+
+
+def test_revert_is_idempotent_when_no_override(storage: Storage, org_admin) -> None:
+    _, org, user = org_admin
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X/revert",
+            follow_redirects=False,
+        )
+        # No-op but still a redirect; should NOT emit an audit event.
+        assert resp.status_code == 303
+        events = storage.list_audit_events(scope_organization_id=org.id)
+        assert all(e.action != "admin.specialty_rule.revert_override" for e in events)
+    finally:
+        _cleanup()
