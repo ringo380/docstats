@@ -22,14 +22,16 @@
     </div>
   </div>
   <div class="header-actions">
+    <a class="btn btn-secondary" href="/referrals/{{ referral.id }}/export">Export packet…</a>
     <details class="export-menu">
-      <summary class="btn btn-secondary">Export PDF ▾</summary>
+      <summary class="btn btn-secondary">Individual ▾</summary>
       <div class="export-menu-list">
         <a href="/referrals/{{ referral.id }}/export.pdf?artifact=summary" target="_blank" rel="noopener">Referral Request Summary</a>
         <a href="/referrals/{{ referral.id }}/export.pdf?artifact=scheduling" target="_blank" rel="noopener">Specialist Scheduling Summary</a>
         <a href="/referrals/{{ referral.id }}/export.pdf?artifact=patient" target="_blank" rel="noopener">Patient-Friendly Summary</a>
         <a href="/referrals/{{ referral.id }}/export.pdf?artifact=attachments" target="_blank" rel="noopener">Attachments Checklist</a>
         <a href="/referrals/{{ referral.id }}/export.pdf?artifact=missing_info" target="_blank" rel="noopener">Missing-Info Checklist</a>
+        <a href="/referrals/{{ referral.id }}/export.pdf?artifact=fax_cover" target="_blank" rel="noopener">Fax Cover Sheet</a>
       </div>
     </details>
     <button type="button" class="btn btn-danger"

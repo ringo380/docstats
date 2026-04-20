@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fax Cover — Referral #{{ referral.id }}</title>
+</head>
+<body class="pdf-doc">
+<div class="watermark">CONFIDENTIAL PHI</div>
+
+<header class="doc-header fax-header">
+  <div class="doc-title">
+    <h1>Fax Cover Sheet</h1>
+    <div class="doc-subtitle">Referral #{{ referral.id }} · {{ generated_at.strftime('%B %d, %Y') }}</div>
+  </div>
+  <div class="doc-meta">
+    {% if referral.urgency in ('urgent', 'stat', 'priority') %}
+    <div class="fax-urgent-stamp">{{ referral.urgency|upper }}</div>
+    {% endif %}
+  </div>
+</header>
+
+<section class="fax-addr">
+  <div class="card">
+    <h2>From</h2>
+    <div class="field-block">
+      <span class="label">Organization</span>
+      <div class="value">{{ referral.referring_organization or '—' }}</div>
+    </div>
+    <div class="field-block">
+      <span class="label">Provider</span>
+      <div class="value">{{ referral.referring_provider_name or '—' }}</div>
+    </div>
+    <div class="field-block">
+      <span class="label">NPI</span>
+      <div class="value mono">{{ referral.referring_provider_npi or '—' }}</div>
+    </div>
+    <div class="field-block">
+      <span class="label">Fax</span>
+      <div class="value mono">{{ sender_fax or '—' }}</div>
+    </div>
+    {% if generated_by_label %}
+    <div class="field-block">
+      <span class="label">Sent by</span>
+      <div class="value">{{ generated_by_label }}</div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>To</h2>
+    <div class="field-block">
+      <span class="label">Organization</span>
+      <div class="value">{{ referral.receiving_organization_name or '—' }}</div>
+    </div>
+    <div class="field-block">
+      <span class="label">NPI</span>
+      <div class="value mono">{{ referral.receiving_provider_npi or '—' }}</div>
+    </div>
+    <div class="field-block">
+      <span class="label">Fax</span>
+      <div class="value mono">{{ receiving_fax or '—' }}</div>
+    </div>
+    <div class="field-block">
+      <span class="label">Specialty</span>
+      <div class="value">{{ referral.specialty_desc or '—' }}</div>
+    </div>
+  </div>
+</section>
+
+<section class="card fax-subject">
+  <h2>Subject</h2>
+  <div class="grid-2">
+    <div>
+      <span class="label">Patient</span>
+      <div class="value hero-value">{{ patient.display_name }}</div>
+    </div>
+    <div>
+      <span class="label">DOB</span>
+      <div class="value">
+        {{ patient.date_of_birth or '—' }}
+        {% if patient_age is not none %}<span class="muted">({{ patient_age }} y)</span>{% endif %}
+      </div>
+    </div>
+    <div>
+      <span class="label">MRN</span>
+      <div class="value mono">{{ patient.mrn or '—' }}</div>
+    </div>
+    <div>
+      <span class="label">Authorization</span>
+      <div class="value">
+        {{ referral.authorization_status|replace('_', ' ') }}
+        {% if referral.authorization_number %}· <span class="mono">{{ referral.authorization_number }}</span>{% endif %}
+      </div>
+    </div>
+  </div>
+  {% if referral.reason %}
+  <div class="field-block" style="margin-top:8pt;">
+    <span class="label">Reason for referral</span>
+    <div class="value prose">{{ referral.reason }}</div>
+  </div>
+  {% endif %}
+</section>
+
+<section class="card fax-pages">
+  <div class="grid-2">
+    <div>
+      <span class="label">Pages (including cover)</span>
+      <div class="value hero-value">{{ total_pages or 1 }}</div>
+    </div>
+    <div>
+      <span class="label">Urgency</span>
+      <div class="value">
+        <span class="urgency urgency-{{ referral.urgency }}">{{ referral.urgency|upper }}</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="fax-notice">
+  <strong>Confidentiality Notice</strong> — The information in this transmission is privileged
+  and confidential, intended only for the named recipient. If you received this fax in error,
+  please call the sender immediately and destroy all copies.
+</section>
+
+<footer class="doc-footer">
+  <span>Referral #{{ referral.id }}</span>
+  <span>{{ patient.display_name }}</span>
+  <span>Confidential — contains protected health information.</span>
+</footer>
+
+</body>
+</html>

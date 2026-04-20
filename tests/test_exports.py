@@ -550,3 +550,198 @@ def test_export_audit_captures_artifact_name(solo_client):
     export_rows = [a for a in audit_rows if a.action == "referral.export"]
     artifacts_logged = {a.metadata.get("artifact") for a in export_rows}
     assert {"summary", "scheduling", "patient", "attachments", "missing_info"} <= artifacts_logged
+
+
+# ==========================================================================
+# Phase 5.C — Fax cover + packet bundling + preview UI
+# ==========================================================================
+
+
+# ---------- Unit: fax cover renderer ----------
+
+
+def test_render_fax_cover_bytes():
+    from docstats.exports import render_fax_cover
+
+    patient, referral, now = _fixture_patient_referral()
+    pdf = render_fax_cover(
+        referral=referral,
+        patient=patient,
+        total_pages=3,
+        generated_at=now,
+        generated_by_label="Tester",
+    )
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 2000
+
+
+def test_render_fax_cover_total_pages_optional():
+    from docstats.exports import render_fax_cover
+
+    patient, referral, now = _fixture_patient_referral()
+    pdf = render_fax_cover(referral=referral, patient=patient, generated_at=now)
+    assert pdf.startswith(b"%PDF-")
+
+
+# ---------- Unit: packet bundling ----------
+
+
+def test_render_packet_concatenates():
+    from docstats.exports import render_fax_cover, render_packet, render_referral_summary
+
+    patient, referral, now = _fixture_patient_referral()
+    cover = render_fax_cover(referral=referral, patient=patient, generated_at=now)
+    summary = render_referral_summary(referral=referral, patient=patient, generated_at=now)
+    packet = render_packet(
+        referral=referral, patient=patient, parts=[cover, summary], generated_at=now
+    )
+    assert packet.startswith(b"%PDF-")
+    # Packet must be at least ~90% the sum of its parts (pypdf drops a
+    # small amount of redundant PDF overhead when merging).
+    assert len(packet) > 0.85 * (len(cover) + len(summary))
+
+
+def test_render_packet_empty_raises():
+    from docstats.exports import render_packet
+
+    patient, referral, now = _fixture_patient_referral()
+    with pytest.raises(ValueError):
+        render_packet(referral=referral, patient=patient, parts=[], generated_at=now)
+
+
+def test_render_packet_single_pass_through():
+    """A one-part packet should return the original bytes unchanged."""
+    from docstats.exports import render_fax_cover, render_packet
+
+    patient, referral, now = _fixture_patient_referral()
+    cover = render_fax_cover(referral=referral, patient=patient, generated_at=now)
+    packet = render_packet(referral=referral, patient=patient, parts=[cover], generated_at=now)
+    assert packet == cover
+
+
+# ---------- Route: fax cover ----------
+
+
+def test_export_route_fax_cover(solo_client):
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+
+    resp = client.get(f"/referrals/{referral.id}/export.pdf?artifact=fax_cover")
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF-")
+    assert f"referral-{referral.id}-fax-cover.pdf" in resp.headers["content-disposition"]
+
+
+# ---------- Route: packet bundling ----------
+
+
+def test_export_route_packet_default_include(solo_client):
+    """Default packet includes fax_cover + summary + attachments."""
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+
+    resp = client.get(f"/referrals/{referral.id}/export.pdf?artifact=packet")
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF-")
+    assert f"referral-{referral.id}-packet.pdf" in resp.headers["content-disposition"]
+
+    # Audit should mention the ordered include list.
+    audit_rows = storage.list_audit_events(limit=20)
+    export_rows = [a for a in audit_rows if a.action == "referral.export"]
+    assert any(a.metadata.get("artifact", "").startswith("packet:") for a in export_rows), [
+        a.metadata.get("artifact") for a in export_rows
+    ]
+
+
+def test_export_route_packet_custom_include(solo_client):
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+
+    resp = client.get(
+        f"/referrals/{referral.id}/export.pdf",
+        params={"artifact": "packet", "include": "summary,attachments"},
+    )
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF-")
+
+
+def test_export_route_packet_unknown_include_400(solo_client):
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+
+    resp = client.get(
+        f"/referrals/{referral.id}/export.pdf",
+        params={"artifact": "packet", "include": "summary,bogus"},
+    )
+    assert resp.status_code == 400
+
+
+def test_export_route_packet_nested_rejected(solo_client):
+    """A packet can't include itself."""
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+
+    resp = client.get(
+        f"/referrals/{referral.id}/export.pdf",
+        params={"artifact": "packet", "include": "packet"},
+    )
+    assert resp.status_code == 400
+
+
+def test_export_route_packet_dedupes_include(solo_client):
+    """Duplicate tokens in include should not produce duplicate pages."""
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+
+    single = client.get(
+        f"/referrals/{referral.id}/export.pdf",
+        params={"artifact": "packet", "include": "summary"},
+    )
+    doubled = client.get(
+        f"/referrals/{referral.id}/export.pdf",
+        params={"artifact": "packet", "include": "summary,summary"},
+    )
+    assert single.status_code == 200
+    assert doubled.status_code == 200
+    # Both should be one-artifact packets (pypdf pass-through); byte
+    # lengths match within the render-timestamp noise floor.
+    assert abs(len(single.content) - len(doubled.content)) < 200
+
+
+# ---------- Route: preview UI ----------
+
+
+def test_export_preview_page(solo_client):
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+
+    resp = client.get(f"/referrals/{referral.id}/export")
+    assert resp.status_code == 200
+    assert "Export Referral #" in resp.text
+    assert "Download packet" in resp.text
+    assert "Fax Cover Sheet" in resp.text
+    assert "Referral Request Summary" in resp.text
+    # The form should point at export.pdf with artifact=packet.
+    assert 'action="/referrals/' in resp.text
+    assert 'value="packet"' in resp.text
+
+
+def test_export_preview_page_missing_referral_404(solo_client):
+    client, _, _ = solo_client
+    resp = client.get("/referrals/999999/export")
+    assert resp.status_code == 404
+
+
+def test_export_preview_page_requires_phi_consent(tmp_path: Path):
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_id = storage.create_user("a@example.com", "pw")
+    _, referral = _seed_referral(storage, user_id)
+
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _fake_user(user_id, consent=False)
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/referrals/{referral.id}/export", follow_redirects=False)
+        assert resp.status_code in (302, 303, 307)
+    finally:
+        app.dependency_overrides.clear()

@@ -19,12 +19,16 @@ from __future__ import annotations
 
 from docstats.exports.pdf import (
     ARTIFACT_ATTACHMENTS_CHECKLIST,
+    ARTIFACT_FAX_COVER,
     ARTIFACT_MISSING_INFO,
+    ARTIFACT_PACKET,
     ARTIFACT_PATIENT_SUMMARY,
     ARTIFACT_REFERRAL_SUMMARY,
     ARTIFACT_SCHEDULING_SUMMARY,
     render_attachments_checklist,
+    render_fax_cover,
     render_missing_info,
+    render_packet,
     render_patient_summary,
     render_referral_summary,
     render_scheduling_summary,
@@ -32,12 +36,16 @@ from docstats.exports.pdf import (
 
 __all__ = [
     "ARTIFACT_ATTACHMENTS_CHECKLIST",
+    "ARTIFACT_FAX_COVER",
     "ARTIFACT_MISSING_INFO",
+    "ARTIFACT_PACKET",
     "ARTIFACT_PATIENT_SUMMARY",
     "ARTIFACT_REFERRAL_SUMMARY",
     "ARTIFACT_SCHEDULING_SUMMARY",
     "render_attachments_checklist",
+    "render_fax_cover",
     "render_missing_info",
+    "render_packet",
     "render_patient_summary",
     "render_referral_summary",
     "render_scheduling_summary",

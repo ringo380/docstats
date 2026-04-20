@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Export Referral #{{ referral.id }} — referme.help{% endblock %}
+
+{% block content %}
+<div class="back-link"><a href="/referrals/{{ referral.id }}">← Referral #{{ referral.id }}</a></div>
+
+<div class="saved-header">
+  <div>
+    <h1>Export Referral #{{ referral.id }}</h1>
+    <div class="sub">
+      {% if patient %}
+        <a href="/patients/{{ patient.id }}">{{ patient.display_name }}</a>
+        {% if patient.date_of_birth %} · DOB {{ patient.date_of_birth }}{% endif %}
+      {% else %}
+        <span class="muted">Patient {{ referral.patient_id }}</span>
+      {% endif %}
+      &nbsp;·&nbsp;
+      <span class="urgency-dot urgency-{{ referral.urgency }}"></span>
+      <span class="urgency-label">{{ referral.urgency | title }}</span>
+      &nbsp;·&nbsp;
+      <span class="status-chip status-{{ referral.status }}">{{ referral.status | replace('_', ' ') | title }}</span>
+    </div>
+  </div>
+</div>
+
+<div class="export-layout">
+  <section class="card">
+    <h2>Build a packet</h2>
+    <p class="sub">Pick the artifacts to bundle into a single downloadable PDF. The fax cover always goes first in the output.</p>
+    <form id="packet-form" method="get" action="/referrals/{{ referral.id }}/export.pdf" target="_blank" rel="noopener">
+      <input type="hidden" name="artifact" value="packet">
+      <div class="export-artifact-list">
+        {% for row in artifact_rows %}
+        <label class="export-artifact-row">
+          <input type="checkbox" name="__include" value="{{ row.artifact }}" {% if row.default %}checked{% endif %}>
+          <span class="export-artifact-label">{{ row.label }}</span>
+          <a class="export-artifact-preview"
+             href="/referrals/{{ referral.id }}/export.pdf?artifact={{ row.artifact }}"
+             target="_blank" rel="noopener">Preview</a>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="export-actions">
+        <button type="submit" class="btn btn-primary" id="packet-submit">Download packet</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Individual artifacts</h2>
+    <p class="sub">Download a single artifact directly.</p>
+    <ul class="export-single-list">
+      {% for row in artifact_rows %}
+      <li>
+        <a href="/referrals/{{ referral.id }}/export.pdf?artifact={{ row.artifact }}"
+           target="_blank" rel="noopener">{{ row.label }}</a>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+
+<script>
+  (function () {
+    var form = document.getElementById('packet-form');
+    var submit = document.getElementById('packet-submit');
+    if (!form || !submit) return;
+    // Build a single ``include=a,b,c`` param from the checked boxes so the
+    // URL stays within ``max_length=256`` and Railway's request-size caps.
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var checked = form.querySelectorAll('input[name="__include"]:checked');
+      if (!checked.length) {
+        alert('Select at least one artifact to include in the packet.');
+        return;
+      }
+      var ids = Array.prototype.map.call(checked, function (c) { return c.value; });
+      var url = new URL(form.action, window.location.origin);
+      url.searchParams.set('artifact', 'packet');
+      url.searchParams.set('include', ids.join(','));
+      window.open(url.toString(), '_blank', 'noopener');
+    });
+  })();
+</script>
+{% endblock %}

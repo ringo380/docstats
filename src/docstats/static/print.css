@@ -248,3 +248,36 @@ h2 {
 .chk-label {
     font-weight: 500;
 }
+
+/* ── Fax Cover (5.C) ──────────────────────────────────────────── */
+.fax-header { border-bottom-width: 2.5pt; }
+.fax-urgent-stamp {
+    display: inline-block;
+    padding: 4pt 10pt;
+    border: 2pt solid #a00000;
+    color: #a00000;
+    font-size: 14pt;
+    font-weight: 800;
+    letter-spacing: 2pt;
+    transform: rotate(-4deg);
+}
+.fax-addr {
+    display: flex;
+    gap: 9pt;
+    margin-bottom: 9pt;
+}
+.fax-addr .card {
+    flex: 1 1 50%;
+    margin-bottom: 0;
+}
+.fax-subject { background: #f7f7fa; }
+.fax-pages .hero-value { font-size: 18pt; }
+.fax-notice {
+    border: 1pt dashed #888;
+    border-radius: 3pt;
+    padding: 8pt 10pt;
+    font-size: 9pt;
+    color: #333;
+    margin-top: 10pt;
+    background: #fffef2;
+}
