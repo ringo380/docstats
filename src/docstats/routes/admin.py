@@ -197,6 +197,19 @@ def _split_lines(raw: str | None) -> list[str]:
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
+def _redirect_after_save(request: Request, dest: str) -> Response:
+    """Return ``HX-Redirect`` (200) for htmx callers, else a 303 redirect.
+
+    CLAUDE.md records that htmx doesn't follow 3xx redirects correctly, so
+    every exit path of a mutating admin handler must go through this helper
+    — ad-hoc ``Response(status_code=303, ...)`` on any branch (including
+    TOCTOU fallbacks) silently breaks htmx-initiated submissions.
+    """
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": dest})
+    return Response(status_code=303, headers={"Location": dest})
+
+
 def _join_lines(items: list[str] | None) -> str:
     """Render a list as newline-separated text for a textarea default."""
     return "\n".join(items or [])
@@ -508,6 +521,13 @@ async def specialty_rule_save(
             # ``bump_version=True`` (default) — real admin edits SHOULD
             # invalidate any rule-engine cache that keys on version_id,
             # even though the engine doesn't cache yet in Phase 3.
+            #
+            # ``overwrite=True`` is load-bearing: ``_collect_form_payload``
+            # converts an empty ``display_name`` form field to ``None``,
+            # and the default ``overwrite=False`` would silently skip
+            # ``None`` kwargs ("leave unchanged"). An admin who clears the
+            # field expects it cleared, not preserved.
+            overwrite=True,
         )
         audit_action = "admin.specialty_rule.update_override"
 
@@ -520,10 +540,7 @@ async def specialty_rule_save(
         entity_type="specialty_rule",
         entity_id=specialty_code,
     )
-    dest = "/admin/specialty-rules"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return _redirect_after_save(request, "/admin/specialty-rules")
 
 
 @router.post("/specialty-rules/{specialty_code}/revert", response_class=HTMLResponse)
@@ -543,17 +560,13 @@ async def specialty_rule_revert(
     )
     if override is None:
         # No override to revert — idempotent; just send them back.
-        dest = "/admin/specialty-rules"
-        if request.headers.get("HX-Request"):
-            return Response(status_code=200, headers={"HX-Redirect": dest})
-        return Response(status_code=303, headers={"Location": dest})
+        return _redirect_after_save(request, "/admin/specialty-rules")
 
     deleted = storage.delete_specialty_rule(override.id)
     if not deleted:
         # Row vanished between our read and the delete; treat as already
         # reverted. Don't emit an audit event for a no-op.
-        dest = "/admin/specialty-rules"
-        return Response(status_code=303, headers={"Location": dest})
+        return _redirect_after_save(request, "/admin/specialty-rules")
 
     audit_record(
         storage,
@@ -564,7 +577,4 @@ async def specialty_rule_revert(
         entity_type="specialty_rule",
         entity_id=specialty_code,
     )
-    dest = "/admin/specialty-rules"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return _redirect_after_save(request, "/admin/specialty-rules")

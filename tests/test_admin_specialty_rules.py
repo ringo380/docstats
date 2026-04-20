@@ -400,3 +400,106 @@ def test_revert_is_idempotent_when_no_override(storage: Storage, org_admin) -> N
         assert all(e.action != "admin.specialty_rule.revert_override" for e in events)
     finally:
         _cleanup()
+
+
+# --- Regression: HX-Request honored on every revert exit path ---
+
+
+def test_revert_returns_hx_redirect_for_htmx(storage: Storage, org_admin) -> None:
+    """Htmx callers must get ``HX-Redirect`` (200), not a 303 that htmx
+    silently ignores. Covers all three revert exit paths (success, idempotent
+    no-op, TOCTOU fallback) via the shared ``_redirect_after_save`` helper."""
+    _, org, user = org_admin
+    storage.create_specialty_rule(
+        specialty_code="207RC0000X",
+        organization_id=org.id,
+        display_name="To revert",
+        source="admin_override",
+    )
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X/revert",
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("hx-redirect") == "/admin/specialty-rules"
+    finally:
+        _cleanup()
+
+
+def test_revert_idempotent_hx_redirect(storage: Storage, org_admin) -> None:
+    """Idempotent no-op branch (no override present) also honors HX-Request."""
+    _, _, user = org_admin
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X/revert",
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("hx-redirect") == "/admin/specialty-rules"
+    finally:
+        _cleanup()
+
+
+def test_save_success_hx_redirect(storage: Storage, org_admin) -> None:
+    """Save's success path also goes through ``_redirect_after_save``; verify
+    the htmx contract holds end-to-end."""
+    _, _, user = org_admin
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X",
+            data={"display_name": "OK"},
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("hx-redirect") == "/admin/specialty-rules"
+    finally:
+        _cleanup()
+
+
+# --- Regression: update path honors cleared display_name ---
+
+
+def test_update_override_clears_display_name_when_field_emptied(
+    storage: Storage, org_admin
+) -> None:
+    """Regression: admin clears the ``display_name`` input on an existing
+    override; the route must honor the intent and write ``NULL`` rather than
+    silently preserving the previous value.
+
+    The storage contract is "None means leave unchanged" by default —
+    ``update_specialty_rule`` must be called with ``overwrite=True`` so an
+    empty form submission writes the None through.
+    """
+    _, org, user = org_admin
+    storage.create_specialty_rule(
+        specialty_code="207RC0000X",
+        organization_id=org.id,
+        display_name="Old override name",
+        source="admin_override",
+    )
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X",
+            data={
+                # display_name blank (form submitted empty) → should clear.
+                "display_name": "",
+                "required_field": ["reason"],
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        overrides = storage.list_specialty_rules(
+            organization_id=org.id, include_globals=False, specialty_code="207RC0000X"
+        )
+        assert len(overrides) == 1
+        assert overrides[0].display_name is None, (
+            "Cleared display_name must be written through; the default "
+            "overwrite=False would silently preserve the old value."
+        )
+    finally:
+        _cleanup()
