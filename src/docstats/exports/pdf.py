@@ -52,6 +52,8 @@ ARTIFACT_SCHEDULING_SUMMARY = "scheduling"
 ARTIFACT_PATIENT_SUMMARY = "patient"
 ARTIFACT_ATTACHMENTS_CHECKLIST = "attachments"
 ARTIFACT_MISSING_INFO = "missing_info"
+ARTIFACT_FAX_COVER = "fax_cover"
+ARTIFACT_PACKET = "packet"
 
 
 def _fmt_phone(raw: str | None) -> str | None:
@@ -271,3 +273,91 @@ def render_missing_info(
         }
     )
     return _render_pdf("missing_info.html", context)
+
+
+# ---------- Fax Cover (5.C) ----------
+
+
+def render_fax_cover(
+    *,
+    referral: "Referral",
+    patient: "Patient",
+    total_pages: int | None = None,
+    generated_at: datetime | None = None,
+    generated_by_label: str | None = None,
+) -> bytes:
+    """Single-page fax cover sheet.
+
+    When bundled into a packet, callers pass ``total_pages`` so the cover
+    shows "Pages: N" correctly. Standalone exports pass None and the
+    template renders "Pages: 1" by default.
+    """
+    now = generated_at or datetime.now(tz=timezone.utc)
+    context = _base_context(
+        referral=referral,
+        patient=patient,
+        generated_at=now,
+        generated_by_label=generated_by_label,
+    )
+    context.update(
+        {
+            "total_pages": total_pages,
+            "receiving_fax": _fmt_phone(_pick_fax(referral, "receiving")),
+            "sender_fax": _fmt_phone(_pick_fax(referral, "sending")),
+        }
+    )
+    return _render_pdf("fax_cover.html", context)
+
+
+def _pick_fax(referral: "Referral", side: str) -> str | None:
+    """Placeholder until dedicated fax fields land on Referral.
+
+    The current Referral model doesn't carry explicit fax numbers for
+    either side — Phase 9 (outbound delivery) will add them. For now the
+    template renders "—" when fax is missing; coordinators can still use
+    the cover sheet as a faxable front page.
+    """
+    return None
+
+
+# ---------- Packet bundle (5.C) ----------
+
+
+def render_packet(
+    *,
+    referral: "Referral",
+    patient: "Patient",
+    parts: list[bytes],
+    generated_at: datetime | None = None,
+    generated_by_label: str | None = None,
+) -> bytes:
+    """Concatenate multiple PDF byte-strings into one.
+
+    The route layer is responsible for ordering ``parts`` — typically fax
+    cover first, then summary, then attachments, then anything else. This
+    function just merges with pypdf. It accepts a possibly-empty list and
+    raises ``ValueError`` on empty (caller-visible 400).
+    """
+    if not parts:
+        raise ValueError("packet requires at least one part")
+    if len(parts) == 1:
+        return parts[0]
+
+    # Lazy import so exports is importable without pypdf installed.
+    from io import BytesIO
+
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    for part in parts:
+        reader = PdfReader(BytesIO(part))
+        for page in reader.pages:
+            writer.add_page(page)
+
+    out = BytesIO()
+    writer.write(out)
+    # generated_* args accepted so the route layer can pass them uniformly;
+    # we don't embed them in the packet itself (each sub-doc has its own
+    # header/footer with the stamp).
+    _ = generated_at, generated_by_label, referral, patient
+    return out.getvalue()
