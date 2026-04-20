@@ -151,7 +151,16 @@ async def _saved_export_json_redirect(request: Request):
     return _rolodex_redirect(request, "/rolodex/export/json")
 
 
-# --- Include routers (order matters: specific routes before parameterized) ---
+# --- Include routers.
+# Order matters: specific routes before parameterized ones sharing a prefix.
+# Historical examples:
+#   - ``saved_router`` before ``providers_router`` so ``/saved/export/csv``
+#     beats ``/provider/{npi}``.
+#   - ``exports_router`` before ``referrals_router``: both use
+#     ``prefix="/referrals"``. ``/referrals/{id}/export.pdf`` has two segments
+#     and doesn't collide with ``/referrals/{id}`` today, but a future 5.B/5.C
+#     single-segment export route could shadow referral detail if the order
+#     were reversed. Keep exports first as the 5.x surface grows.
 
 app.include_router(auth_router)
 app.include_router(onboarding_router)

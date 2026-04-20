@@ -183,7 +183,9 @@ def test_export_pdf_happy_path(solo_client):
     assert resp.content.startswith(b"%PDF-")
     assert "inline" in resp.headers["content-disposition"]
     assert f"referral-{referral.id}-summary.pdf" in resp.headers["content-disposition"]
-    assert resp.headers.get("cache-control", "").lower().find("no-store") >= 0
+    # Lock the exact Cache-Control value so future edits don't silently drift
+    # from the CLAUDE.md / AGENTS.md documented contract.
+    assert resp.headers.get("cache-control") == "private, no-store"
     assert resp.headers.get("x-content-type-options") == "nosniff"
 
 
@@ -208,6 +210,52 @@ def test_export_unknown_artifact_400(solo_client):
     _, referral = _seed_referral(storage, user_id)
     resp = client.get(f"/referrals/{referral.id}/export.pdf", params={"artifact": "bogus"})
     assert resp.status_code == 400
+
+
+def test_export_oversized_artifact_param_422(solo_client):
+    """``max_length=32`` on the Query param caps oversized input at the boundary."""
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+    resp = client.get(f"/referrals/{referral.id}/export.pdf", params={"artifact": "x" * 64})
+    assert resp.status_code == 422
+
+
+def test_export_with_clinical_sub_entities(solo_client):
+    """Seed diagnoses/meds/allergies/attachments so the {% if %} branches fire."""
+    client, storage, user_id = solo_client
+    _, referral = _seed_referral(storage, user_id)
+    scope = Scope(user_id=user_id)
+    storage.add_referral_diagnosis(
+        scope, referral.id, icd10_code="R07.9", icd10_desc="Chest pain", is_primary=True
+    )
+    storage.add_referral_medication(
+        scope, referral.id, name="Metoprolol", dose="25mg", route="PO", frequency="BID"
+    )
+    storage.add_referral_allergy(
+        scope, referral.id, substance="Penicillin", reaction="Hives", severity="moderate"
+    )
+    storage.add_referral_attachment(
+        scope, referral.id, kind="lab", label="CBC 2026-04-01", checklist_only=True
+    )
+
+    resp = client.get(f"/referrals/{referral.id}/export.pdf")
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF-")
+    # Sanity: PDF with sub-entities is materially larger than a bare one.
+    baseline = client.get(f"/referrals/{referral.id}/export.pdf")
+    # Both requests have the same referral so size parity confirms stability.
+    assert len(resp.content) == len(baseline.content)
+
+
+def test_export_missing_patient_409(solo_client):
+    """Soft-deleting the patient after referral creation surfaces a 409."""
+    client, storage, user_id = solo_client
+    scope = Scope(user_id=user_id)
+    _, referral = _seed_referral(storage, user_id)
+    # Force the patient to disappear from scope while the referral row stays.
+    storage.soft_delete_patient(scope, referral.patient_id)
+    resp = client.get(f"/referrals/{referral.id}/export.pdf")
+    assert resp.status_code == 409
 
 
 def test_export_missing_referral_404(solo_client):

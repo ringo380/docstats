@@ -61,7 +61,7 @@ def _safe_pdf_filename(referral_id: int) -> str:
 async def referral_export_pdf(
     request: Request,
     referral_id: int = Path(..., ge=1),
-    artifact: str = Query(ARTIFACT_REFERRAL_SUMMARY),
+    artifact: str = Query(ARTIFACT_REFERRAL_SUMMARY, max_length=32),
     current_user: dict = Depends(require_phi_consent),
     scope: Scope = Depends(get_scope),
     storage: StorageBase = Depends(get_storage),
@@ -84,6 +84,14 @@ async def referral_export_pdf(
     medications = storage.list_referral_medications(scope, referral_id)
     allergies = storage.list_referral_allergies(scope, referral_id)
     attachments = storage.list_referral_attachments(scope, referral_id)
+
+    # TOCTOU re-check: if the referral was soft-deleted between the initial
+    # read and the sub-entity fetches, the sub-entity lists come back empty
+    # and we'd otherwise render a valid-looking PDF with blank clinical
+    # sections. Re-reading here collapses the race to "deleted between this
+    # line and write_pdf" — tiny and graceful.
+    if storage.get_referral(scope, referral_id) is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
 
     generated_at = datetime.now(tz=timezone.utc)
     generated_by_label = _generated_by_label(current_user)
@@ -110,27 +118,25 @@ async def referral_export_pdf(
         logger.exception("WeasyPrint render failed for referral %s", referral_id)
         raise HTTPException(status_code=500, detail="Failed to render PDF.")
 
-    # Best-effort audit — a log-write blip must not poison the response.
-    try:
-        audit_record(
-            storage,
-            action="referral.export",
-            request=request,
-            actor_user_id=current_user["id"],
-            scope_user_id=scope.user_id if scope.is_solo else None,
-            scope_organization_id=scope.organization_id,
-            entity_type="referral",
-            entity_id=str(referral_id),
-            metadata={
-                "artifact": artifact,
-                "format": "pdf",
-                "bytes": len(pdf_bytes),
-            },
-        )
-    except Exception:
-        logger.exception("Failed to audit export of referral %s", referral_id)
+    # ``audit_record`` swallows its own errors; no outer try/except needed.
+    audit_record(
+        storage,
+        action="referral.export",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral",
+        entity_id=str(referral_id),
+        metadata={
+            "artifact": artifact,
+            "format": "pdf",
+            "bytes": len(pdf_bytes),
+        },
+    )
 
-    # Best-effort referral-event — same rationale.
+    # Best-effort referral-event — ``record_referral_event`` can raise on
+    # a transient storage blip and we don't want that to fail the response.
     try:
         storage.record_referral_event(
             scope,
@@ -148,7 +154,7 @@ async def referral_export_pdf(
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'inline; filename="{filename}"',
-            "Cache-Control": "private, max-age=0, no-store",
+            "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",
         },
     )

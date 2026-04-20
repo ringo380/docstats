@@ -10,8 +10,9 @@ Phase 5 ships incrementally:
 - 5.E — CSV export + ``POST /referrals/batch-export``.
 
 All artifacts are pure functions of a ``Referral`` + related rows — no
-side-effects, no I/O. The route layer in ``docstats.routes.exports`` owns
-scope gating, audit, and HTTP concerns.
+database I/O, no network I/O, no hidden side-effects. Template + CSS reads
+from the package directory are the only disk accesses. The route layer in
+``docstats.routes.exports`` owns scope gating, audit, and HTTP concerns.
 """
 
 from __future__ import annotations
