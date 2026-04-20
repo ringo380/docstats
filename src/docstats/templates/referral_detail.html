@@ -21,7 +21,10 @@
       <span class="status-chip status-{{ referral.status }}">{{ referral.status | replace('_', ' ') | title }}</span>
     </div>
   </div>
-  <div>
+  <div class="header-actions">
+    <a class="btn btn-secondary"
+       href="/referrals/{{ referral.id }}/export.pdf"
+       target="_blank" rel="noopener">Export PDF</a>
     <button type="button" class="btn btn-danger"
             hx-delete="/referrals/{{ referral.id }}"
             hx-confirm="Soft-delete this referral? Events remain in the audit trail.">Delete</button>

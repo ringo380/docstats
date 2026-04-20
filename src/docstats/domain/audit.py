@@ -15,6 +15,7 @@ Action vocabulary is a dotted verb phrase: ``{entity}.{verb}``. Current actions:
 - ``user.terms_accepted`` — onboarding terms acceptance
 - ``provider.save`` — NPI added to the user's rolodex
 - ``provider.unsave`` — NPI removed from the rolodex
+- ``referral.export`` — referral artifact exported (metadata: artifact, format, bytes)
 
 Future phases extend this list; keep the vocabulary documented here as it grows.
 """
