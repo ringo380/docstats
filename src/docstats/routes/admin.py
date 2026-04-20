@@ -9,10 +9,10 @@ Role-gated org administration. Every route here requires:
 Solo users and sub-admin org members get a 403. The route body never executes
 for them — the dependency raises before the handler runs.
 
-This file ships Phase 6.A (foundation + ``GET /admin`` overview) and Phase
-6.B (specialty-rules editor). Subsequent slices land the other admin
-surfaces (payer rules, org settings, audit viewer, members) as additional
-routes on the same router.
+This file ships Phase 6.A (foundation + ``GET /admin`` overview), Phase
+6.B (specialty-rules editor), and Phase 6.C (payer-rules editor).
+Subsequent slices land the remaining admin surfaces (org settings, audit
+viewer, members) as additional routes on the same router.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from fastapi.responses import HTMLResponse, Response
 from docstats.auth import require_user
 from docstats.domain.audit import record as audit_record
 from docstats.domain.orgs import Organization, has_role_at_least
-from docstats.domain.reference import SpecialtyRule
+from docstats.domain.reference import PayerRule, SpecialtyRule
 from docstats.domain.rules import REQUIRED_FIELD_CHECKS
 from docstats.routes._common import get_scope, render, saved_count
 from docstats.scope import Scope
@@ -578,3 +578,324 @@ async def specialty_rule_revert(
         entity_id=specialty_code,
     )
     return _redirect_after_save(request, "/admin/specialty-rules")
+
+
+# ---------------------------------------------------------------------------
+# Payer rules (Phase 6.C)
+#
+# Mirrors the specialty-rules editor in shape — list + edit/create/revert
+# override — but with a smaller payload. The rules engine (Phase 3) reads:
+#
+# - ``referral_required``             → bool (does the plan gate specialist
+#                                       visits behind a PCP referral?)
+# - ``auth_required_services``        → {"services": [str, ...]} (services
+#                                       that need prior auth)
+# - ``auth_typical_turnaround_days``  → int | None (heuristic)
+# - ``records_required``              → {"kinds": [str, ...]} (what to
+#                                       attach for the payer to accept)
+# - ``notes``                         → str | None (free text)
+#
+# ``payer_key`` is the canonical identifier; seed defaults use the shape
+# ``{payer_name}|{plan_type}`` (e.g. ``Kaiser Permanente|hmo``). The pipe
+# and spaces are URL-encoded in admin URLs; FastAPI path params decode
+# transparently. For the 6.C UI the admin can only edit codes that already
+# have a row — creating a brand-new payer_key from scratch is out of scope
+# (same bound applied to specialty rules in 6.B).
+# ---------------------------------------------------------------------------
+
+
+def _find_payer_rule_for(
+    storage: StorageBase,
+    *,
+    organization_id: int | None,
+    payer_key: str,
+) -> PayerRule | None:
+    """Return the single payer-rule row matching ``(organization_id, payer_key)``.
+
+    Mirrors :func:`_find_specialty_rule_for`. Partial unique indices make at
+    most one global and at most one org override per key, so with both
+    filters applied we get 0 or 1 row.
+    """
+    rows = storage.list_payer_rules(
+        organization_id=organization_id,
+        include_globals=(organization_id is None),
+        payer_key=payer_key,
+    )
+    for row in rows:
+        if row.organization_id == organization_id:
+            return row
+    return None
+
+
+def _pair_global_and_override_payers(
+    rules: list[PayerRule],
+) -> list[dict[str, Any]]:
+    """Group a flat payer-rule list into ``[{"global": ..., "override": ...}, ...]``.
+
+    Parallel to ``_pair_global_and_override`` for specialty rules.
+    """
+    by_key: dict[str, dict[str, PayerRule | None]] = {}
+    for rule in rules:
+        bucket = by_key.setdefault(rule.payer_key, {"global": None, "override": None})
+        if rule.organization_id is None:
+            bucket["global"] = rule
+        else:
+            bucket["override"] = rule
+    out = []
+    for key in sorted(by_key.keys()):
+        bucket = by_key[key]
+        out.append(
+            {
+                "key": key,
+                "global_rule": bucket["global"],
+                "override": bucket["override"],
+                "display_name": (
+                    (bucket["override"].display_name if bucket["override"] else None)
+                    or (bucket["global"].display_name if bucket["global"] else None)
+                    or key
+                ),
+            }
+        )
+    return out
+
+
+@router.get("/payer-rules", response_class=HTMLResponse)
+async def payer_rules_list(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """List every payer rule visible to this org: globals + overrides."""
+    org = _require_org(scope, storage)
+    rules = storage.list_payer_rules(
+        organization_id=scope.organization_id,
+        include_globals=True,
+    )
+    rows = _pair_global_and_override_payers(rules)
+    return render(
+        "admin/payer_rules_list.html",
+        _ctx(
+            request,
+            current_user,
+            storage,
+            scope,
+            org,
+            active_section="payer-rules",
+            rows=rows,
+        ),
+    )
+
+
+def _payer_edit_form_values(
+    *,
+    source: PayerRule | None,
+    fallback_global: PayerRule | None,
+) -> dict[str, Any]:
+    """Seed the edit form from an existing override else the global default."""
+    src = source if source is not None else fallback_global
+    if src is None:
+        return {
+            "display_name": "",
+            "referral_required": False,
+            "auth_required_services": "",
+            "auth_typical_turnaround_days": "",
+            "records_required": "",
+            "notes": "",
+        }
+    return {
+        "display_name": src.display_name or "",
+        "referral_required": bool(src.referral_required),
+        "auth_required_services": _join_lines(
+            [
+                x
+                for x in (src.auth_required_services.get("services", []) or [])
+                if isinstance(x, str)
+            ]
+        ),
+        "auth_typical_turnaround_days": (
+            str(src.auth_typical_turnaround_days)
+            if src.auth_typical_turnaround_days is not None
+            else ""
+        ),
+        "records_required": _join_lines(
+            [x for x in (src.records_required.get("kinds", []) or []) if isinstance(x, str)]
+        ),
+        "notes": src.notes or "",
+    }
+
+
+@router.get("/payer-rules/{payer_key}", response_class=HTMLResponse)
+async def payer_rule_edit_form(
+    request: Request,
+    payer_key: str = Path(..., min_length=1, max_length=200),
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Edit-form GET. Works for both "create override" and "edit override"."""
+    org = _require_org(scope, storage)
+    global_rule = _find_payer_rule_for(storage, organization_id=None, payer_key=payer_key)
+    override = _find_payer_rule_for(
+        storage,
+        organization_id=scope.organization_id,
+        payer_key=payer_key,
+    )
+    if global_rule is None and override is None:
+        # No platform default AND no org override: out of scope for 6.C.
+        raise HTTPException(status_code=404, detail="Payer rule not found.")
+    form = _payer_edit_form_values(source=override, fallback_global=global_rule)
+    return render(
+        "admin/payer_rule_edit.html",
+        _ctx(
+            request,
+            current_user,
+            storage,
+            scope,
+            org,
+            active_section="payer-rules",
+            payer_key=payer_key,
+            global_rule=global_rule,
+            override=override,
+            form=form,
+            errors=None,
+        ),
+    )
+
+
+def _parse_turnaround_days(raw: str) -> int | None:
+    """Empty string → None; int string → int; anything else → 422."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        val = int(s)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Auth turnaround days must be an integer.")
+    if val < 0 or val > 365:
+        raise HTTPException(status_code=422, detail="Auth turnaround days must be 0–365.")
+    return val
+
+
+@router.post("/payer-rules/{payer_key}/revert", response_class=HTMLResponse)
+async def payer_rule_revert(
+    request: Request,
+    payer_key: str = Path(..., min_length=1, max_length=200),
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Delete the org override, restoring the global platform default."""
+    _require_org(scope, storage)
+    override = _find_payer_rule_for(
+        storage,
+        organization_id=scope.organization_id,
+        payer_key=payer_key,
+    )
+    if override is None:
+        return _redirect_after_save(request, "/admin/payer-rules")
+
+    deleted = storage.delete_payer_rule(override.id)
+    if not deleted:
+        # TOCTOU: row vanished; treat as already reverted, no audit event.
+        return _redirect_after_save(request, "/admin/payer-rules")
+
+    audit_record(
+        storage,
+        action="admin.payer_rule.revert_override",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_organization_id=scope.organization_id,
+        entity_type="payer_rule",
+        entity_id=payer_key,
+    )
+    return _redirect_after_save(request, "/admin/payer-rules")
+
+
+@router.post("/payer-rules/{payer_key}", response_class=HTMLResponse)
+async def payer_rule_save(
+    request: Request,
+    payer_key: str = Path(..., min_length=1, max_length=200),
+    display_name: str = Form("", max_length=200),
+    # HTML checkbox convention: unchecked = absent from form data; Form
+    # with a default of "off" lets us treat "on" as True and anything else
+    # (absent or empty) as False.
+    referral_required: str = Form("off", max_length=16),
+    auth_required_services: str = Form("", max_length=4000),
+    auth_typical_turnaround_days: str = Form("", max_length=8),
+    records_required: str = Form("", max_length=4000),
+    notes: str = Form("", max_length=2000),
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Create or update the org override for ``payer_key``."""
+    # Route ordering: ``/revert`` is declared above so its literal suffix
+    # is registered first. The default (non-``:path``) path converter
+    # stops at ``/``, so even if the order swapped the revert suffix
+    # wouldn't be swallowed — but registering specific-before-parameterized
+    # is the project convention and keeps this robust if ``payer_key``
+    # ever admits slashes.
+    _require_org(scope, storage)
+    global_rule = _find_payer_rule_for(storage, organization_id=None, payer_key=payer_key)
+    existing_override = _find_payer_rule_for(
+        storage,
+        organization_id=scope.organization_id,
+        payer_key=payer_key,
+    )
+    if global_rule is None and existing_override is None:
+        raise HTTPException(status_code=404, detail="Payer rule not found.")
+
+    turnaround = _parse_turnaround_days(auth_typical_turnaround_days)
+    ref_req = referral_required.lower() in {"on", "true", "1", "yes"}
+
+    payload: dict[str, Any] = {
+        "display_name": display_name.strip() or None,
+        "referral_required": ref_req,
+        "auth_required_services": {"services": _split_lines(auth_required_services)},
+        "auth_typical_turnaround_days": turnaround,
+        "records_required": {"kinds": _split_lines(records_required)},
+        "notes": notes.strip() or None,
+    }
+
+    if existing_override is None:
+        storage.create_payer_rule(
+            payer_key=payer_key,
+            organization_id=scope.organization_id,
+            display_name=payload["display_name"],
+            referral_required=payload["referral_required"],
+            auth_required_services=payload["auth_required_services"],
+            auth_typical_turnaround_days=payload["auth_typical_turnaround_days"],
+            records_required=payload["records_required"],
+            notes=payload["notes"],
+            source="admin_override",
+        )
+        audit_action = "admin.payer_rule.create_override"
+    else:
+        storage.update_payer_rule(
+            existing_override.id,
+            display_name=payload["display_name"],
+            referral_required=payload["referral_required"],
+            auth_required_services=payload["auth_required_services"],
+            auth_typical_turnaround_days=payload["auth_typical_turnaround_days"],
+            records_required=payload["records_required"],
+            notes=payload["notes"],
+            source="admin_override",
+            # ``overwrite=True`` load-bearing for the same reason as 6.B:
+            # clearing ``display_name``, ``notes``, or ``auth_typical_turnaround_days``
+            # from the form should write ``None`` through instead of the
+            # default "leave unchanged" contract preserving the old value.
+            overwrite=True,
+        )
+        audit_action = "admin.payer_rule.update_override"
+
+    audit_record(
+        storage,
+        action=audit_action,
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_organization_id=scope.organization_id,
+        entity_type="payer_rule",
+        entity_id=payer_key,
+    )
+    return _redirect_after_save(request, "/admin/payer-rules")

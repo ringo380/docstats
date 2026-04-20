@@ -1,0 +1,85 @@
+{% extends "admin/_admin_layout.html" %}
+
+{% block admin_content %}
+<div class="back-link"><a href="/admin/payer-rules">← Payer rules</a></div>
+
+<div class="saved-header">
+  <div>
+    <h1>
+      {% if override %}Edit{% else %}Create{% endif %} override
+      &middot;
+      <span class="muted" style="font-weight:500;">{{ form.display_name or payer_key }}</span>
+    </h1>
+    <div class="sub">
+      Key <code>{{ payer_key }}</code>
+      {% if override %}
+        &middot; <span class="rule-badge rule-badge-override">Override v{{ override.version_id }}</span>
+        <span class="muted">(last edited {{ override.updated_at.strftime('%Y-%m-%d %H:%M') if override.updated_at else '—' }})</span>
+      {% elif global_rule %}
+        &middot; <span class="rule-badge rule-badge-global">Seeded from platform default</span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% if errors %}
+  <div class="alert alert-error">
+    <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+{% endif %}
+
+<form method="post" action="/admin/payer-rules/{{ payer_key | urlencode }}" class="rule-edit-form card">
+  <div class="form-row">
+    <label>Display name
+      <input type="text" name="display_name" value="{{ form.display_name }}" maxlength="200" autocomplete="off">
+      <span class="muted sub">What coordinators see on the payer-picker in the referral wizard.</span>
+    </label>
+  </div>
+
+  <div class="form-row">
+    <label class="checkbox-row" style="font-weight:500; font-size:0.88rem;">
+      <input type="checkbox" name="referral_required" value="on"
+             {% if form.referral_required %}checked{% endif %}>
+      <span>Referral required (HMO-style gatekeeping)</span>
+    </label>
+    <span class="muted sub" style="margin-top:4px;">Plans that require a PCP referral before a specialist visit.</span>
+  </div>
+
+  <div class="form-row">
+    <label>Services requiring prior auth (one per line)
+      <textarea name="auth_required_services" rows="4" maxlength="4000">{{ form.auth_required_services }}</textarea>
+      <span class="muted sub">Example: "MRI", "PET", "out-of-network specialist".</span>
+    </label>
+  </div>
+
+  <div class="form-row">
+    <label>Typical auth turnaround (days)
+      <input type="number" name="auth_typical_turnaround_days"
+             value="{{ form.auth_typical_turnaround_days }}"
+             min="0" max="365" step="1">
+      <span class="muted sub">Leave blank if the payer has no published turnaround.</span>
+    </label>
+  </div>
+
+  <div class="form-row">
+    <label>Records the payer typically wants attached (one per line)
+      <textarea name="records_required" rows="3" maxlength="4000">{{ form.records_required }}</textarea>
+      <span class="muted sub">Example: "recent visit notes", "imaging", "PCP referral form".</span>
+    </label>
+  </div>
+
+  <div class="form-row">
+    <label>Notes
+      <textarea name="notes" rows="3" maxlength="2000">{{ form.notes }}</textarea>
+      <span class="muted sub">Free text shown to coordinators. Not used by the rules engine.</span>
+    </label>
+  </div>
+
+  <div class="action-bar">
+    <a href="/admin/payer-rules" class="btn btn-secondary">Cancel</a>
+    <button type="submit" class="btn btn-primary">
+      {% if override %}Save override{% else %}Create override{% endif %}
+    </button>
+  </div>
+</form>
+{% endblock %}

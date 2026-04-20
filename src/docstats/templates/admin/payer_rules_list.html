@@ -1,0 +1,59 @@
+{% extends "admin/_admin_layout.html" %}
+
+{% block admin_content %}
+<div class="saved-header">
+  <div>
+    <h1>Payer rules</h1>
+    <div class="sub">Platform defaults and this org's overrides. Overrides take effect immediately for new referrals.</div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  {% if rows %}
+    <table class="admin-rules">
+      <thead>
+        <tr>
+          <th>Payer</th>
+          <th>Key</th>
+          <th>Status</th>
+          <th style="text-align:right;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ row.display_name }}</td>
+            <td><code>{{ row.key }}</code></td>
+            <td>
+              {% if row.override %}
+                <span class="rule-badge rule-badge-override">Org override</span>
+              {% elif row.global_rule %}
+                <span class="rule-badge rule-badge-global">Platform default</span>
+              {% else %}
+                <span class="rule-badge rule-badge-missing">No rule</span>
+              {% endif %}
+            </td>
+            <td style="text-align:right;">
+              {% if row.override or row.global_rule %}
+                {% set encoded = row.key | urlencode %}
+                <a href="/admin/payer-rules/{{ encoded }}" class="btn btn-secondary btn-sm">
+                  {% if row.override %}Edit override{% else %}Create override{% endif %}
+                </a>
+                {% if row.override %}
+                  <form method="post" action="/admin/payer-rules/{{ encoded }}/revert"
+                        style="display:inline;"
+                        onsubmit="return confirm('Delete this override? The platform default will take effect.');">
+                    <button type="submit" class="btn btn-danger btn-sm">Revert</button>
+                  </form>
+                {% endif %}
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No payer rules are seeded yet. Run <code>docstats seed-rules</code> or contact platform support.</p>
+  {% endif %}
+</div>
+{% endblock %}
