@@ -399,6 +399,12 @@
   }
   .saved-header h1 { font-size: 1.2rem; font-weight: 700; }
   .saved-header .sub { font-size: 0.78rem; color: var(--text-muted); margin-top: 3px; }
+  .header-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
   .provider-row {
     background: var(--bg-card);
     border: 1px solid var(--border);

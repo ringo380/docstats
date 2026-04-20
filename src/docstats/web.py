@@ -24,6 +24,7 @@ from docstats.domain.seed import seed_platform_defaults
 from docstats.routes._common import MAPBOX_TOKEN, US_STATES, get_client, render, saved_count  # noqa: F401 — get_client re-exported for test compatibility
 from docstats.routes.api import router as api_router
 from docstats.routes.auth import router as auth_router
+from docstats.routes.exports import router as exports_router
 from docstats.routes.imports import router as imports_router
 from docstats.routes.onboarding import router as onboarding_router
 from docstats.routes.patients import router as patients_router
@@ -150,7 +151,16 @@ async def _saved_export_json_redirect(request: Request):
     return _rolodex_redirect(request, "/rolodex/export/json")
 
 
-# --- Include routers (order matters: specific routes before parameterized) ---
+# --- Include routers.
+# Order matters: specific routes before parameterized ones sharing a prefix.
+# Historical examples:
+#   - ``saved_router`` before ``providers_router`` so ``/saved/export/csv``
+#     beats ``/provider/{npi}``.
+#   - ``exports_router`` before ``referrals_router``: both use
+#     ``prefix="/referrals"``. ``/referrals/{id}/export.pdf`` has two segments
+#     and doesn't collide with ``/referrals/{id}`` today, but a future 5.B/5.C
+#     single-segment export route could shadow referral detail if the order
+#     were reversed. Keep exports first as the 5.x surface grows.
 
 app.include_router(auth_router)
 app.include_router(onboarding_router)
@@ -159,6 +169,7 @@ app.include_router(search_router)
 app.include_router(api_router)
 app.include_router(patients_router)
 app.include_router(imports_router)
+app.include_router(exports_router)
 app.include_router(referrals_router)
 app.include_router(saved_router)
 app.include_router(providers_router)
