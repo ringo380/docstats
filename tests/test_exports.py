@@ -159,11 +159,11 @@ def solo_client(tmp_path: Path):
     app.dependency_overrides.clear()
 
 
-def _seed_referral(storage: Storage, user_id: int):
+def _seed_referral(storage: Storage, user_id: int, *, first_name: str = "Jane"):
     scope = Scope(user_id=user_id)
     patient = storage.create_patient(
         scope,
-        first_name="Jane",
+        first_name=first_name,
         last_name="Doe",
         date_of_birth="1980-05-15",
         created_by_user_id=user_id,
@@ -967,5 +967,262 @@ def test_export_json_requires_phi_consent(tmp_path: Path):
         client = TestClient(app)
         resp = client.get(f"/referrals/{referral.id}/export.json", follow_redirects=False)
         assert resp.status_code in (302, 303, 307)
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ==========================================================================
+# Phase 5.E — flat CSV + batch PDF
+# ==========================================================================
+
+
+# ---------- CSV export ----------
+
+
+def test_csv_export_happy_path(solo_client):
+    import csv as csv_mod
+
+    client, storage, user_id = solo_client
+    _, referral_a = _seed_referral(storage, user_id)
+    _, referral_b = _seed_referral(storage, user_id, first_name="Alice")
+    _ = referral_a, referral_b
+
+    resp = client.get("/referrals/export.csv")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    assert "attachment" in resp.headers["content-disposition"]
+    assert "referrals-" in resp.headers["content-disposition"]
+
+    reader = csv_mod.DictReader(resp.text.splitlines())
+    rows = list(reader)
+    assert len(rows) == 2
+    # Every column exists on every row.
+    from docstats.exports import CSV_FIELDNAMES
+
+    for row in rows:
+        assert set(row.keys()) == set(CSV_FIELDNAMES)
+    # Headers include patient fields, not just referral fields.
+    assert "patient_first_name" in rows[0]
+    assert rows[0]["patient_first_name"] in {"Jane", "Alice"}
+
+
+def test_csv_export_empty_state(solo_client):
+    """Zero referrals should still emit a header-only CSV."""
+    client, _, _ = solo_client
+    resp = client.get("/referrals/export.csv")
+    assert resp.status_code == 200
+    # Header line present; no data rows.
+    lines = resp.text.strip().splitlines()
+    assert len(lines) == 1
+    assert "referral_id" in lines[0]
+    assert "patient_first_name" in lines[0]
+
+
+def test_csv_export_status_filter(solo_client):
+    import csv as csv_mod
+
+    client, storage, user_id = solo_client
+    _, referral_draft = _seed_referral(storage, user_id, first_name="Drafty")
+    _, referral_ready = _seed_referral(storage, user_id, first_name="Ready")
+    storage.set_referral_status(Scope(user_id=user_id), referral_ready.id, "ready")
+    _ = referral_draft
+
+    resp = client.get("/referrals/export.csv", params={"status": "ready"})
+    assert resp.status_code == 200
+    rows = list(csv_mod.DictReader(resp.text.splitlines()))
+    assert len(rows) == 1
+    assert rows[0]["status"] == "ready"
+
+
+def test_csv_export_audit(solo_client):
+    client, storage, user_id = solo_client
+    _seed_referral(storage, user_id)
+
+    resp = client.get("/referrals/export.csv")
+    assert resp.status_code == 200
+
+    audit_rows = storage.list_audit_events(limit=10)
+    csv_audits = [
+        a for a in audit_rows if a.action == "referral.export" and a.metadata.get("format") == "csv"
+    ]
+    assert len(csv_audits) == 1
+    assert csv_audits[0].metadata.get("artifact") == "referrals_csv"
+    assert csv_audits[0].metadata.get("rows") == 1
+
+
+def test_csv_export_cross_tenant(tmp_path: Path):
+    """A solo user only sees their own referrals in the CSV."""
+    import csv as csv_mod
+
+    storage = Storage(db_path=tmp_path / "test.db")
+    a = storage.create_user("a@example.com", "pw")
+    b = storage.create_user("b@example.com", "pw")
+    for uid in (a, b):
+        storage.record_phi_consent(
+            user_id=uid,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+    _seed_referral(storage, a, first_name="Alice")
+    _seed_referral(storage, b, first_name="Bob")
+
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _fake_user(a, email="a@example.com")
+    try:
+        client = TestClient(app)
+        resp = client.get("/referrals/export.csv")
+        assert resp.status_code == 200
+        rows = list(csv_mod.DictReader(resp.text.splitlines()))
+        assert len(rows) == 1
+        assert rows[0]["patient_first_name"] == "Alice"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_csv_export_requires_phi_consent(tmp_path: Path):
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_id = storage.create_user("a@example.com", "pw")
+    _seed_referral(storage, user_id)
+
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _fake_user(user_id, consent=False)
+    try:
+        client = TestClient(app)
+        resp = client.get("/referrals/export.csv", follow_redirects=False)
+        assert resp.status_code in (302, 303, 307)
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------- Batch PDF export ----------
+
+
+def test_batch_export_happy_path(solo_client):
+    client, storage, user_id = solo_client
+    _, r1 = _seed_referral(storage, user_id)
+    _, r2 = _seed_referral(storage, user_id, first_name="Alice")
+
+    resp = client.post(
+        "/referrals/batch-export.pdf",
+        data={"referral_ids": f"{r1.id},{r2.id}"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.content.startswith(b"%PDF-")
+    assert "attachment" in resp.headers["content-disposition"]
+    assert "referrals-batch-" in resp.headers["content-disposition"]
+
+    rendered = resp.headers.get("x-export-rendered", "")
+    assert str(r1.id) in rendered
+    assert str(r2.id) in rendered
+
+
+def test_batch_export_dedupes_referral_ids(solo_client):
+    client, storage, user_id = solo_client
+    _, r = _seed_referral(storage, user_id)
+
+    single = client.post(
+        "/referrals/batch-export.pdf",
+        data={"referral_ids": str(r.id)},
+    )
+    dupe = client.post(
+        "/referrals/batch-export.pdf",
+        data={"referral_ids": f"{r.id},{r.id}"},
+    )
+    assert single.status_code == 200
+    assert dupe.status_code == 200
+    # Rendered-id header should list the id exactly once after dedup.
+    assert dupe.headers.get("x-export-rendered") == str(r.id)
+
+
+def test_batch_export_rejects_oversized(solo_client):
+    client, storage, user_id = solo_client
+    _seed_referral(storage, user_id)
+
+    resp = client.post(
+        "/referrals/batch-export.pdf",
+        data={"referral_ids": ",".join(str(i + 1) for i in range(51))},
+    )
+    assert resp.status_code == 400
+
+
+def test_batch_export_skips_missing_ids(solo_client):
+    client, storage, user_id = solo_client
+    _, r = _seed_referral(storage, user_id)
+
+    resp = client.post(
+        "/referrals/batch-export.pdf",
+        data={"referral_ids": f"{r.id},9999999"},
+    )
+    assert resp.status_code == 200
+    assert str(r.id) in resp.headers.get("x-export-rendered", "")
+    assert "9999999" in resp.headers.get("x-export-skipped", "")
+
+
+def test_batch_export_all_missing_returns_404(solo_client):
+    client, _, _ = solo_client
+    resp = client.post(
+        "/referrals/batch-export.pdf",
+        data={"referral_ids": "9999998,9999999"},
+    )
+    assert resp.status_code == 404
+
+
+def test_batch_export_unknown_artifact_400(solo_client):
+    client, storage, user_id = solo_client
+    _, r = _seed_referral(storage, user_id)
+    resp = client.post(
+        "/referrals/batch-export.pdf",
+        data={"referral_ids": str(r.id), "artifact": "bogus"},
+    )
+    assert resp.status_code == 400
+
+
+def test_batch_export_audit_captures_ids(solo_client):
+    client, storage, user_id = solo_client
+    _, r = _seed_referral(storage, user_id)
+
+    resp = client.post("/referrals/batch-export.pdf", data={"referral_ids": str(r.id)})
+    assert resp.status_code == 200
+
+    audit_rows = storage.list_audit_events(limit=10)
+    batch_audits = [
+        a
+        for a in audit_rows
+        if a.action == "referral.export"
+        and isinstance(a.metadata.get("artifact", ""), str)
+        and a.metadata["artifact"].startswith("batch:")
+    ]
+    assert len(batch_audits) == 1
+    assert batch_audits[0].metadata.get("rendered") == [r.id]
+
+
+def test_batch_export_cross_tenant_skips(tmp_path: Path):
+    """Referrals from another tenant should be skipped, not leaked."""
+    storage = Storage(db_path=tmp_path / "test.db")
+    a = storage.create_user("a@example.com", "pw")
+    b = storage.create_user("b@example.com", "pw")
+    for uid in (a, b):
+        storage.record_phi_consent(
+            user_id=uid,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+    _, r_a = _seed_referral(storage, a)
+    _, r_b = _seed_referral(storage, b)
+
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _fake_user(b, email="b@example.com")
+    try:
+        client = TestClient(app)
+        resp = client.post(
+            "/referrals/batch-export.pdf",
+            data={"referral_ids": f"{r_a.id},{r_b.id}"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("x-export-rendered") == str(r_b.id)
+        assert str(r_a.id) in resp.headers.get("x-export-skipped", "")
     finally:
         app.dependency_overrides.clear()
