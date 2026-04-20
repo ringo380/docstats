@@ -1827,6 +1827,7 @@ class Storage(StorageBase):
         scope: Scope,
         *,
         search: str | None = None,
+        mrn: str | None = None,
         include_deleted: bool = False,
         limit: int = 50,
         offset: int = 0,
@@ -1835,6 +1836,9 @@ class Storage(StorageBase):
         where_parts = [clause]
         if not include_deleted:
             where_parts.append("deleted_at IS NULL")
+        if mrn is not None:
+            where_parts.append("mrn = ?")
+            params.append(mrn)
         if search:
             # LIKE on last_name, first_name, or mrn — escape wildcards.
             term = f"%{_escape_like(search.strip())}%"

@@ -48,14 +48,20 @@ def _clean(value: str | None) -> str | None:
 
 
 def _validate_dob(dob: str | None) -> str | None:
-    """Parse ISO YYYY-MM-DD; raise 422 on malformed input. None passes through."""
+    """Parse ISO YYYY-MM-DD; raise 422 on malformed input. None passes through.
+
+    Rejects future dates to match onboarding's DOB validation — a DOB in the
+    future is always a typo (no "date of birth" can be after today).
+    """
     dob = _clean(dob)
     if dob is None:
         return None
     try:
-        date.fromisoformat(dob)
+        parsed = date.fromisoformat(dob)
     except ValueError:
         raise HTTPException(status_code=422, detail="Date of birth must be YYYY-MM-DD.")
+    if parsed > date.today():
+        raise HTTPException(status_code=422, detail="Date of birth cannot be in the future.")
     return dob
 
 

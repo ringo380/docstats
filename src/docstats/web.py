@@ -24,6 +24,7 @@ from docstats.domain.seed import seed_platform_defaults
 from docstats.routes._common import MAPBOX_TOKEN, US_STATES, get_client, render, saved_count  # noqa: F401 — get_client re-exported for test compatibility
 from docstats.routes.api import router as api_router
 from docstats.routes.auth import router as auth_router
+from docstats.routes.imports import router as imports_router
 from docstats.routes.onboarding import router as onboarding_router
 from docstats.routes.patients import router as patients_router
 from docstats.routes.profile import router as profile_router
@@ -157,6 +158,7 @@ app.include_router(profile_router)
 app.include_router(search_router)
 app.include_router(api_router)
 app.include_router(patients_router)
+app.include_router(imports_router)
 app.include_router(referrals_router)
 app.include_router(saved_router)
 app.include_router(providers_router)

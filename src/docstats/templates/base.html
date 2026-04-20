@@ -29,6 +29,7 @@
         {% if user.active_org_id %}
         <a href="/patients" class="nav-link {% if active_page == 'patients' %}active{% endif %}">Patients</a>
         {% endif %}
+        <a href="/imports" class="nav-link {% if active_page == 'imports' %}active{% endif %}">Imports</a>
         <a href="/rolodex" class="nav-link {% if active_page == 'rolodex' %}active{% endif %}">
           Rolodex
           {% if saved_count and saved_count > 0 %}

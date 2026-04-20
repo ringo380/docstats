@@ -332,6 +332,7 @@ class StorageBase(ABC):
         scope: "Scope",
         *,
         search: str | None = None,
+        mrn: str | None = None,
         include_deleted: bool = False,
         limit: int = 50,
         offset: int = 0,

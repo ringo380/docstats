@@ -915,3 +915,45 @@ dl.kv dd { color: var(--text); margin: 0; }
 .intake-prompts { padding-left: 1.1rem; margin: 4px 0; }
 .intake-rejections { color: var(--orange); margin-top: 8px; }
 .intake-rejections ul { padding-left: 1.1rem; margin: 2px 0; }
+
+/* ── CSV import mapping grid (Phase 4.B) ─────────────────────────────── */
+.mapping-grid { display: flex; flex-direction: column; gap: 6px; }
+.mapping-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1.5fr);
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+.mapping-src { min-width: 0; overflow: hidden; }
+.mapping-src strong { display: block; font-size: 0.85rem; }
+.mapping-src .sub { font-size: 0.7rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); }
+.mapping-arrow { text-align: center; color: var(--text-dim); font-size: 0.9rem; }
+.mapping-target select { font-size: 0.82rem; }
+@media (max-width: 640px) {
+  .mapping-row { grid-template-columns: 1fr; gap: 4px; }
+  .mapping-arrow { display: none; }
+}
+
+/* ── Import review table (Phase 4.C) ─────────────────────────────────── */
+.row-errors { list-style: none; padding: 0; margin: 0; font-size: 0.75rem; }
+.row-errors li { color: var(--red); padding: 1px 0; }
+.row-errors strong { color: var(--red); font-weight: 600; }
+.row-edit-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+}
+.row-edit-form .action-bar {
+  grid-column: 1 / -1;
+  margin: 0;
+  justify-content: flex-end;
+}
+.row-edit-form label { font-size: 0.85rem; }
+.row-edit-form .sub { display: block; font-size: 0.7rem; color: var(--text-muted); }

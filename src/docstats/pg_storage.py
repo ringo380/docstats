@@ -1229,6 +1229,7 @@ class PostgresStorage(StorageBase):
         scope: Scope,
         *,
         search: str | None = None,
+        mrn: str | None = None,
         include_deleted: bool = False,
         limit: int = 50,
         offset: int = 0,
@@ -1237,6 +1238,8 @@ class PostgresStorage(StorageBase):
         query = self._apply_scope(query, scope)
         if not include_deleted:
             query = query.is_("deleted_at", None)
+        if mrn is not None:
+            query = query.eq("mrn", mrn)
         if search:
             # Fetch scope-filtered rows and filter in Python — matches the
             # search_providers approach in this backend and avoids PostgREST
