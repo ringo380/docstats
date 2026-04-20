@@ -84,13 +84,18 @@ def validate_row(
             except ValidationError:
                 errors[field] = "must be 10 digits"
 
-    # 4. Date-of-birth must be ISO YYYY-MM-DD if present.
+    # 4. Date-of-birth must be ISO YYYY-MM-DD if present. Future dates are
+    # always typos — reject them here to match onboarding + patient-form
+    # behavior.
     dob = _get(raw, mapping, "patient_dob")
     if dob:
         try:
-            date.fromisoformat(dob)
+            parsed_dob = date.fromisoformat(dob)
         except ValueError:
             errors["patient_dob"] = "must be YYYY-MM-DD"
+        else:
+            if parsed_dob > date.today():
+                errors["patient_dob"] = "cannot be in the future"
 
     # 5. Specialty-driven required fields. The rules-engine resolver uses the
     # DB-level narrowing shipped in the Phase 3 review follow-up, so this is

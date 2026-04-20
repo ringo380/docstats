@@ -1,15 +1,19 @@
 """CSV bulk-import routes — Phase 4.
 
-The pipeline is: upload → map → validate → commit. 4.A ships upload + list;
-column mapping, row-level validation, review, and commit land in later slices.
+Full pipeline: upload → map → validate → review → commit. All five slices
+(4.A–4.E) ship in this file: upload + list, column mapping + auto-match,
+row-level validation, inline review + row edit, commit + summary +
+error-report CSV, and the downloadable column-contract template.
 
 On upload we parse the CSV once, persist every row to ``csv_import_rows``
 with ``raw_json`` populated (Phase 1.F schema), and then re-read from the DB
 for every subsequent step. No disk/blob storage needed — Railway's ephemeral
 filesystem and Supabase Storage's Phase-10 scope stay out of the picture.
 
-Limits: 5 MB file cap and 2000 rows (both enforced at parse time). Larger
-imports split at the UI; there's no silent truncation.
+Limits: 5 MB file cap and 2000 rows (both enforced at parse time, with a
+Content-Length pre-check to reject oversized uploads before Starlette
+spools the body to a SpooledTemporaryFile). Larger imports split at the UI;
+there's no silent truncation.
 """
 
 from __future__ import annotations
@@ -26,8 +30,10 @@ from docstats.domain.audit import record as audit_record
 from docstats.domain.imports import (
     IMPORT_ROW_STATUS_VALUES,
     IMPORT_STATUS_VALUES,
+    InvalidImportRowTransition,
     InvalidImportTransition,
     require_import_transition,
+    require_row_transition,
 )
 from docstats.domain.imports_validate import validate_row
 from docstats.phi import require_phi_consent
@@ -116,7 +122,7 @@ _TARGET_ALIASES: dict[str, tuple[str, ...]] = {
     "requested_service": ("requested_service", "service"),
     "diagnosis_primary_icd": ("icd", "icd10", "diagnosis_code", "primary_dx_code"),
     "diagnosis_primary_text": ("diagnosis", "primary_dx", "dx", "dx_description"),
-    "receiving_provider_npi": ("receiving_npi", "specialist_npi", "to_npi", "dest_npi"),
+    "receiving_provider_npi": ("npi", "receiving_npi", "specialist_npi", "to_npi", "dest_npi"),
     "receiving_organization_name": ("receiving_org", "clinic", "destination", "specialist_org"),
     "specialty_code": ("specialty_code", "taxonomy_code", "nucc"),
     "specialty_desc": ("specialty", "specialty_name", "taxonomy"),
@@ -234,15 +240,27 @@ def _parse_csv(raw: bytes) -> tuple[list[str], list[dict[str, str]]]:
     if not headers:
         raise HTTPException(status_code=422, detail="CSV file has no columns.")
     rows: list[dict[str, str]] = []
-    for row in reader:
-        # DictReader returns None for missing cells on short rows; coerce to empty str.
-        cleaned = {k.strip(): (v if v is not None else "") for k, v in row.items() if k}
-        rows.append(cleaned)
-        if len(rows) > MAX_UPLOAD_ROWS:
-            raise HTTPException(
-                status_code=422,
-                detail=f"CSV exceeds {MAX_UPLOAD_ROWS}-row cap. Split the file and retry.",
-            )
+    # Wrap the iteration: DictReader raises ``csv.Error`` on malformed quoting,
+    # NUL bytes, etc. Without this, the docstring's "422 on any parse failure"
+    # contract silently degrades to a 500.
+    try:
+        for row in reader:
+            # Cap BEFORE append so the 2001st row never lands in memory.
+            if len(rows) >= MAX_UPLOAD_ROWS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"CSV exceeds {MAX_UPLOAD_ROWS}-row cap. Split the file and retry.",
+                )
+            # DictReader returns None for missing cells on short rows; coerce
+            # to empty str. ``if k is not None`` (rather than ``if k``) lets
+            # legitimately empty-string headers flow through — DictReader
+            # still drops long-row leftovers into a None key.
+            cleaned = {
+                k.strip(): (v if v is not None else "") for k, v in row.items() if k is not None
+            }
+            rows.append(cleaned)
+    except csv.Error as exc:
+        raise HTTPException(status_code=422, detail=f"Malformed CSV: {exc}") from exc
     return headers, rows
 
 
@@ -256,7 +274,22 @@ async def import_create(
 ):
     if not file.filename:
         raise HTTPException(status_code=422, detail="No file uploaded.")
-    # UploadFile.read() is unbounded; cap manually.
+    # Early cap via Content-Length — rejects oversized multipart bodies
+    # before Starlette spools the full payload to a SpooledTemporaryFile.
+    # Honest clients set this header; attackers can omit it, which is why
+    # we still do the explicit len() check below as defense-in-depth.
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"File exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB cap.",
+                )
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid Content-Length header.")
+    # UploadFile.read() is unbounded; cap manually (defense in depth vs.
+    # clients that lie about Content-Length).
     raw = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(
@@ -437,6 +470,14 @@ async def import_map_save(
     # Auto-run validation so the review page has classified rows immediately;
     # skips the "Run validators" intermediate click.
     counts = _run_validation(storage, scope, import_id)
+    # State-machine discipline: even though this is the happy path we just
+    # wrote "mapped" → "validated" on, guard the edge explicitly so the
+    # transition map stays the single source of truth (see domain/imports.py
+    # "route layer validates transitions" contract).
+    try:
+        require_import_transition("mapped", "validated")
+    except InvalidImportTransition as e:
+        raise HTTPException(status_code=409, detail=str(e))
     storage.update_csv_import(
         scope,
         import_id,
@@ -488,6 +529,15 @@ def _run_validation(storage: StorageBase, scope: Scope, csv_import_id: int) -> d
             specialty_cache=specialty_cache,
         )
         new_status = "error" if errors else "valid"
+        # Transition guard: rows at this point are pending/valid/error
+        # (validate route blocks committed imports). valid→valid and
+        # error→error are no-op transitions we allow by short-circuit.
+        if row.status != new_status:
+            try:
+                require_row_transition(row.status, new_status)
+            except InvalidImportRowTransition as e:
+                logger.warning("skipping illegal row transition: %s", e)
+                continue
         storage.update_csv_import_row(
             scope,
             csv_import_id,
@@ -623,6 +673,11 @@ async def import_row_edit(
         scope=scope,
     )
     new_status = "error" if errors else "valid"
+    if row.status != new_status:
+        try:
+            require_row_transition(row.status, new_status)
+        except InvalidImportRowTransition as e:
+            raise HTTPException(status_code=409, detail=str(e))
     storage.update_csv_import_row(
         scope,
         import_id,
@@ -666,12 +721,17 @@ def _value_or_none(raw: dict, mapping: dict[str, str], target: str) -> str | Non
 def _upsert_patient_from_row(
     storage: StorageBase, scope: Scope, user_id: int, raw: dict, mapping: dict[str, str]
 ):
-    """Match an existing patient by MRN or (name + dob); else create new.
+    """Match an existing patient by MRN; else create new.
 
-    Returns the ``Patient`` row. Matching is intentionally conservative at
-    this slice — we only consider exact-MRN matches in the same scope, and
-    fall back to creating a new Patient otherwise. Phase 4 follow-up will
-    surface fuzzy name+DOB matches in the review UI with a confirm step.
+    Returns ``(Patient, was_created)`` — the boolean lets the caller
+    compensate (soft-delete) a just-created patient if the subsequent
+    referral-create step fails, preventing orphan rows.
+
+    Matching uses the ``mrn=`` exact-match kwarg on ``list_patients`` (a DB-
+    level filter, not the old substring-search-then-filter pattern which
+    had a limit-5 window that could miss the exact match when the MRN
+    substring-matched five unrelated names). Fuzzy name+DOB matching with
+    a coordinator-confirm step is deferred to a Phase 4 follow-up.
     """
     first = _value_or_none(raw, mapping, "patient_first_name") or ""
     last = _value_or_none(raw, mapping, "patient_last_name") or ""
@@ -681,13 +741,12 @@ def _upsert_patient_from_row(
     # MRN exact-match across the scope (only meaningful in org mode where MRNs
     # are unique per org; solo-mode MRN collisions are the user's own data).
     if mrn:
-        existing = storage.list_patients(scope, search=mrn, limit=5)
-        for p in existing:
-            if p.mrn == mrn:
-                return p
+        existing = storage.list_patients(scope, mrn=mrn, limit=1)
+        if existing:
+            return existing[0], False
 
     # Create a new row. Date must be ISO or we'd have flagged it at validate.
-    return storage.create_patient(
+    new_patient = storage.create_patient(
         scope,
         first_name=first,
         last_name=last,
@@ -699,6 +758,7 @@ def _upsert_patient_from_row(
         email=_value_or_none(raw, mapping, "patient_email"),
         created_by_user_id=user_id,
     )
+    return new_patient, True
 
 
 def _create_referral_from_row(
@@ -727,6 +787,7 @@ def _create_referral_from_row(
         referring_provider_npi=_value_or_none(raw, mapping, "referring_provider_npi"),
         referring_organization=_value_or_none(raw, mapping, "referring_organization"),
         authorization_number=_value_or_none(raw, mapping, "authorization_number"),
+        authorization_status=(_value_or_none(raw, mapping, "authorization_status") or "na_unknown"),
         external_source="bulk_csv",
         created_by_user_id=user_id,
     )
@@ -764,13 +825,33 @@ async def import_commit(
         if row.status != "valid":
             skipped_error += 1
             continue
+        patient = None
+        patient_was_created = False
         try:
-            patient = _upsert_patient_from_row(storage, scope, user_id, row.raw_json, mapping)
+            patient, patient_was_created = _upsert_patient_from_row(
+                storage, scope, user_id, row.raw_json, mapping
+            )
             referral = _create_referral_from_row(
                 storage, scope, user_id, row.raw_json, mapping, patient.id
             )
         except Exception as exc:  # noqa: BLE001 — one-row failure shouldn't abort the batch
             logger.exception("commit failed for row %s of import %s", row.row_index, import_id)
+            # Compensation: if we created a NEW patient but the referral
+            # insert failed, soft-delete the patient so it doesn't orphan
+            # in the tenant's patient list. Reused (matched-MRN) patients
+            # stay — they had a prior life outside this import.
+            if patient_was_created and patient is not None:
+                try:
+                    storage.soft_delete_patient(scope, patient.id)
+                except Exception:
+                    logger.exception(
+                        "failed to soft-delete orphaned patient %s after "
+                        "referral-create failure on row %s",
+                        patient.id,
+                        row.row_index,
+                    )
+            # row.status is "valid" here (filtered above); valid → error is legal.
+            require_row_transition(row.status, "error")
             storage.update_csv_import_row(
                 scope,
                 import_id,
@@ -780,6 +861,8 @@ async def import_commit(
             )
             failed.append((row.row_index, str(exc)))
             continue
+        # row.status is "valid" here (filtered above); valid → committed is legal.
+        require_row_transition(row.status, "committed")
         storage.update_csv_import_row(
             scope,
             import_id,

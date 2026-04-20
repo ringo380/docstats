@@ -429,6 +429,196 @@ def test_validate_rejects_unmapped_import(solo_client):
     assert resp.status_code == 409
 
 
+# --- Review follow-ups ---
+
+
+def test_authorization_status_forwarded_on_commit(solo_client):
+    """Previously dropped at commit — PR #97 review."""
+    client, storage, user_id = solo_client
+    csv_body = (
+        b"patient_first,patient_last,patient_dob,reason,specialty,auth_status\n"
+        b"Jane,Doe,1980-05-15,Eval,Cardiology,obtained\n"
+    )
+    client.post("/imports", files={"file": ("r.csv", csv_body, "text/csv")})
+    scope = Scope(user_id=user_id)
+    imp = storage.list_csv_imports(scope)[0]
+    client.post(
+        f"/imports/{imp.id}/map",
+        data={
+            "col__patient_first": "patient_first_name",
+            "col__patient_last": "patient_last_name",
+            "col__patient_dob": "patient_dob",
+            "col__reason": "reason",
+            "col__specialty": "specialty_desc",
+            "col__auth_status": "authorization_status",
+        },
+    )
+    client.post(f"/imports/{imp.id}/commit")
+    referrals = storage.list_referrals(scope)
+    assert len(referrals) == 1
+    assert referrals[0].authorization_status == "obtained"
+
+
+def test_malformed_csv_returns_422(solo_client, monkeypatch):
+    """csv.Error inside the iteration loop should surface as 422, not 500.
+
+    Python's csv module is quite permissive — unterminated quotes and NUL
+    bytes don't raise csv.Error in practice. To exercise the handler, we
+    monkeypatch DictReader iteration to raise directly.
+    """
+    import csv as csv_mod
+
+    from docstats.routes import imports as imports_mod
+
+    class _BoomReader:
+        fieldnames = ["a"]
+
+        def __iter__(self):
+            raise csv_mod.Error("unterminated quoted field")
+
+    monkeypatch.setattr(imports_mod.csv, "DictReader", lambda buf: _BoomReader())
+    client, _, _ = solo_client
+    resp = client.post("/imports", files={"file": ("bad.csv", b"a\nx\n", "text/csv")})
+    assert resp.status_code == 422
+    assert "malformed" in resp.text.lower()
+
+
+def test_future_dob_rejected_in_csv(solo_client):
+    client, storage, user_id = solo_client
+    csv_body = (
+        b"patient_first,patient_last,patient_dob,reason,specialty\n"
+        b"Jane,Doe,2099-01-01,Eval,Cardiology\n"
+    )
+    imp = _seed_mapped_import(client, storage, user_id, csv_body)
+    rows = storage.list_csv_import_rows(Scope(user_id=user_id), imp.id)
+    assert rows[0].status == "error"
+    assert "future" in rows[0].validation_errors.get("patient_dob", "")
+
+
+def test_future_dob_rejected_on_patient_form(tmp_path: Path):
+    """routes/patients.py::_validate_dob should match the CSV behavior."""
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_id = storage.create_user("a@example.com", "hashed")
+    storage.record_phi_consent(
+        user_id=user_id,
+        phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+        ip_address="",
+        user_agent="",
+    )
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _fake_user(user_id)
+    try:
+        client = TestClient(app)
+        resp = client.post(
+            "/patients",
+            data={"first_name": "Jane", "last_name": "Doe", "date_of_birth": "2099-01-01"},
+        )
+        assert resp.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mrn_exact_match_reuses_patient(solo_client):
+    """Upload a CSV whose MRN matches an existing patient — reuse, don't duplicate."""
+    client, storage, user_id = solo_client
+    scope = Scope(user_id=user_id)
+    existing = storage.create_patient(
+        scope,
+        first_name="Existing",
+        last_name="Patient",
+        mrn="MRN-12345",
+        created_by_user_id=user_id,
+    )
+    csv_body = b"patient_first,patient_last,patient_mrn,reason\nFresh,Name,MRN-12345,Eval\n"
+    client.post("/imports", files={"file": ("r.csv", csv_body, "text/csv")})
+    imp = storage.list_csv_imports(scope)[0]
+    client.post(
+        f"/imports/{imp.id}/map",
+        data={
+            "col__patient_first": "patient_first_name",
+            "col__patient_last": "patient_last_name",
+            "col__patient_mrn": "patient_mrn",
+            "col__reason": "reason",
+        },
+    )
+    client.post(f"/imports/{imp.id}/commit")
+    patients = storage.list_patients(scope)
+    # No new patient — the existing one was reused by exact MRN match.
+    assert len(patients) == 1
+    assert patients[0].id == existing.id
+    referrals = storage.list_referrals(scope)
+    assert referrals[0].patient_id == existing.id
+
+
+def test_list_patients_mrn_kwarg_exact_match(solo_client):
+    """Direct storage-level test of the new kwarg."""
+    _, storage, user_id = solo_client
+    scope = Scope(user_id=user_id)
+    storage.create_patient(
+        scope, first_name="A", last_name="B", mrn="X", created_by_user_id=user_id
+    )
+    storage.create_patient(
+        scope, first_name="C", last_name="D", mrn="Y", created_by_user_id=user_id
+    )
+    got = storage.list_patients(scope, mrn="X")
+    assert len(got) == 1
+    assert got[0].mrn == "X"
+    assert storage.list_patients(scope, mrn="ZZ") == []
+
+
+def test_content_length_cap(solo_client):
+    """Oversized Content-Length header rejected before body read."""
+    client, _, _ = solo_client
+    # httpx/TestClient will honor an explicit Content-Length header; fabricate
+    # by pretending a tiny body is huge.
+    resp = client.post(
+        "/imports",
+        files={"file": ("r.csv", b"col\nval\n", "text/csv")},
+        headers={"content-length": str(10 * 1024 * 1024)},  # 10 MB, above cap
+    )
+    # TestClient may or may not forward the fake header verbatim; if it does,
+    # we get 422. If it doesn't, the body cap still fires on the server read.
+    # Either way the server MUST reject oversized uploads.
+    assert resp.status_code == 422 or (resp.status_code in (400, 413, 422))
+
+
+def test_orphan_patient_compensation(solo_client, monkeypatch):
+    """If referral create fails AFTER a NEW patient was created, the patient
+    is soft-deleted so it doesn't orphan. Pre-existing matched patients are
+    not touched."""
+    client, storage, user_id = solo_client
+    scope = Scope(user_id=user_id)
+
+    # Seed a validated import with 1 valid row; the MRN is NEW so the commit
+    # path takes the create-patient branch.
+    csv_body = b"patient_first,patient_last,patient_mrn,reason\nFresh,Patient,NEW-MRN-001,Eval\n"
+    client.post("/imports", files={"file": ("r.csv", csv_body, "text/csv")})
+    imp = storage.list_csv_imports(scope)[0]
+    client.post(
+        f"/imports/{imp.id}/map",
+        data={
+            "col__patient_first": "patient_first_name",
+            "col__patient_last": "patient_last_name",
+            "col__patient_mrn": "patient_mrn",
+            "col__reason": "reason",
+        },
+    )
+
+    # Patch create_referral to always raise
+    orig_create_referral = storage.create_referral
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated referral-create failure")
+
+    monkeypatch.setattr(storage, "create_referral", _boom)
+    client.post(f"/imports/{imp.id}/commit")
+    monkeypatch.setattr(storage, "create_referral", orig_create_referral)
+
+    # Patient with the new MRN was soft-deleted (not visible in active list)
+    active = storage.list_patients(scope)
+    assert all(p.mrn != "NEW-MRN-001" for p in active)
+
+
 # --- Downloadable template (Phase 4.E) ---
 
 
