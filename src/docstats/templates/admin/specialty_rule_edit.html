@@ -1,0 +1,88 @@
+{% extends "admin/_admin_layout.html" %}
+
+{% block admin_content %}
+<div class="back-link"><a href="/admin/specialty-rules">← Specialty rules</a></div>
+
+<div class="saved-header">
+  <div>
+    <h1>
+      {% if override %}Edit{% else %}Create{% endif %} override
+      &middot;
+      <span class="muted" style="font-weight:500;">{{ form.display_name or specialty_code }}</span>
+    </h1>
+    <div class="sub">
+      NUCC code <code>{{ specialty_code }}</code>
+      {% if override %}
+        &middot; <span class="rule-badge rule-badge-override">Override v{{ override.version_id }}</span>
+        <span class="muted">(last edited {{ override.updated_at.strftime('%Y-%m-%d %H:%M') if override.updated_at else '—' }})</span>
+      {% elif global_rule %}
+        &middot; <span class="rule-badge rule-badge-global">Seeded from platform default</span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% if errors %}
+  <div class="alert alert-error">
+    <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+{% endif %}
+
+<form method="post" action="/admin/specialty-rules/{{ specialty_code }}" class="rule-edit-form card">
+  <div class="form-row">
+    <label>Display name
+      <input type="text" name="display_name" value="{{ form.display_name }}" maxlength="200" autocomplete="off">
+      <span class="muted sub">What coordinators see in the referral wizard.</span>
+    </label>
+  </div>
+
+  <fieldset class="form-row">
+    <legend>Required fields</legend>
+    <span class="muted sub">Referral columns that must be non-blank before a referral is considered complete.</span>
+    <div class="checkbox-grid">
+      {% for field_name, field_label in required_field_options %}
+        <label class="checkbox-row">
+          <input type="checkbox" name="required_field" value="{{ field_name }}"
+                 {% if field_name in form.required_field_choices %}checked{% endif %}>
+          <span>{{ field_label }} <code class="muted">{{ field_name }}</code></span>
+        </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+
+  <div class="form-row">
+    <label>Recommended attachments (one per line)
+      <textarea name="recommended_attachment_labels" rows="4" maxlength="4000">{{ form.recommended_attachment_labels }}</textarea>
+      <span class="muted sub">Labels shown on the attachments checklist. Example: "Recent EKG".</span>
+    </label>
+  </div>
+
+  <div class="form-row">
+    <label>Intake-question prompts (one per line)
+      <textarea name="intake_question_prompts" rows="4" maxlength="4000">{{ form.intake_question_prompts }}</textarea>
+      <span class="muted sub">Shown as a side panel while coordinators draft the referral.</span>
+    </label>
+  </div>
+
+  <div class="form-row">
+    <label>Urgency red-flag keywords (one per line)
+      <textarea name="urgency_red_flag_keywords" rows="4" maxlength="4000">{{ form.urgency_red_flag_keywords }}</textarea>
+      <span class="muted sub">Case-insensitive substring match against the referral's reason + clinical question. A match auto-escalates <strong>routine</strong> urgency to <strong>urgent</strong>.</span>
+    </label>
+  </div>
+
+  <div class="form-row">
+    <label>Common rejection reasons (one per line)
+      <textarea name="common_rejection_reasons" rows="4" maxlength="4000">{{ form.common_rejection_reasons }}</textarea>
+      <span class="muted sub">Shown in the wizard as "avoid these" hints.</span>
+    </label>
+  </div>
+
+  <div class="action-bar">
+    <a href="/admin/specialty-rules" class="btn btn-secondary">Cancel</a>
+    <button type="submit" class="btn btn-primary">
+      {% if override %}Save override{% else %}Create override{% endif %}
+    </button>
+  </div>
+</form>
+{% endblock %}

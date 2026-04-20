@@ -1142,3 +1142,114 @@ dl.kv dd { color: var(--text); margin: 0; }
   .admin-shell { grid-template-columns: 1fr; }
   .admin-sidebar { position: static; }
 }
+
+/* ── Admin specialty-rules (Phase 6.B) ───────────────────────────────── */
+.admin-rules {
+  width: 100%;
+  border-collapse: collapse;
+}
+.admin-rules th, .admin-rules td {
+  text-align: left;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88rem;
+  vertical-align: middle;
+}
+.admin-rules th {
+  font-weight: 500;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.admin-rules code {
+  background: var(--bg-input);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.rule-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.rule-badge-global {
+  background: var(--bg-input);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.rule-badge-override {
+  background: var(--green-bg);
+  color: var(--green);
+  border: 1px solid var(--green-dark);
+}
+.rule-badge-missing {
+  background: var(--red-bg);
+  color: var(--red);
+  border: 1px solid var(--red);
+}
+.rule-edit-form {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.rule-edit-form .form-row { display: block; }
+.rule-edit-form label { display: block; font-weight: 500; font-size: 0.88rem; }
+.rule-edit-form input[type="text"],
+.rule-edit-form textarea {
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.88rem;
+}
+.rule-edit-form textarea {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  resize: vertical;
+}
+.rule-edit-form .sub { display: block; margin-top: 4px; font-size: 0.75rem; color: var(--text-muted); }
+.rule-edit-form fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+.rule-edit-form legend {
+  padding: 0 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 6px 14px;
+  margin-top: 10px;
+}
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+  font-size: 0.85rem;
+}
+.checkbox-row input[type="checkbox"] { margin: 0; }
+.checkbox-row code { font-size: 0.72rem; }
+.rule-edit-form .action-bar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
