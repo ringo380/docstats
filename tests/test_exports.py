@@ -1034,6 +1034,24 @@ def test_csv_export_status_filter(solo_client):
     assert rows[0]["status"] == "ready"
 
 
+def test_csv_export_assignee_me_filter_matches_workspace(solo_client):
+    import csv as csv_mod
+
+    client, storage, user_id = solo_client
+    scope = Scope(user_id=user_id)
+    _, assigned = _seed_referral(storage, user_id, first_name="Assigned")
+    _, unassigned = _seed_referral(storage, user_id, first_name="Unassigned")
+    storage.update_referral(scope, assigned.id, assigned_to_user_id=user_id)
+    _ = unassigned
+
+    resp = client.get("/referrals/export.csv", params={"assignee": "me"})
+    assert resp.status_code == 200
+    rows = list(csv_mod.DictReader(resp.text.splitlines()))
+    assert len(rows) == 1
+    assert rows[0]["referral_id"] == str(assigned.id)
+    assert rows[0]["patient_first_name"] == "Assigned"
+
+
 def test_csv_export_audit(solo_client):
     client, storage, user_id = solo_client
     _seed_referral(storage, user_id)

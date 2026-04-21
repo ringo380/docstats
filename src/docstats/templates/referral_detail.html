@@ -47,22 +47,47 @@
 {% endif %}
 
 {# --- Status transitions --- #}
-<div class="status-transitions card" style="margin-bottom:14px;">
-  <h3>Status</h3>
-  {% if allowed_next %}
-    <form method="post" action="/referrals/{{ referral.id }}/status" class="inline-form">
-      <label>Move to:
-        <select name="new_status">
-          {% for s in allowed_next %}
-            <option value="{{ s }}">{{ s | replace('_', ' ') | title }}</option>
+<div class="status-assign-row">
+  <div class="status-transitions card">
+    <h3>Status</h3>
+    {% if allowed_next %}
+      <form method="post" action="/referrals/{{ referral.id }}/status" class="inline-form">
+        <label>Move to:
+          <select name="new_status">
+            {% for s in allowed_next %}
+              <option value="{{ s }}">{{ s | replace('_', ' ') | title }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit" class="btn btn-primary btn-sm">Transition</button>
+      </form>
+    {% else %}
+      <p class="sub">Terminal status — no further transitions.</p>
+    {% endif %}
+  </div>
+
+  {# --- Assignment (Phase 7.C) --- #}
+  <div class="assignment-card card">
+    <h3>Assignment</h3>
+    <p class="sub">
+      {% if assigned_display %}
+        Currently assigned to <strong>{{ assigned_display }}</strong>.
+      {% else %}
+        Unassigned.
+      {% endif %}
+    </p>
+    <form method="post" action="/referrals/{{ referral.id }}/assign" class="inline-form">
+      <label>Assign to:
+        <select name="user_id">
+          <option value="">— Unassign —</option>
+          {% for uid, name in assignable_users %}
+            <option value="{{ uid }}" {% if referral.assigned_to_user_id == uid %}selected{% endif %}>{{ name }}{% if uid == user.id %} (me){% endif %}</option>
           {% endfor %}
         </select>
       </label>
-      <button type="submit" class="btn btn-primary btn-sm">Transition</button>
+      <button type="submit" class="btn btn-primary btn-sm">Save</button>
     </form>
-  {% else %}
-    <p class="sub">Terminal status — no further transitions.</p>
-  {% endif %}
+  </div>
 </div>
 
 <div class="detail-layout">

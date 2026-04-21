@@ -2312,6 +2312,33 @@ class Storage(StorageBase):
         rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_referral(r) for r in rows]
 
+    def count_referrals(
+        self,
+        scope: Scope,
+        *,
+        assigned_to_user_id: int | None = None,
+        statuses: tuple[str, ...] | None = None,
+        include_deleted: bool = False,
+    ) -> int:
+        if statuses is not None and not statuses:
+            return 0
+        clause, params = scope_sql_clause(scope)
+        where_parts = [clause]
+        if not include_deleted:
+            where_parts.append("deleted_at IS NULL")
+        if assigned_to_user_id is not None:
+            where_parts.append("assigned_to_user_id = ?")
+            params.append(assigned_to_user_id)
+        if statuses is not None:
+            placeholders = ", ".join("?" for _ in statuses)
+            where_parts.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        row = self._conn.execute(
+            f"SELECT COUNT(*) AS count FROM referrals WHERE {' AND '.join(where_parts)}",
+            params,
+        ).fetchone()
+        return int(row["count"]) if row else 0
+
     def update_referral(
         self,
         scope: Scope,

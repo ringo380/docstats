@@ -54,7 +54,7 @@ from docstats.exports import (
     render_scheduling_summary,
 )
 from docstats.phi import require_phi_consent
-from docstats.routes._common import get_scope, render
+from docstats.routes._common import get_scope, render, resolve_assignee_filter
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
@@ -241,6 +241,7 @@ async def referrals_csv_export(
     urgency: str | None = Query(None, max_length=16),
     patient_id: int | None = Query(None, ge=1),
     assigned_to_user_id: int | None = Query(None, ge=1),
+    assignee: str | None = Query(None, max_length=16),
     current_user: dict = Depends(require_phi_consent),
     scope: Scope = Depends(get_scope),
     storage: StorageBase = Depends(get_storage),
@@ -248,13 +249,18 @@ async def referrals_csv_export(
     """Flat CSV — one row per referral, same filters as the workspace list."""
     status_filter = status if status in STATUS_VALUES else None
     urgency_filter = urgency if urgency in URGENCY_VALUES else None
+    effective_assigned, assignee_clean = resolve_assignee_filter(
+        assignee,
+        assigned_to_user_id,
+        current_user["id"],
+    )
 
     referrals = storage.list_referrals(
         scope,
         patient_id=patient_id,
         status=status_filter,
         urgency=urgency_filter,
-        assigned_to_user_id=assigned_to_user_id,
+        assigned_to_user_id=effective_assigned,
         limit=_CSV_EXPORT_MAX_ROWS,
     )
     # Batch-fetch patients to avoid N+1.
@@ -288,7 +294,8 @@ async def referrals_csv_export(
                     "status": status_filter,
                     "urgency": urgency_filter,
                     "patient_id": patient_id,
-                    "assigned_to_user_id": assigned_to_user_id,
+                    "assigned_to_user_id": effective_assigned,
+                    "assignee": assignee_clean,
                 }.items()
                 if v is not None
             },
