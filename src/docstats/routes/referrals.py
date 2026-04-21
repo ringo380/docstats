@@ -332,6 +332,35 @@ def _allowed_next_statuses(current: str) -> list[str]:
     return sorted(STATUS_TRANSITIONS.get(current, frozenset()))
 
 
+def _format_actor(user_row: dict | None) -> str:
+    """Mirror the nav-bar display-name formula from base.html.
+
+    Prefer ``first_name last_name`` when both are set; fall back to
+    ``display_name``; then the bare email. Returns ``"—"`` when the row
+    is None (actor hard-deleted — audit FK is SET NULL on user delete).
+    """
+    if user_row is None:
+        return "—"
+    first = (user_row.get("first_name") or "").strip()
+    last = (user_row.get("last_name") or "").strip()
+    if first and last:
+        return f"{first} {last}"
+    display = (user_row.get("display_name") or "").strip()
+    if display:
+        return display
+    email = (user_row.get("email") or "").strip()
+    return email or "—"
+
+
+def _build_actor_map(storage: StorageBase, events: list) -> dict[int, str]:
+    """Fetch display names for every distinct ``actor_user_id`` on the
+    event list. Per-request cache: ~50 events × small actor cardinality
+    means this is at most a handful of ``get_user_by_id`` calls.
+    """
+    ids: set[int] = {e.actor_user_id for e in events if e.actor_user_id is not None}
+    return {uid: _format_actor(storage.get_user_by_id(uid)) for uid in ids}
+
+
 def _render_detail(
     request: Request,
     current_user: dict,
@@ -342,6 +371,8 @@ def _render_detail(
     errors: list[str] | None = None,
     response_errors: list[str] | None = None,
     response_values: dict | None = None,
+    note_error: str | None = None,
+    note_value: str | None = None,
 ) -> Response:
     referral = storage.get_referral(scope, referral_id)
     if referral is None:
@@ -350,6 +381,7 @@ def _render_detail(
     events = storage.list_referral_events(scope, referral_id, limit=50)
     responses = storage.list_referral_responses(scope, referral_id)
     completeness = rules_based_completeness(storage, scope, referral)
+    actors_by_id = _build_actor_map(storage, events)
     return render(
         "referral_detail.html",
         _ctx(
@@ -359,6 +391,7 @@ def _render_detail(
             referral=referral,
             patient=patient,
             events=events,
+            actors_by_id=actors_by_id,
             responses=responses,
             completeness=completeness,
             urgency_values=URGENCY_VALUES,
@@ -368,6 +401,8 @@ def _render_detail(
             errors=errors,
             response_errors=response_errors,
             response_values=response_values or {},
+            note_error=note_error,
+            note_value=note_value or "",
         ),
     )
 
@@ -1038,6 +1073,72 @@ async def referral_response_clear_field(
         metadata={"referral_id": referral_id, "cleared": field},
     )
     dest = f"/referrals/{referral_id}"
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": dest})
+    return Response(status_code=303, headers={"Location": dest})
+
+
+# --- Inline comments (Phase 7.B) ---
+#
+# Coordinators can drop free-text notes on a referral via the detail page.
+# Each note lands as a ``note_added`` ReferralEvent — the storage method
+# pre-existed, we just wire it to a dedicated route so the audit trail and
+# timeline stay consistent with the rest of the event vocabulary.
+#
+# Note text lives in ``referral_events.note``. ``from_value`` / ``to_value``
+# are intentionally empty for note_added events — the timeline template has
+# a dedicated branch that renders ``e.note`` as the comment body.
+
+_NOTE_MAX_LENGTH = 4000
+
+
+@router.post("/{referral_id}/notes", response_class=HTMLResponse)
+async def referral_note_create(
+    request: Request,
+    referral_id: int = Path(..., ge=1),
+    note: str = Form(..., max_length=_NOTE_MAX_LENGTH),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    existing = storage.get_referral(scope, referral_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    body = _clean(note)
+    if body is None:
+        return _render_detail(
+            request,
+            current_user,
+            storage,
+            scope,
+            referral_id,
+            note_error="Comment cannot be empty.",
+            note_value=note,
+        )
+    # Storage returns None on scope-miss or soft-deleted parent referral.
+    # We already verified both above; treat a surprising None as 404 (same
+    # TOCTOU posture as referral_update / referral_set_status).
+    event = storage.record_referral_event(
+        scope,
+        referral_id,
+        event_type="note_added",
+        actor_user_id=current_user["id"],
+        note=body,
+    )
+    if event is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    audit_record(
+        storage,
+        action="referral.note.create",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral",
+        entity_id=str(referral_id),
+        metadata={"event_id": event.id, "length": len(body)},
+    )
+    dest = f"/referrals/{referral_id}#timeline"
     if request.headers.get("HX-Request"):
         return Response(status_code=200, headers={"HX-Redirect": dest})
     return Response(status_code=303, headers={"Location": dest})
