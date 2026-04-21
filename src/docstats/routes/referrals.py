@@ -727,16 +727,27 @@ def _maybe_auto_complete(
     storage: StorageBase,
     scope: Scope,
     referral_id: int,
-    current_status: str,
     actor_user_id: int,
 ) -> str | None:
     """Attempt the ``current_status → completed`` auto-transition.
 
-    Returns the new status if the transition landed, else None. Caller is
-    responsible for emitting audit rows. Event insert failures are logged
-    but not raised — matches the degradation posture of ``referral_update``.
+    Re-reads the referral status just before the write to close the window
+    where a concurrent request may have transitioned the row. ``storage
+    .set_referral_status`` does NOT validate the state machine (by design —
+    it's dumb storage), so if we rely on a stale snapshot from the request
+    handler we can force-write ``completed`` over a racing ``cancelled``.
+    Fetching inside the helper shrinks the window to microseconds and reads
+    the actual status used for the transition check + emitted event.
+
+    Returns the new status if the transition landed, else None. Event-insert
+    failures are logged but not raised — matches the degradation posture of
+    ``referral_update``.
     """
-    if not transition_allowed(current_status, "completed"):
+    fresh = storage.get_referral(scope, referral_id)
+    if fresh is None:
+        return None
+    from_status = fresh.status
+    if not transition_allowed(from_status, "completed"):
         return None
     updated = storage.set_referral_status(scope, referral_id, "completed")
     if updated is None:
@@ -746,7 +757,7 @@ def _maybe_auto_complete(
             scope,
             referral_id,
             event_type="status_changed",
-            from_value=current_status,
+            from_value=from_status,
             to_value="completed",
             actor_user_id=actor_user_id,
             note="auto: consult completed",
@@ -844,12 +855,11 @@ async def referral_response_create(
         logger.exception("Failed to record response_received event for referral %s", referral_id)
 
     # Auto-transition to completed when the closed loop is complete AND the
-    # state machine permits it from the current status.
+    # state machine permits it from the current status. Helper re-reads the
+    # row just before the write so a racing status change isn't clobbered.
     auto_transitioned = False
     if completed:
-        new_status = _maybe_auto_complete(
-            storage, scope, referral_id, existing.status, current_user["id"]
-        )
+        new_status = _maybe_auto_complete(storage, scope, referral_id, current_user["id"])
         auto_transitioned = new_status is not None
 
     audit_record(
@@ -925,9 +935,7 @@ async def referral_response_update(
     newly_completed = completed_flag and not prior.consult_completed
     auto_transitioned = False
     if newly_completed:
-        new_status = _maybe_auto_complete(
-            storage, scope, referral_id, existing.status, current_user["id"]
-        )
+        new_status = _maybe_auto_complete(storage, scope, referral_id, current_user["id"])
         auto_transitioned = new_status is not None
 
     audit_record(
@@ -975,6 +983,59 @@ async def referral_response_delete(
         entity_type="referral_response",
         entity_id=str(response_id),
         metadata={"referral_id": referral_id},
+    )
+    dest = f"/referrals/{referral_id}"
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": dest})
+    return Response(status_code=303, headers={"Location": dest})
+
+
+# Fields the POST .../clear/{field} endpoint will set to NULL. Matches
+# ``StorageBase.clear_referral_response_field``'s allow-list — keep in sync.
+_RESPONSE_CLEARABLE_FIELDS: frozenset[str] = frozenset(
+    {"appointment_date", "recommendations_text", "attached_consult_note_ref"}
+)
+
+
+@router.post("/{referral_id}/response/{response_id}/clear/{field}", response_class=HTMLResponse)
+async def referral_response_clear_field(
+    request: Request,
+    referral_id: int = Path(..., ge=1),
+    response_id: int = Path(..., ge=1),
+    field: str = Path(..., max_length=64),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Explicitly NULL one of the nullable text fields on a response.
+
+    Companion to :func:`referral_response_update`'s None-means-skip semantics
+    — the edit form can't distinguish "leave alone" from "set to NULL" for a
+    blank text input, so explicit clearing lives here. The allow-list
+    matches ``StorageBase.clear_referral_response_field``; unknown fields
+    return 422.
+    """
+    if field not in _RESPONSE_CLEARABLE_FIELDS:
+        raise HTTPException(status_code=422, detail=f"Field {field!r} is not clearable.")
+    existing_referral = storage.get_referral(scope, referral_id)
+    if existing_referral is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    try:
+        updated = storage.clear_referral_response_field(scope, referral_id, response_id, field)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Response not found.")
+    audit_record(
+        storage,
+        action="referral.response.update",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral_response",
+        entity_id=str(response_id),
+        metadata={"referral_id": referral_id, "cleared": field},
     )
     dest = f"/referrals/{referral_id}"
     if request.headers.get("HX-Request"):

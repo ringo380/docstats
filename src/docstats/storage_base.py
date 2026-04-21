@@ -852,6 +852,29 @@ class StorageBase(ABC):
         response_id: int,
     ) -> bool: ...
 
+    @abstractmethod
+    def clear_referral_response_field(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        response_id: int,
+        field: str,
+    ) -> "ReferralResponse | None":
+        """Explicitly set a nullable response field back to ``NULL``.
+
+        ``update_referral_response`` uses ``None``-means-skip semantics so
+        partial updates don't wipe unrelated fields; this is the companion
+        method for the "I really do want to clear X" case, matching the
+        :meth:`clear_referral_field` pattern on the parent referral. Only
+        the three nullable text columns may be cleared:
+        ``appointment_date``, ``recommendations_text``,
+        ``attached_consult_note_ref``. Other field names raise ``ValueError``.
+        ``consult_completed`` and ``received_via`` are intentionally
+        non-clearable: the former has a bool default and the latter has a
+        NOT-NULL enum constraint with a ``manual`` default.
+        """
+        ...
+
     # --- Insurance plans (scope-owned) ---
 
     @abstractmethod

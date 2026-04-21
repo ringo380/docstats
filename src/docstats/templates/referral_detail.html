@@ -196,7 +196,8 @@
               {% if e.from_value or e.to_value %}
                 <div class="sub">
                   {% if e.event_type == 'field_edited' %}
-                    {{ e.note or e.from_value }}: {{ e.from_value }} → {{ e.to_value or '—' }}
+                    {# Phase 2.D invariant: note = field name, from_value = OLD, to_value = NEW. #}
+                    {{ e.note }}: {{ e.from_value or '—' }} → {{ e.to_value or '—' }}
                   {% elif e.event_type == 'status_changed' %}
                     {{ e.from_value }} → {{ e.to_value }}{% if e.note %} <em>({{ e.note }})</em>{% endif %}
                   {% else %}

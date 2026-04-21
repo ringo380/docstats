@@ -252,6 +252,7 @@
   .btn-blue { background: var(--blue-dark); color: #bee3f8; }
   .btn-danger { background: transparent; color: var(--text-dim); border-color: var(--border); }
   .btn-sm { padding: 4px 10px; font-size: 0.78rem; }
+  .btn-xs { padding: 2px 8px; font-size: 0.72rem; border-radius: 4px; }
 
   /* ── Forms / Inputs ───────────────────────────────────────────────── */
   input[type="text"], input[type="search"], input[type="email"], input[type="password"], input[type="date"], input[type="tel"], select, textarea {
@@ -1007,6 +1008,13 @@ dl.kv dd { color: var(--text); margin: 0; }
 }
 .response-form { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .response-form .action-bar { justify-content: flex-end; }
+.response-edit { margin: 6px 0; }
+.response-edit > summary {
+  list-style: none;
+  display: inline-block;
+  cursor: pointer;
+}
+.response-edit > summary::-webkit-details-marker { display: none; }
 
 /* ── Rules-engine completeness additions (Phase 3.B) ─────────────────── */
 .red-flags,

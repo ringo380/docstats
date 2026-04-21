@@ -361,3 +361,213 @@ def test_audit_event_emitted_on_create(solo_client):
     rows = storage.list_audit_events(scope_user_id=user_id)
     actions = [r.action for r in rows]
     assert "referral.response.create" in actions
+
+
+# --- Clear route (regression for blank-means-skip on update) ---
+
+
+def test_clear_appointment_date(solo_client):
+    """Explicit clear route NULLs a nullable text field that the partial-
+    update semantics would otherwise leave untouched."""
+    client, storage, user_id = solo_client
+    referral = _seed_referral(storage, user_id)
+    scope = Scope(user_id=user_id)
+    r = storage.record_referral_response(
+        scope,
+        referral.id,
+        appointment_date="2026-05-01",
+        recommendations_text="Initial notes",
+        received_via="fax",
+        recorded_by_user_id=user_id,
+    )
+    assert r is not None
+    resp = client.post(
+        f"/referrals/{referral.id}/response/{r.id}/clear/appointment_date",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    fresh = storage.list_referral_responses(scope, referral.id)[0]
+    assert fresh.appointment_date is None
+    assert fresh.recommendations_text == "Initial notes"  # untouched
+
+
+def test_clear_recommendations_text(solo_client):
+    client, storage, user_id = solo_client
+    referral = _seed_referral(storage, user_id)
+    scope = Scope(user_id=user_id)
+    r = storage.record_referral_response(
+        scope,
+        referral.id,
+        appointment_date="2026-05-01",
+        recommendations_text="To clear",
+        received_via="fax",
+    )
+    assert r is not None
+    resp = client.post(
+        f"/referrals/{referral.id}/response/{r.id}/clear/recommendations_text",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    fresh = storage.list_referral_responses(scope, referral.id)[0]
+    assert fresh.recommendations_text is None
+    assert fresh.appointment_date == "2026-05-01"
+
+
+def test_clear_unknown_field_returns_422(solo_client):
+    client, storage, user_id = solo_client
+    referral = _seed_referral(storage, user_id)
+    scope = Scope(user_id=user_id)
+    r = storage.record_referral_response(scope, referral.id, received_via="fax")
+    assert r is not None
+    for bogus in ("consult_completed", "received_via", "id", "nonsense"):
+        resp = client.post(f"/referrals/{referral.id}/response/{r.id}/clear/{bogus}")
+        assert resp.status_code == 422, f"{bogus} should be rejected"
+
+
+def test_clear_unknown_referral_returns_404(solo_client):
+    client, _, _ = solo_client
+    resp = client.post("/referrals/99999/response/1/clear/appointment_date")
+    assert resp.status_code == 404
+
+
+def test_clear_unknown_response_returns_404(solo_client):
+    client, storage, user_id = solo_client
+    referral = _seed_referral(storage, user_id)
+    resp = client.post(f"/referrals/{referral.id}/response/99999/clear/appointment_date")
+    assert resp.status_code == 404
+
+
+def test_clear_cross_tenant_returns_404(tmp_path):
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_a = storage.create_user("a@example.com", "hashed")
+    user_b = storage.create_user("b@example.com", "hashed")
+    for uid in (user_a, user_b):
+        storage.record_phi_consent(
+            user_id=uid,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+    scope_a = Scope(user_id=user_a)
+    patient = storage.create_patient(
+        scope_a, first_name="Jane", last_name="Doe", created_by_user_id=user_a
+    )
+    referral = storage.create_referral(
+        scope_a, patient_id=patient.id, reason="X", created_by_user_id=user_a
+    )
+    r = storage.record_referral_response(
+        scope_a, referral.id, appointment_date="2026-05-01", received_via="fax"
+    )
+    assert r is not None
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _fake_user(user_b, email="b@example.com")
+    try:
+        client = TestClient(app)
+        resp = client.post(f"/referrals/{referral.id}/response/{r.id}/clear/appointment_date")
+        assert resp.status_code == 404
+        # A's row untouched
+        assert (
+            storage.list_referral_responses(scope_a, referral.id)[0].appointment_date
+            == "2026-05-01"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_clear_audit_action(solo_client):
+    client, storage, user_id = solo_client
+    referral = _seed_referral(storage, user_id)
+    scope = Scope(user_id=user_id)
+    r = storage.record_referral_response(
+        scope, referral.id, appointment_date="2026-05-01", received_via="fax"
+    )
+    assert r is not None
+    client.post(f"/referrals/{referral.id}/response/{r.id}/clear/appointment_date")
+    rows = storage.list_audit_events(scope_user_id=user_id)
+    cleared = [
+        row
+        for row in rows
+        if row.action == "referral.response.update"
+        and row.metadata.get("cleared") == "appointment_date"
+    ]
+    assert len(cleared) == 1
+
+
+# --- TOCTOU (regression for auto-complete snapshot staleness) ---
+
+
+def test_auto_complete_rereads_status_closing_toctou_window(solo_client):
+    """If the referral was transitioned between the route-level scope gate and
+    the auto-complete write, the helper must re-read and skip rather than
+    clobber the race-winning status.
+
+    Simulates the race by hooking ``record_referral_response`` — in the
+    create path this runs AFTER the initial scope-guard read and BEFORE
+    ``_maybe_auto_complete`` fires, so flipping status inside the hook
+    reproduces a concurrent winner landing mid-request.
+    """
+    client, storage, user_id = solo_client
+    referral = _seed_referral(storage, user_id, status="scheduled")
+    scope = Scope(user_id=user_id)
+
+    original_record = storage.record_referral_response
+
+    def mid_request_cancel(*args, **kwargs):
+        result = original_record(*args, **kwargs)
+        # Flip to cancelled after the response lands, but before the route
+        # hits _maybe_auto_complete. This is the race scenario.
+        storage.set_referral_status(scope, referral.id, "cancelled")
+        return result
+
+    storage.record_referral_response = mid_request_cancel  # type: ignore[method-assign]
+    try:
+        resp = client.post(
+            f"/referrals/{referral.id}/response",
+            data={
+                "appointment_date": "2026-05-01",
+                "received_via": "fax",
+                "consult_completed": "on",
+                "recommendations_text": "Done",
+            },
+            follow_redirects=False,
+        )
+    finally:
+        storage.record_referral_response = original_record  # type: ignore[method-assign]
+
+    assert resp.status_code == 303
+    fresh = storage.get_referral(scope, referral.id)
+    # Auto-complete should have re-read, seen cancelled, and skipped the
+    # completed write. Final status stays cancelled.
+    assert fresh.status == "cancelled"
+    events = storage.list_referral_events(scope, referral.id)
+    # No auto-transition status_changed event with to_value=completed should
+    # have been emitted — the helper bailed out before the write.
+    auto_completed = [
+        e for e in events if e.event_type == "status_changed" and e.to_value == "completed"
+    ]
+    assert auto_completed == []
+
+
+# --- Template regression (issue D: timeline fallback removed) ---
+
+
+def test_timeline_field_edited_renders_note_label(solo_client):
+    """The timeline template must always use e.note as the field-name label
+    for field_edited events — the pre-fix fallback rendered e.from_value
+    (the OLD scalar value) as a mislabeled field name."""
+    client, storage, user_id = solo_client
+    referral = _seed_referral(storage, user_id)
+    scope = Scope(user_id=user_id)
+    storage.record_referral_event(
+        scope,
+        referral.id,
+        event_type="field_edited",
+        from_value="Old Clinic",
+        to_value="New Clinic",
+        actor_user_id=user_id,
+        note="receiving_organization_name",
+    )
+    resp = client.get(f"/referrals/{referral.id}")
+    assert resp.status_code == 200
+    # The label must be the field name, and both old → new values must appear.
+    assert "receiving_organization_name: Old Clinic → New Clinic" in resp.text

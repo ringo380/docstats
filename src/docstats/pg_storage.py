@@ -2456,6 +2456,38 @@ class PostgresStorage(StorageBase):
         )
         return True
 
+    # See SQLite ``Storage._CLEARABLE_RESPONSE_FIELDS`` for the invariant —
+    # keep these two frozensets in lockstep.
+    _CLEARABLE_RESPONSE_FIELDS: frozenset[str] = frozenset(
+        {
+            "appointment_date",
+            "recommendations_text",
+            "attached_consult_note_ref",
+        }
+    )
+
+    def clear_referral_response_field(
+        self,
+        scope: Scope,
+        referral_id: int,
+        response_id: int,
+        field: str,
+    ) -> ReferralResponse | None:
+        if field not in self._CLEARABLE_RESPONSE_FIELDS:
+            raise ValueError(f"Field {field!r} is not clearable on a referral_response")
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        result = (
+            self._t("referral_responses")
+            .update({field: None, "updated_at": _now_iso()})
+            .eq("id", response_id)
+            .eq("referral_id", referral_id)
+            .execute()
+        )
+        if not result.data:
+            return None
+        return _row_to_referral_response(result.data[0])
+
     # --- Insurance plans (scope-owned) ---
 
     def create_insurance_plan(

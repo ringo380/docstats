@@ -3043,6 +3043,44 @@ class Storage(StorageBase):
         self._conn.commit()
         return cursor.rowcount > 0
 
+    # Clearable via the dedicated route — blank form submissions go through
+    # ``update_referral_response``'s None-means-skip contract, so explicit
+    # NULLs land here. Kept narrow on purpose: ``consult_completed`` has a
+    # bool default and ``received_via`` is NOT NULL with a ``manual`` default.
+    _CLEARABLE_RESPONSE_FIELDS: frozenset[str] = frozenset(
+        {
+            "appointment_date",
+            "recommendations_text",
+            "attached_consult_note_ref",
+        }
+    )
+
+    def clear_referral_response_field(
+        self,
+        scope: Scope,
+        referral_id: int,
+        response_id: int,
+        field: str,
+    ) -> ReferralResponse | None:
+        if field not in self._CLEARABLE_RESPONSE_FIELDS:
+            raise ValueError(f"Field {field!r} is not clearable on a referral_response")
+        # Scope-transitive gate: the parent referral must be readable from
+        # this scope. Matches record / list / update / delete pattern.
+        if self.get_referral(scope, referral_id) is None:
+            return None
+        cursor = self._conn.execute(
+            f"UPDATE referral_responses SET {field} = NULL, updated_at = datetime('now') "
+            f"WHERE id = ? AND referral_id = ?",
+            (response_id, referral_id),
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM referral_responses WHERE id = ?", (response_id,)
+        ).fetchone()
+        return _row_to_referral_response(row) if row else None
+
     # --- Insurance plans (scope-owned) ---
 
     def create_insurance_plan(

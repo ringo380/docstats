@@ -1,5 +1,5 @@
 {# List of prior responses on a referral (Phase 7.A).
-   Variables: responses (list[ReferralResponse]), referral.id. #}
+   Variables: responses (list[ReferralResponse]), referral.id, received_via_values. #}
 {% if responses %}
   <ul class="response-list">
     {% for r in responses %}
@@ -19,6 +19,54 @@
         {% if r.recommendations_text %}
           <div class="response-recs">{{ r.recommendations_text }}</div>
         {% endif %}
+        <details class="response-edit">
+          <summary class="btn btn-secondary btn-sm">Edit</summary>
+          {# Edit form — partial submission (blank text = leave unchanged).
+             Explicit clears go through the per-field /clear/{field} route. #}
+          <form method="post" action="/referrals/{{ referral.id }}/response/{{ r.id }}" class="response-form">
+            <div class="grid-2">
+              <label>Appointment date
+                <input type="date" name="appointment_date" value="{{ r.appointment_date or '' }}">
+                {% if r.appointment_date %}
+                  <button type="submit" form="clear-resp-{{ r.id }}-appointment_date" class="btn btn-secondary btn-xs" style="margin-top:4px;">Clear</button>
+                {% endif %}
+              </label>
+              <label>Received via
+                <select name="received_via">
+                  {% for v in received_via_values %}
+                    <option value="{{ v }}" {% if r.received_via == v %}selected{% endif %}>{{ v | title }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+            </div>
+            <label>Recommendations / consult notes
+              <textarea name="recommendations_text" rows="3" maxlength="4000">{{ r.recommendations_text or '' }}</textarea>
+              {% if r.recommendations_text %}
+                <button type="submit" form="clear-resp-{{ r.id }}-recommendations_text" class="btn btn-secondary btn-xs" style="margin-top:4px;">Clear</button>
+              {% endif %}
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="consult_completed" value="on" {% if r.consult_completed %}checked{% endif %}>
+              Consult completed (recommendations captured)
+            </label>
+            <div class="action-bar">
+              <button type="submit" class="btn btn-primary btn-sm">Save changes</button>
+            </div>
+          </form>
+          {# Hidden companion forms for per-field Clear buttons. HTML5's
+             form= attribute lets us associate each Clear button with its
+             own POST target without nesting forms. #}
+          {% if r.appointment_date %}
+            <form id="clear-resp-{{ r.id }}-appointment_date" method="post"
+                  action="/referrals/{{ referral.id }}/response/{{ r.id }}/clear/appointment_date"
+                  style="display:none;"></form>
+          {% endif %}
+          {% if r.recommendations_text %}
+            <form id="clear-resp-{{ r.id }}-recommendations_text" method="post"
+                  action="/referrals/{{ referral.id }}/response/{{ r.id }}/clear/recommendations_text"
+                  style="display:none;"></form>
+          {% endif %}
+        </details>
         <button type="button"
                 hx-delete="/referrals/{{ referral.id }}/response/{{ r.id }}"
                 hx-confirm="Delete this response? The parent referral is untouched."
