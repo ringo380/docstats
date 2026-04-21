@@ -171,9 +171,15 @@ def test_admin_overview_renders_counts(storage: Storage) -> None:
         # Active members = 2.
         assert "North Clinic" in body
         assert ">2<" in body  # member count rendered inside the stat-value div
-        # Sidebar should highlight Overview and show "Coming soon" for others.
+        # Sidebar should highlight Overview and link to sibling sections.
         assert 'class="admin-nav-link active"' in body or "admin-nav-link active" in body
-        assert "Coming soon" in body
+        # All Phase 6 sidebar entries should be reachable now (6.A–6.F
+        # all shipped); none rendered as ``.disabled``.
+        assert 'href="/admin/members"' in body
+        assert 'href="/admin/specialty-rules"' in body
+        assert 'href="/admin/payer-rules"' in body
+        assert 'href="/admin/org-settings"' in body
+        assert 'href="/admin/audit"' in body
     finally:
         _cleanup()
 

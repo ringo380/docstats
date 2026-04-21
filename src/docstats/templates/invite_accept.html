@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Invitation — referme.help{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width:520px; margin:3rem auto;">
+  <div class="card">
+    <h1>Invitation to {{ org_name }}</h1>
+    <p class="muted sub">
+      You've been invited to join <strong>{{ org_name }}</strong> as
+      <strong>{{ invitation.role | replace('_', ' ') | title }}</strong>.
+    </p>
+
+    {% if errors %}
+      <div class="alert alert-error" style="margin-top:12px;">
+        <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+      </div>
+    {% endif %}
+
+    {% if status == 'expired' %}
+      <div class="alert alert-error">This invitation expired on {{ invitation.expires_at.strftime('%Y-%m-%d %H:%M') }} UTC. Ask your org admin to issue a new one.</div>
+    {% elif status == 'revoked' %}
+      <div class="alert alert-error">This invitation was revoked. Ask your org admin to issue a new one.</div>
+    {% elif status == 'accepted' %}
+      <div class="alert alert-success">This invitation was already accepted. <a href="/admin">Go to your admin console</a> or <a href="/referrals">referrals workspace</a>.</div>
+    {% elif user is none %}
+      <p>Sign in or create an account as <code>{{ invitation.email }}</code> to accept.</p>
+      <div class="action-bar" style="margin-top:14px; display:flex; gap:10px;">
+        <a href="/auth/login?next=/invite/{{ invitation.token | urlencode }}" class="btn btn-primary">Log in</a>
+        <a href="/auth/signup?next=/invite/{{ invitation.token | urlencode }}" class="btn btn-secondary">Create account</a>
+      </div>
+    {% elif not email_matches %}
+      <div class="alert alert-error">
+        This invitation was sent to <code>{{ invitation.email }}</code>, but you're signed in as
+        <code>{{ user.email }}</code>. <a href="/auth/logout?next=/invite/{{ invitation.token | urlencode }}">Sign out</a>
+        and log in as the invited user to accept.
+      </div>
+    {% else %}
+      <form method="post" action="/invite/{{ invitation.token | urlencode }}/accept" style="margin-top:12px;">
+        <button type="submit" class="btn btn-primary">Accept invitation</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -22,6 +22,7 @@ from docstats.domain.imports import (
     CsvImport,
     CsvImportRow,
 )
+from docstats.domain.invitations import Invitation
 from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.patients import Patient
 from docstats.domain.reference import (
@@ -395,6 +396,25 @@ def _row_to_payer_rule(row: dict) -> PayerRule:
         version_id=int(row["version_id"]),
         created_at=created,
         updated_at=updated,
+    )
+
+
+def _row_to_invitation(row: dict) -> Invitation:
+    """Convert a Supabase organization_invitations row into an Invitation."""
+    created = _parse_ts(row.get("created_at"))
+    expires = _parse_ts(row.get("expires_at"))
+    assert created is not None and expires is not None
+    return Invitation(
+        id=row["id"],
+        organization_id=row["organization_id"],
+        email=row["email"],
+        role=row["role"],
+        token=row["token"],
+        invited_by_user_id=row.get("invited_by_user_id"),
+        expires_at=expires,
+        accepted_at=_parse_ts(row.get("accepted_at")),
+        revoked_at=_parse_ts(row.get("revoked_at")),
+        created_at=created,
     )
 
 
@@ -1126,6 +1146,86 @@ class PostgresStorage(StorageBase):
             .eq("organization_id", organization_id)
             .eq("user_id", user_id)
             .is_("deleted_at", None)
+            .execute()
+        )
+        return bool(result.data)
+
+    # --- Organization invitations (Phase 6.F) ---
+
+    def create_invitation(
+        self,
+        *,
+        organization_id: int,
+        email: str,
+        role: str,
+        token: str,
+        expires_at: datetime,
+        invited_by_user_id: int | None = None,
+    ) -> Invitation:
+        from docstats.storage_base import normalize_email
+
+        row = {
+            "organization_id": organization_id,
+            "email": normalize_email(email),
+            "role": role,
+            "token": token,
+            "invited_by_user_id": invited_by_user_id,
+            "expires_at": _to_pg_iso(expires_at),
+            "created_at": _now_iso(),
+        }
+        result = self._t("organization_invitations").insert(row).execute()
+        return _row_to_invitation(result.data[0])
+
+    def get_invitation_by_token(self, token: str) -> Invitation | None:
+        result = self._t("organization_invitations").select("*").eq("token", token).execute()
+        return _row_to_invitation(result.data[0]) if result.data else None
+
+    def get_invitation(self, invitation_id: int) -> Invitation | None:
+        result = self._t("organization_invitations").select("*").eq("id", invitation_id).execute()
+        return _row_to_invitation(result.data[0]) if result.data else None
+
+    def list_invitations_for_org(
+        self,
+        organization_id: int,
+        *,
+        include_accepted: bool = False,
+        include_revoked: bool = False,
+        include_expired: bool = False,
+    ) -> list[Invitation]:
+        query = (
+            self._t("organization_invitations").select("*").eq("organization_id", organization_id)
+        )
+        if not include_accepted:
+            query = query.is_("accepted_at", None)
+        if not include_revoked:
+            query = query.is_("revoked_at", None)
+        if not include_expired:
+            query = query.gt("expires_at", _now_iso())
+        result = query.order("created_at", desc=True).order("id", desc=True).execute()
+        return [_row_to_invitation(r) for r in result.data]
+
+    def revoke_invitation(self, invitation_id: int) -> bool:
+        # Only update rows that are still in a revokable state —
+        # mirrors the SQLite guard. supabase-py's ``.is_()`` with None
+        # filters WHERE col IS NULL.
+        result = (
+            self._t("organization_invitations")
+            .update({"revoked_at": _now_iso()})
+            .eq("id", invitation_id)
+            .is_("accepted_at", None)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        return bool(result.data)
+
+    def mark_invitation_accepted(self, invitation_id: int) -> bool:
+        result = (
+            self._t("organization_invitations")
+            .update({"accepted_at": _now_iso()})
+            .eq("id", invitation_id)
+            .is_("accepted_at", None)
+            .is_("revoked_at", None)
+            .gt("expires_at", _now_iso())
             .execute()
         )
         return bool(result.data)

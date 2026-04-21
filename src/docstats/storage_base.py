@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from datetime import datetime  # forward-ref for list_audit_events kwargs
 
     from docstats.domain.audit import AuditEvent
+    from docstats.domain.invitations import Invitation
     from docstats.domain.orgs import Membership, Organization
     from docstats.domain.patients import Patient
     from docstats.domain.imports import CsvImport, CsvImportRow
@@ -214,6 +215,84 @@ class StorageBase(ABC):
 
     @abstractmethod
     def soft_delete_membership(self, organization_id: int, user_id: int) -> bool: ...
+
+    # --- Organization invitations (Phase 6.F) ---
+
+    @abstractmethod
+    def create_invitation(
+        self,
+        *,
+        organization_id: int,
+        email: str,
+        role: str,
+        token: str,
+        expires_at: "datetime",
+        invited_by_user_id: int | None = None,
+    ) -> "Invitation":
+        """Insert a new invitation row and return it. The caller is
+        responsible for generating the ``token`` (via
+        :func:`docstats.domain.invitations.generate_token`) and
+        ``expires_at`` (via
+        :func:`docstats.domain.invitations.compute_expires_at`); both are
+        passed in so the route layer can log an audit event referencing
+        the token value it just created without a second read.
+
+        Email is stored normalized (lowercased + stripped) — callers
+        should pass the user's submitted value; the storage layer
+        normalizes at the boundary. Role is NOT validated here;
+        callers must validate via
+        :func:`docstats.domain.invitations.validate_role` first.
+        """
+        ...
+
+    @abstractmethod
+    def get_invitation_by_token(self, token: str) -> "Invitation | None":
+        """Look up an invitation by its secret token. Returns ``None`` if
+        no row matches — the invitation may have been revoked (row still
+        exists but ``revoked_at`` set), expired, already accepted, or
+        never existed; callers use :meth:`Invitation.is_pending` to
+        distinguish."""
+        ...
+
+    @abstractmethod
+    def get_invitation(self, invitation_id: int) -> "Invitation | None":
+        """Look up an invitation by its primary key."""
+        ...
+
+    @abstractmethod
+    def list_invitations_for_org(
+        self,
+        organization_id: int,
+        *,
+        include_accepted: bool = False,
+        include_revoked: bool = False,
+        include_expired: bool = False,
+    ) -> list["Invitation"]:
+        """Return invitations for an org, newest first.
+
+        By default returns only pending invitations — those that are
+        neither accepted nor revoked nor expired. Pass the corresponding
+        flag to include each non-pending class (useful for an "all
+        invitations" admin view).
+        """
+        ...
+
+    @abstractmethod
+    def revoke_invitation(self, invitation_id: int) -> bool:
+        """Set ``revoked_at`` to now. Returns True if the row was in a
+        revokable state (pending) before the update, False otherwise
+        (already accepted, already revoked, or missing). Idempotent: a
+        second revoke on an already-revoked row returns False without
+        changing the timestamp."""
+        ...
+
+    @abstractmethod
+    def mark_invitation_accepted(self, invitation_id: int) -> bool:
+        """Set ``accepted_at`` to now. Returns True if the row was in a
+        pending state, False otherwise. Must be called in the same
+        transaction/flow as :meth:`create_membership` so a token can't be
+        re-used between the membership insert and the accept write."""
+        ...
 
     # --- Provider CRUD ---
 

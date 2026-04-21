@@ -9,10 +9,14 @@ Role-gated org administration. Every route here requires:
 Solo users and sub-admin org members get a 403. The route body never executes
 for them — the dependency raises before the handler runs.
 
-This file ships Phase 6.A (foundation + ``GET /admin`` overview), Phase
-6.B (specialty-rules editor), Phase 6.C (payer-rules editor), Phase 6.D
-(org settings), and Phase 6.E (audit log viewer). The last remaining
-slice is 6.F (members + invitations).
+This file ships all six Phase 6 admin surfaces:
+
+- 6.A: foundation + ``GET /admin`` overview
+- 6.B: specialty-rules editor
+- 6.C: payer-rules editor
+- 6.D: org settings
+- 6.E: audit log viewer
+- 6.F: members + invitations
 """
 
 from __future__ import annotations
@@ -27,14 +31,20 @@ from fastapi.responses import HTMLResponse, Response
 
 from docstats.auth import require_user
 from docstats.domain.audit import record as audit_record
-from docstats.domain.orgs import Organization, has_role_at_least
+from docstats.domain.invitations import (
+    DEFAULT_INVITATION_TTL_SECONDS,
+    compute_expires_at,
+    generate_token,
+    validate_role,
+)
+from docstats.domain.orgs import ROLES, Organization, has_role_at_least
 from docstats.domain.reference import PayerRule, SpecialtyRule
 from docstats.domain.rules import REQUIRED_FIELD_CHECKS
 from docstats.routes._common import US_STATES, get_scope, render, saved_count
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
-from docstats.validators import ValidationError, validate_npi
+from docstats.validators import EMAIL_MAX_LENGTH, ValidationError, validate_email, validate_npi
 
 logger = logging.getLogger(__name__)
 
@@ -1329,3 +1339,405 @@ async def audit_log(
             prev_offset=prev_offset,
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Members + invitations (Phase 6.F)
+#
+# Member management: list active memberships, change role, remove
+# (soft-delete). Guards: an org must always have at least one active
+# owner; callers can't remove themselves if they're the sole admin
+# (otherwise they'd lose access without a path to fix it).
+#
+# Invitations: admins generate a magic link for a specific email+role.
+# Phase 9 wires email delivery; until then the create response shows
+# the URL for copy-paste. Redemption flow lives in ``routes/invite.py``
+# because it's PUBLIC (pre-login for new users) — not admin-gated like
+# everything else in this file.
+#
+# Audit actions:
+#   - admin.member.invite
+#   - admin.member.invitation_revoke
+#   - admin.member.role_change
+#   - admin.member.remove
+#   - admin.member.joined (emitted by the redemption route)
+# ---------------------------------------------------------------------------
+
+
+def _count_active_members_with_role(storage: StorageBase, organization_id: int, role: str) -> int:
+    """Count active memberships at a given role in the org."""
+    return sum(
+        1
+        for m in storage.list_memberships_for_org(organization_id)
+        if m.is_active and m.role == role
+    )
+
+
+def _members_page_context(
+    request: Request,
+    current_user: dict,
+    storage: StorageBase,
+    scope: Scope,
+    org: Organization,
+    *,
+    flash: str | None = None,
+    flash_error: str | None = None,
+    magic_link: str | None = None,
+) -> dict:
+    """Build the full ctx for the /admin/members page.
+
+    Centralized so the invite-success path (which shows a copyable
+    magic link) shares the exact render path with plain GETs.
+    """
+    memberships = [
+        m
+        for m in storage.list_memberships_for_org(scope.organization_id)  # type: ignore[arg-type]
+        if m.is_active
+    ]
+    # Attach user display info for each membership.
+    member_rows = []
+    for m in memberships:
+        user = storage.get_user_by_id(m.user_id)
+        member_rows.append(
+            {
+                "membership": m,
+                "email": (user.get("email") if user else f"user#{m.user_id}"),
+                "display_name": (user.get("display_name") if user else None) if user else None,
+                "is_self": m.user_id == current_user["id"],
+            }
+        )
+    invitations = storage.list_invitations_for_org(scope.organization_id)  # type: ignore[arg-type]
+    return _ctx(
+        request,
+        current_user,
+        storage,
+        scope,
+        org,
+        active_section="members",
+        member_rows=member_rows,
+        invitations=invitations,
+        roles=ROLES,
+        flash=flash,
+        flash_error=flash_error,
+        magic_link=magic_link,
+    )
+
+
+@router.get("/members", response_class=HTMLResponse)
+async def members_list(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """List active memberships + pending invitations."""
+    org = _require_org(scope, storage)
+    return render(
+        "admin/members.html",
+        _members_page_context(request, current_user, storage, scope, org),
+    )
+
+
+def _invite_link_for(request: Request, token: str) -> str:
+    """Build an absolute URL for the redemption page."""
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/invite/{token}"
+
+
+@router.post("/members/invite", response_class=HTMLResponse)
+async def members_invite(
+    request: Request,
+    email: str = Form(..., max_length=EMAIL_MAX_LENGTH),
+    role: str = Form(..., max_length=32),
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Create a pending invitation and render the magic link."""
+    org = _require_org(scope, storage)
+
+    errors: list[str] = []
+    try:
+        email_clean = validate_email(email)
+    except ValidationError as e:
+        errors.append(str(e))
+        email_clean = email.strip()
+
+    try:
+        role_clean = validate_role(role)
+    except ValueError as e:
+        errors.append(str(e))
+        role_clean = ""
+
+    # Guard: can't invite a user who's already an active member. Check by
+    # email lookup; if the user doesn't exist yet, no membership can
+    # exist either.
+    if not errors:
+        existing_user = storage.get_user_by_email(email_clean)
+        if existing_user is not None:
+            existing_membership = storage.get_membership(
+                scope.organization_id,  # type: ignore[arg-type]
+                existing_user["id"],
+            )
+            if existing_membership is not None and existing_membership.is_active:
+                errors.append(f"{email_clean} is already an active member of this org.")
+
+    if errors:
+        return render(
+            "admin/members.html",
+            _members_page_context(
+                request,
+                current_user,
+                storage,
+                scope,
+                org,
+                flash_error=" ".join(errors),
+            ),
+        )
+
+    token = generate_token()
+    try:
+        invitation = storage.create_invitation(
+            organization_id=scope.organization_id,  # type: ignore[arg-type]
+            email=email_clean,
+            role=role_clean,
+            token=token,
+            expires_at=compute_expires_at(DEFAULT_INVITATION_TTL_SECONDS),
+            invited_by_user_id=current_user["id"],
+        )
+    except Exception:
+        # Most likely cause: the partial unique index on
+        # ``(organization_id, email) WHERE pending`` fired because a
+        # pending invite already exists. Surface a friendly message
+        # rather than a 500.
+        return render(
+            "admin/members.html",
+            _members_page_context(
+                request,
+                current_user,
+                storage,
+                scope,
+                org,
+                flash_error=(
+                    f"A pending invitation already exists for {email_clean}. "
+                    "Revoke it first if you want to reissue."
+                ),
+            ),
+        )
+
+    audit_record(
+        storage,
+        action="admin.member.invite",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_organization_id=scope.organization_id,
+        entity_type="invitation",
+        entity_id=str(invitation.id),
+        metadata={"email": email_clean, "role": role_clean},
+    )
+    return render(
+        "admin/members.html",
+        _members_page_context(
+            request,
+            current_user,
+            storage,
+            scope,
+            org,
+            flash=(
+                f"Invitation created for {email_clean} ({role_clean}). "
+                "Copy the link below and send it to them."
+            ),
+            magic_link=_invite_link_for(request, token),
+        ),
+    )
+
+
+@router.post("/members/invitations/{invitation_id}/revoke", response_class=HTMLResponse)
+async def members_invitation_revoke(
+    request: Request,
+    invitation_id: int = Path(..., ge=1),
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Revoke a pending invitation."""
+    _require_org(scope, storage)
+    invitation = storage.get_invitation(invitation_id)
+    if invitation is None or invitation.organization_id != scope.organization_id:
+        # Cross-tenant or missing — 404 without leaking which.
+        raise HTTPException(status_code=404, detail="Invitation not found.")
+    storage.revoke_invitation(invitation_id)
+    # Log regardless of whether the storage write changed state —
+    # idempotent revoke attempts are still worth recording as actor
+    # intent.
+    audit_record(
+        storage,
+        action="admin.member.invitation_revoke",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_organization_id=scope.organization_id,
+        entity_type="invitation",
+        entity_id=str(invitation_id),
+    )
+    return _redirect_after_save(request, "/admin/members")
+
+
+@router.post("/members/{user_id}/role", response_class=HTMLResponse)
+async def members_role_change(
+    request: Request,
+    user_id: int = Path(..., ge=1),
+    role: str = Form(..., max_length=32),
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Change a member's role. Guards: last-owner protection."""
+    org = _require_org(scope, storage)
+    # require_admin_scope guarantees is_org, so organization_id is not None.
+    assert scope.organization_id is not None
+    org_id: int = scope.organization_id
+
+    try:
+        new_role = validate_role(role)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    membership = storage.get_membership(org_id, user_id)
+    if membership is None or not membership.is_active:
+        raise HTTPException(status_code=404, detail="Membership not found.")
+
+    if new_role == membership.role:
+        # No-op. Skip audit for a non-change.
+        return _redirect_after_save(request, "/admin/members")
+
+    # Guard: demoting the sole active owner would orphan the org.
+    if membership.role == "owner" and new_role != "owner":
+        owner_count = _count_active_members_with_role(storage, org_id, "owner")
+        if owner_count <= 1:
+            return render(
+                "admin/members.html",
+                _members_page_context(
+                    request,
+                    current_user,
+                    storage,
+                    scope,
+                    org,
+                    flash_error=(
+                        "Can't demote the sole owner. Promote another member to owner first."
+                    ),
+                ),
+            )
+
+    # Guard: admins can't demote themselves below admin unless another
+    # admin/owner exists (otherwise they lose their own console access).
+    if user_id == current_user["id"] and not has_role_at_least(new_role, "admin"):
+        higher_count = sum(
+            1
+            for m in storage.list_memberships_for_org(org_id)
+            if m.is_active and m.user_id != user_id and has_role_at_least(m.role, "admin")
+        )
+        if higher_count == 0:
+            return render(
+                "admin/members.html",
+                _members_page_context(
+                    request,
+                    current_user,
+                    storage,
+                    scope,
+                    org,
+                    flash_error=(
+                        "Can't demote yourself below admin while you're the "
+                        "only admin/owner. Promote someone else first."
+                    ),
+                ),
+            )
+
+    ok = storage.update_membership_role(org_id, user_id, new_role)
+    if not ok:
+        # TOCTOU: membership vanished between guard and write.
+        raise HTTPException(status_code=404, detail="Membership not found.")
+    audit_record(
+        storage,
+        action="admin.member.role_change",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_organization_id=scope.organization_id,
+        entity_type="membership",
+        entity_id=str(user_id),
+        metadata={"from": membership.role, "to": new_role},
+    )
+    return _redirect_after_save(request, "/admin/members")
+
+
+@router.post("/members/{user_id}/remove", response_class=HTMLResponse)
+async def members_remove(
+    request: Request,
+    user_id: int = Path(..., ge=1),
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Soft-delete a member. Guards: last-owner, last-admin."""
+    org = _require_org(scope, storage)
+    assert scope.organization_id is not None
+    org_id: int = scope.organization_id
+    membership = storage.get_membership(org_id, user_id)
+    if membership is None or not membership.is_active:
+        raise HTTPException(status_code=404, detail="Membership not found.")
+
+    # Guard: removing the sole owner orphans the org.
+    if membership.role == "owner":
+        owner_count = _count_active_members_with_role(storage, org_id, "owner")
+        if owner_count <= 1:
+            return render(
+                "admin/members.html",
+                _members_page_context(
+                    request,
+                    current_user,
+                    storage,
+                    scope,
+                    org,
+                    flash_error=(
+                        "Can't remove the sole owner. Promote another member to owner first."
+                    ),
+                ),
+            )
+
+    # Guard: admin removing themselves when they're the sole admin+
+    # member — they'd lose console access.
+    if user_id == current_user["id"]:
+        higher_count = sum(
+            1
+            for m in storage.list_memberships_for_org(org_id)
+            if m.is_active and m.user_id != user_id and has_role_at_least(m.role, "admin")
+        )
+        if higher_count == 0:
+            return render(
+                "admin/members.html",
+                _members_page_context(
+                    request,
+                    current_user,
+                    storage,
+                    scope,
+                    org,
+                    flash_error=(
+                        "Can't remove yourself while you're the only "
+                        "admin/owner. Promote someone else first."
+                    ),
+                ),
+            )
+
+    ok = storage.soft_delete_membership(org_id, user_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Membership not found.")
+    audit_record(
+        storage,
+        action="admin.member.remove",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_organization_id=scope.organization_id,
+        entity_type="membership",
+        entity_id=str(user_id),
+        metadata={"role": membership.role},
+    )
+    return _redirect_after_save(request, "/admin/members")
