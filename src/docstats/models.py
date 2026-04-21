@@ -12,7 +12,13 @@ from docstats.normalize import format_credential, format_name, format_phone, for
 
 
 class UserRecord(TypedDict, total=False):
-    """Shape of user dicts returned by storage backends."""
+    """Shape of user dicts returned by storage backends.
+
+    All keys are optional (``total=False``) because different call paths
+    (session lookup, GitHub OAuth, CLI stub) populate different subsets.
+    Most keys map 1:1 to ``users`` table columns; ``is_org_admin`` is the
+    one exception — see the note on that field.
+    """
 
     id: int
     email: str
@@ -37,6 +43,11 @@ class UserRecord(TypedDict, total=False):
     role_hint: str | None
     created_at: str
     last_login_at: str | None
+    # Computed by ``auth.get_current_user`` (NOT a users column): True when
+    # the caller has an active_org_id AND has_role_at_least(membership.role,
+    # "admin") for that org. Declared here so templates (base.html nav) can
+    # type-check ``user.is_org_admin`` against the canonical shape.
+    is_org_admin: bool
 
 
 class Address(BaseModel):
