@@ -186,14 +186,17 @@
       {% include "_referral_completeness.html" %}
     </div>
 
-    <section class="card">
+    <section class="card" id="timeline">
       <h3>Timeline</h3>
       {% if events %}
         <ol class="event-log">
           {% for e in events %}
-            <li>
+            <li class="event-{{ e.event_type }}">
               <span class="event-type">{{ e.event_type | replace('_', ' ') | title }}</span>
-              {% if e.from_value or e.to_value %}
+              {% if e.event_type == 'note_added' and e.note %}
+                {# Phase 7.B: note_added events carry the comment body in note. #}
+                <div class="event-note-body">{{ e.note }}</div>
+              {% elif e.from_value or e.to_value %}
                 <div class="sub">
                   {% if e.event_type == 'field_edited' %}
                     {# Phase 2.D invariant: note = field name, from_value = OLD, to_value = NEW. #}
@@ -207,13 +210,32 @@
               {% elif e.note %}
                 <div class="sub">{{ e.note }}</div>
               {% endif %}
-              <div class="sub">{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+              <div class="sub event-meta">
+                {% if e.actor_user_id and actors_by_id.get(e.actor_user_id) %}
+                  <span class="event-actor">{{ actors_by_id[e.actor_user_id] }}</span> ·
+                {% endif %}
+                {{ e.created_at.strftime('%Y-%m-%d %H:%M') }}
+              </div>
             </li>
           {% endfor %}
         </ol>
       {% else %}
         <p class="sub">No events yet.</p>
       {% endif %}
+
+      {# Phase 7.B: comment form writes a note_added event. #}
+      <form method="post" action="/referrals/{{ referral.id }}/notes" class="note-form">
+        {% if note_error %}
+          <div class="alert alert-error"><ul><li>{{ note_error }}</li></ul></div>
+        {% endif %}
+        <label>Add a comment
+          <textarea name="note" rows="2" maxlength="4000"
+                    placeholder="Add a note for the team…">{{ note_value }}</textarea>
+        </label>
+        <div class="action-bar">
+          <button type="submit" class="btn btn-primary btn-sm">Post comment</button>
+        </div>
+      </form>
     </section>
   </aside>
 </div>

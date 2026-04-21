@@ -955,6 +955,20 @@ dl.kv dd { color: var(--text); margin: 0; }
 .event-log li:last-child { border-bottom: none; }
 .event-log .event-type { font-weight: 600; color: var(--text); }
 .event-log .sub { font-size: 0.75rem; color: var(--text-muted); }
+.event-log .event-actor { color: var(--text); font-weight: 500; }
+.event-log .event-meta { margin-top: 2px; }
+.event-log li.event-note_added { padding: 8px 10px; background: rgba(66, 153, 225, 0.06); border-left: 3px solid var(--blue); border-bottom: 1px solid var(--border); border-radius: 0 4px 4px 0; }
+.event-note-body { white-space: pre-wrap; margin: 4px 0 4px; color: var(--text); font-size: 0.88rem; }
+.note-form {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.note-form textarea { font-size: 0.85rem; }
+.note-form .action-bar { justify-content: flex-end; }
 
 /* ── Closed-loop responses (Phase 7.A) ───────────────────────────────── */
 .response-list { list-style: none; padding: 0; margin: 0 0 10px; }
