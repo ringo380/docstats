@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import cast
 
-from fastapi import Depends, Response
+from fastapi import Depends, Request, Response
 from fastapi.templating import Jinja2Templates
 
 from docstats.auth import get_current_user
@@ -90,10 +91,10 @@ def get_client() -> NPPESClient:
     return _client
 
 
-def _storage_for_request(request) -> StorageBase:
+def _storage_for_request(request: Request) -> StorageBase:
     override = getattr(request.app, "dependency_overrides", {}).get(get_storage)
     if override is not None:
-        return override()
+        return cast(StorageBase, override())
     return get_storage()
 
 
