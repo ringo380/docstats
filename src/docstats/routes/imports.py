@@ -24,7 +24,7 @@ import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Request, UploadFile
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from docstats.domain.audit import record as audit_record
 from docstats.domain.imports import (
@@ -37,7 +37,7 @@ from docstats.domain.imports import (
 )
 from docstats.domain.imports_validate import validate_row
 from docstats.phi import require_phi_consent
-from docstats.routes._common import get_scope, render, saved_count
+from docstats.routes._common import get_scope, redirect_htmx, render, saved_count
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
@@ -333,9 +333,7 @@ async def import_create(
     )
 
     dest = f"/imports/{csv_import.id}/map"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 def _sorted_headers(rows: list) -> list[str]:
@@ -497,9 +495,7 @@ async def import_map_save(
     )
 
     dest = f"/imports/{import_id}/review"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 # --- Validation + review (Phase 4.C) ---
@@ -594,9 +590,7 @@ async def import_validate(
         metadata=counts,
     )
     dest = f"/imports/{import_id}/review"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 @router.get("/{import_id}/review", response_class=HTMLResponse)
@@ -698,9 +692,7 @@ async def import_row_edit(
         metadata={"new_status": new_status, "error_count": len(errors)},
     )
     dest = f"/imports/{import_id}/review"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 # --- Commit + summary (Phase 4.D) ---
@@ -903,9 +895,7 @@ async def import_commit(
         },
     )
     dest = f"/imports/{import_id}/summary"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 @router.get("/{import_id}/summary", response_class=HTMLResponse)

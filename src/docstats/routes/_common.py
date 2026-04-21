@@ -144,6 +144,17 @@ def _inject_nav_context(context: dict) -> None:
         context["assigned_open_count"] = assigned_open_count(storage, scope, user_id)
 
 
+def redirect_htmx(request: Request, dest: str) -> Response:
+    """Return an ``HX-Redirect`` (200) for htmx callers, else a 303 redirect.
+
+    htmx doesn't follow 3xx redirects, so every mutating handler's exit
+    path should use this helper rather than inlining the conditional.
+    """
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": dest})
+    return Response(status_code=303, headers={"Location": dest})
+
+
 def render(name: str, context: dict) -> Response:
     """Render a template, compatible with Starlette 0.50+."""
     _inject_nav_context(context)
