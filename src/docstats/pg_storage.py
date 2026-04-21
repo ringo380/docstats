@@ -1657,6 +1657,27 @@ class PostgresStorage(StorageBase):
         )
         return [_row_to_referral(r) for r in result.data]
 
+    def count_referrals(
+        self,
+        scope: Scope,
+        *,
+        assigned_to_user_id: int | None = None,
+        statuses: tuple[str, ...] | None = None,
+        include_deleted: bool = False,
+    ) -> int:
+        if statuses is not None and not statuses:
+            return 0
+        query = self._t("referrals").select("id", count="exact", head=True)
+        query = self._apply_scope(query, scope)
+        if not include_deleted:
+            query = query.is_("deleted_at", None)
+        if assigned_to_user_id is not None:
+            query = query.eq("assigned_to_user_id", assigned_to_user_id)
+        if statuses is not None:
+            query = query.in_("status", statuses)
+        result = query.execute()
+        return int(result.count or 0)
+
     def update_referral(
         self,
         scope: Scope,

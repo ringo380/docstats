@@ -90,8 +90,62 @@ def get_client() -> NPPESClient:
     return _client
 
 
+def _storage_for_request(request) -> StorageBase:
+    override = getattr(request.app, "dependency_overrides", {}).get(get_storage)
+    if override is not None:
+        return override()
+    return get_storage()
+
+
+def _nav_scope_for_user(storage: StorageBase, user: dict) -> Scope:
+    user_id = user["id"]
+    active_org_id = user.get("active_org_id")
+    if active_org_id is not None:
+        try:
+            membership = storage.get_membership(active_org_id, user_id)
+        except Exception:
+            logger.exception("Nav membership lookup failed user_id=%s", user_id)
+        else:
+            if membership is not None and membership.is_active:
+                return Scope(
+                    user_id=user_id,
+                    organization_id=active_org_id,
+                    membership_role=membership.role,
+                )
+    return Scope(user_id=user_id)
+
+
+def _inject_nav_context(context: dict) -> None:
+    user = context.get("user")
+    if not user:
+        context.setdefault("saved_count", 0)
+        context.setdefault("assigned_open_count", 0)
+        return
+
+    needs_saved = "saved_count" not in context
+    needs_assigned = "assigned_open_count" not in context
+    if not needs_saved and not needs_assigned:
+        return
+
+    try:
+        storage = context.get("storage") or _storage_for_request(context["request"])
+    except Exception:
+        logger.exception("Failed to load storage for shared nav context")
+        context.setdefault("saved_count", 0)
+        context.setdefault("assigned_open_count", 0)
+        return
+
+    user_id = user.get("id")
+    if needs_saved:
+        context["saved_count"] = saved_count(storage, user_id)
+    if needs_assigned:
+        scope = context.get("scope") or _nav_scope_for_user(storage, user)
+        context["assigned_open_count"] = assigned_open_count(storage, scope, user_id)
+
+
 def render(name: str, context: dict) -> Response:
     """Render a template, compatible with Starlette 0.50+."""
+    _inject_nav_context(context)
     request = context["request"]
     return templates.TemplateResponse(request, name, context)
 
@@ -103,23 +157,45 @@ def saved_count(storage: StorageBase, user_id: int | None) -> int:
 
 
 def assigned_open_count(
-    storage: StorageBase, scope: Scope, user_id: int | None, *, cap: int = 200
+    storage: StorageBase, scope: Scope, user_id: int | None, *, cap: int | None = None
 ) -> int:
     """Count of non-terminal referrals assigned to ``user_id`` in ``scope``.
 
     Powers the Referrals nav badge (Phase 7.C). Anonymous scope / missing
-    user_id returns 0. Fetches up to ``cap`` rows and filters in Python;
-    the badge shows "200+" when the real count exceeds 200, so the helper
-    protects pages from pathological list sizes without a dedicated
-    count-only storage method.
+    user_id returns 0. Uses a storage count query filtered to non-terminal
+    statuses before counting, so recently completed referrals cannot hide
+    older open work. ``cap`` is retained for older callers and intentionally
+    ignored because the nav needs the real open count.
     """
+    _ = cap
     if user_id is None or scope.is_anonymous:
         return 0
     # Import locally to keep _common.py free of domain cycles.
-    from docstats.domain.referrals import TERMINAL_STATUSES
+    from docstats.domain.referrals import STATUS_VALUES, TERMINAL_STATUSES
 
-    referrals = storage.list_referrals(scope, assigned_to_user_id=user_id, limit=cap)
-    return sum(1 for r in referrals if r.status not in TERMINAL_STATUSES)
+    open_statuses = tuple(s for s in STATUS_VALUES if s not in TERMINAL_STATUSES)
+    return storage.count_referrals(scope, assigned_to_user_id=user_id, statuses=open_statuses)
+
+
+def resolve_assignee_filter(
+    assignee: str | None,
+    assigned_to_user_id: int | None,
+    current_user_id: int,
+) -> tuple[int | None, str | None]:
+    """Resolve workspace/export assignee shorthand to an effective user id.
+
+    ``assignee=me`` resolves to the caller. A numeric ``assignee`` resolves
+    to that user id and takes precedence over the legacy
+    ``assigned_to_user_id`` query parameter. Unknown aliases are ignored so
+    bad bookmarks fall back to the explicit numeric filter.
+    """
+    assignee_clean = assignee.strip() if assignee is not None else None
+    assignee_clean = assignee_clean or None
+    if assignee_clean == "me":
+        return current_user_id, assignee_clean
+    if assignee_clean and assignee_clean.isdigit():
+        return int(assignee_clean), assignee_clean
+    return assigned_to_user_id, assignee_clean
 
 
 def get_scope(

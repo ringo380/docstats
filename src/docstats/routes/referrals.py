@@ -35,7 +35,13 @@ from docstats.domain.rules import (
     rules_based_completeness,
 )
 from docstats.phi import require_phi_consent
-from docstats.routes._common import assigned_open_count, get_scope, render, saved_count
+from docstats.routes._common import (
+    assigned_open_count,
+    get_scope,
+    render,
+    resolve_assignee_filter,
+    saved_count,
+)
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
@@ -106,13 +112,11 @@ async def referrals_workspace(
 
     # Resolve assignee shorthand. ``assignee`` takes precedence over the
     # legacy numeric param when both are supplied.
-    assignee_clean = _clean(assignee)
-    if assignee_clean == "me":
-        effective_assigned = current_user["id"]
-    elif assignee_clean and assignee_clean.isdigit():
-        effective_assigned = int(assignee_clean)
-    else:
-        effective_assigned = assigned_to_user_id
+    effective_assigned, assignee_clean = resolve_assignee_filter(
+        assignee,
+        assigned_to_user_id,
+        current_user["id"],
+    )
 
     referrals = storage.list_referrals(
         scope,
@@ -430,6 +434,10 @@ def _render_detail(
         if referral.assigned_to_user_id is not None
         else None
     )
+    if referral.assigned_to_user_id is not None and referral.assigned_to_user_id not in {
+        uid for uid, _ in assignable
+    }:
+        assignable.append((referral.assigned_to_user_id, f"{assigned_display} (off-team)"))
 
     return render(
         "referral_detail.html",

@@ -555,6 +555,16 @@ class StorageBase(ABC):
     ) -> list["Referral"]: ...
 
     @abstractmethod
+    def count_referrals(
+        self,
+        scope: "Scope",
+        *,
+        assigned_to_user_id: int | None = None,
+        statuses: tuple[str, ...] | None = None,
+        include_deleted: bool = False,
+    ) -> int: ...
+
+    @abstractmethod
     def update_referral(
         self,
         scope: "Scope",

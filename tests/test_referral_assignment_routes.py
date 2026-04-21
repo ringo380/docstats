@@ -257,6 +257,27 @@ def test_org_cannot_assign_soft_deleted_member(org_client):
     assert resp.status_code == 422
 
 
+def test_detail_keeps_soft_deleted_current_assignee_selected(org_client):
+    client, storage, owner, member, org_id = org_client
+    scope = Scope(user_id=owner, organization_id=org_id, membership_role="owner")
+    patient = storage.create_patient(
+        scope, first_name="Jane", last_name="Doe", created_by_user_id=owner
+    )
+    referral = storage.create_referral(
+        scope,
+        patient_id=patient.id,
+        reason="Eval",
+        assigned_to_user_id=member,
+        created_by_user_id=owner,
+    )
+    storage.soft_delete_membership(org_id, member)
+
+    resp = client.get(f"/referrals/{referral.id}")
+    assert resp.status_code == 200
+    assert f'<option value="{member}" selected' in resp.text
+    assert "Mia Member (off-team)" in resp.text
+
+
 # --- Workspace filter ---
 
 
@@ -351,6 +372,42 @@ def test_nav_badge_hidden_for_terminal_only(solo_client):
     resp = client.get("/referrals")
     assert resp.status_code == 200
     assert "nav-badge-assigned" not in resp.text
+
+
+def test_nav_badge_counts_open_referrals_before_limit(solo_client):
+    client, storage, user_id = solo_client
+    scope = Scope(user_id=user_id)
+    p = storage.create_patient(scope, first_name="A", last_name="B", created_by_user_id=user_id)
+    open_referral = storage.create_referral(
+        scope, patient_id=p.id, reason="open", created_by_user_id=user_id
+    )
+    storage.update_referral(scope, open_referral.id, assigned_to_user_id=user_id)
+    for i in range(201):
+        referral = storage.create_referral(
+            scope, patient_id=p.id, reason=f"done {i}", created_by_user_id=user_id
+        )
+        storage.update_referral(scope, referral.id, assigned_to_user_id=user_id)
+        storage.set_referral_status(scope, referral.id, "cancelled")
+
+    resp = client.get("/referrals")
+    assert resp.status_code == 200
+    assert "nav-badge-assigned" in resp.text
+    assert ">1<" in resp.text
+
+
+def test_nav_badge_is_available_on_profile_page(solo_client):
+    client, storage, user_id = solo_client
+    scope = Scope(user_id=user_id)
+    p = storage.create_patient(scope, first_name="A", last_name="B", created_by_user_id=user_id)
+    referral = storage.create_referral(
+        scope, patient_id=p.id, reason="assigned", created_by_user_id=user_id
+    )
+    storage.update_referral(scope, referral.id, assigned_to_user_id=user_id)
+
+    resp = client.get("/profile")
+    assert resp.status_code == 200
+    assert "nav-badge-assigned" in resp.text
+    assert ">1<" in resp.text
 
 
 # --- Cross-tenant ---
