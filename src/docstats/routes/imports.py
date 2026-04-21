@@ -37,7 +37,7 @@ from docstats.domain.imports import (
 )
 from docstats.domain.imports_validate import validate_row
 from docstats.phi import require_phi_consent
-from docstats.routes._common import get_scope, render, saved_count
+from docstats.routes._common import get_scope, redirect_htmx, render, saved_count
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
@@ -325,7 +325,7 @@ async def import_create(
         action="import.create",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="csv_import",
         entity_id=str(csv_import.id),
@@ -333,9 +333,7 @@ async def import_create(
     )
 
     dest = f"/imports/{csv_import.id}/map"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 def _sorted_headers(rows: list) -> list[str]:
@@ -460,7 +458,7 @@ async def import_map_save(
         action="import.map",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="csv_import",
         entity_id=str(import_id),
@@ -489,7 +487,7 @@ async def import_map_save(
         action="import.validate",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="csv_import",
         entity_id=str(import_id),
@@ -497,9 +495,7 @@ async def import_map_save(
     )
 
     dest = f"/imports/{import_id}/review"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 # --- Validation + review (Phase 4.C) ---
@@ -587,16 +583,14 @@ async def import_validate(
         action="import.validate",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="csv_import",
         entity_id=str(import_id),
         metadata=counts,
     )
     dest = f"/imports/{import_id}/review"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 @router.get("/{import_id}/review", response_class=HTMLResponse)
@@ -691,16 +685,14 @@ async def import_row_edit(
         action="import.row.edit",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="csv_import_row",
         entity_id=f"{import_id}:{row_id}",
         metadata={"new_status": new_status, "error_count": len(errors)},
     )
     dest = f"/imports/{import_id}/review"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 # --- Commit + summary (Phase 4.D) ---
@@ -892,7 +884,7 @@ async def import_commit(
         action="import.commit",
         request=request,
         actor_user_id=user_id,
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="csv_import",
         entity_id=str(import_id),
@@ -903,9 +895,7 @@ async def import_commit(
         },
     )
     dest = f"/imports/{import_id}/summary"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 @router.get("/{import_id}/summary", response_class=HTMLResponse)

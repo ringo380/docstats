@@ -40,7 +40,7 @@ from docstats.domain.invitations import (
 from docstats.domain.orgs import ROLES, Organization, has_role_at_least
 from docstats.domain.reference import PayerRule, SpecialtyRule
 from docstats.domain.rules import REQUIRED_FIELD_CHECKS
-from docstats.routes._common import US_STATES, get_scope, render, saved_count
+from docstats.routes._common import US_STATES, get_scope, redirect_htmx, render, saved_count
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
@@ -208,19 +208,6 @@ def _split_lines(raw: str | None) -> list[str]:
     if not raw:
         return []
     return [line.strip() for line in raw.splitlines() if line.strip()]
-
-
-def _redirect_after_save(request: Request, dest: str) -> Response:
-    """Return ``HX-Redirect`` (200) for htmx callers, else a 303 redirect.
-
-    CLAUDE.md records that htmx doesn't follow 3xx redirects correctly, so
-    every exit path of a mutating admin handler must go through this helper
-    — ad-hoc ``Response(status_code=303, ...)`` on any branch (including
-    TOCTOU fallbacks) silently breaks htmx-initiated submissions.
-    """
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
 
 
 def _join_lines(items: list[str] | None) -> str:
@@ -588,7 +575,7 @@ async def specialty_rule_save(
         entity_type="specialty_rule",
         entity_id=specialty_code,
     )
-    return _redirect_after_save(request, "/admin/specialty-rules")
+    return redirect_htmx(request, "/admin/specialty-rules")
 
 
 @router.post("/specialty-rules/{specialty_code}/revert", response_class=HTMLResponse)
@@ -608,13 +595,13 @@ async def specialty_rule_revert(
     )
     if override is None:
         # No override to revert — idempotent; just send them back.
-        return _redirect_after_save(request, "/admin/specialty-rules")
+        return redirect_htmx(request, "/admin/specialty-rules")
 
     deleted = storage.delete_specialty_rule(override.id)
     if not deleted:
         # Row vanished between our read and the delete; treat as already
         # reverted. Don't emit an audit event for a no-op.
-        return _redirect_after_save(request, "/admin/specialty-rules")
+        return redirect_htmx(request, "/admin/specialty-rules")
 
     audit_record(
         storage,
@@ -625,7 +612,7 @@ async def specialty_rule_revert(
         entity_type="specialty_rule",
         entity_id=specialty_code,
     )
-    return _redirect_after_save(request, "/admin/specialty-rules")
+    return redirect_htmx(request, "/admin/specialty-rules")
 
 
 # ---------------------------------------------------------------------------
@@ -841,12 +828,12 @@ async def payer_rule_revert(
         payer_key=payer_key,
     )
     if override is None:
-        return _redirect_after_save(request, "/admin/payer-rules")
+        return redirect_htmx(request, "/admin/payer-rules")
 
     deleted = storage.delete_payer_rule(override.id)
     if not deleted:
         # TOCTOU: row vanished; treat as already reverted, no audit event.
-        return _redirect_after_save(request, "/admin/payer-rules")
+        return redirect_htmx(request, "/admin/payer-rules")
 
     audit_record(
         storage,
@@ -857,7 +844,7 @@ async def payer_rule_revert(
         entity_type="payer_rule",
         entity_id=payer_key,
     )
-    return _redirect_after_save(request, "/admin/payer-rules")
+    return redirect_htmx(request, "/admin/payer-rules")
 
 
 @router.post("/payer-rules/{payer_key}", response_class=HTMLResponse)
@@ -965,7 +952,7 @@ async def payer_rule_save(
         entity_type="payer_rule",
         entity_id=payer_key,
     )
-    return _redirect_after_save(request, "/admin/payer-rules")
+    return redirect_htmx(request, "/admin/payer-rules")
 
 
 # ---------------------------------------------------------------------------
@@ -1155,7 +1142,7 @@ async def org_settings_save(
         entity_type="organization",
         entity_id=str(org.id),
     )
-    return _redirect_after_save(request, "/admin/org-settings")
+    return redirect_htmx(request, "/admin/org-settings")
 
 
 # ---------------------------------------------------------------------------
@@ -1633,7 +1620,7 @@ async def members_invitation_revoke(
         entity_type="invitation",
         entity_id=str(invitation_id),
     )
-    return _redirect_after_save(request, "/admin/members")
+    return redirect_htmx(request, "/admin/members")
 
 
 @router.post("/members/{user_id}/role", response_class=HTMLResponse)
@@ -1680,7 +1667,7 @@ async def members_role_change(
 
     if new_role == membership.role:
         # No-op. Skip audit for a non-change.
-        return _redirect_after_save(request, "/admin/members")
+        return redirect_htmx(request, "/admin/members")
 
     # Guard: demoting the sole active owner would orphan the org.
     if membership.role == "owner" and new_role != "owner":
@@ -1738,7 +1725,7 @@ async def members_role_change(
         entity_id=str(user_id),
         metadata={"from": membership.role, "to": new_role},
     )
-    return _redirect_after_save(request, "/admin/members")
+    return redirect_htmx(request, "/admin/members")
 
 
 @router.post("/members/{user_id}/remove", response_class=HTMLResponse)
@@ -1812,4 +1799,4 @@ async def members_remove(
         entity_id=str(user_id),
         metadata={"role": membership.role},
     )
-    return _redirect_after_save(request, "/admin/members")
+    return redirect_htmx(request, "/admin/members")

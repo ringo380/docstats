@@ -36,6 +36,17 @@ class Scope:
     def is_org(self) -> bool:
         return self.organization_id is not None
 
+    @property
+    def audit_user_id(self) -> int | None:
+        """The ``scope_user_id`` value for audit events.
+
+        In solo mode, ``scope_user_id`` on audit_events carries the user id;
+        in org mode it is ``None`` (org context is tracked separately via
+        ``scope_organization_id``). This property encodes that invariant so
+        callers don't repeat the conditional at every ``audit_record`` site.
+        """
+        return self.user_id if self.is_solo else None
+
     def __post_init__(self) -> None:
         # membership_role is only meaningful in org mode.
         if self.membership_role is not None and self.organization_id is None:

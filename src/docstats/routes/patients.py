@@ -15,11 +15,11 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Path, Query, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse
 
 from docstats.domain.audit import record as audit_record
 from docstats.phi import require_phi_consent
-from docstats.routes._common import US_STATES, get_scope, render, saved_count
+from docstats.routes._common import US_STATES, get_scope, redirect_htmx, render, saved_count
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
@@ -193,15 +193,13 @@ async def patient_create(
         action="patient.create",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="patient",
         entity_id=str(patient.id),
     )
     dest = f"/patients/{patient.id}"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 @router.get("/{patient_id}", response_class=HTMLResponse)
@@ -297,15 +295,13 @@ async def patient_update(
         action="patient.update",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="patient",
         entity_id=str(patient_id),
     )
     dest = f"/patients/{patient_id}"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 @router.delete("/{patient_id}")
@@ -325,11 +321,9 @@ async def patient_delete(
         action="patient.delete",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="patient",
         entity_id=str(patient_id),
     )
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": "/patients"})
-    return Response(status_code=303, headers={"Location": "/patients"})
+    return redirect_htmx(request, "/patients")

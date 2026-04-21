@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from docstats.normalize import format_phone as _fmt_phone
+
 if TYPE_CHECKING:
     from docstats.domain.patients import Patient
     from docstats.domain.referrals import (
@@ -54,16 +56,6 @@ ARTIFACT_ATTACHMENTS_CHECKLIST = "attachments"
 ARTIFACT_MISSING_INFO = "missing_info"
 ARTIFACT_FAX_COVER = "fax_cover"
 ARTIFACT_PACKET = "packet"
-
-
-def _fmt_phone(raw: str | None) -> str | None:
-    """Format a 10-digit phone as (XXX) XXX-XXXX; pass through anything else."""
-    if not raw:
-        return None
-    digits = "".join(ch for ch in raw if ch.isdigit())
-    if len(digits) == 10:
-        return f"({digits[0:3]}) {digits[3:6]}-{digits[6:10]}"
-    return raw
 
 
 def _age_years(dob: str | None, as_of: datetime | None = None) -> int | None:

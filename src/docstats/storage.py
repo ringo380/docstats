@@ -1356,6 +1356,13 @@ class Storage(StorageBase):
         ).fetchall()
         return [self._row_to_provider(r) for r in rows]
 
+    def count_providers(self, user_id: int) -> int:
+        """Return the number of saved providers for ``user_id``."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM saved_providers WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     def search_providers(self, user_id: int, query: str) -> list[SavedProvider]:
         """Search saved providers by fuzzy matching against name, NPI, specialty, notes, and city."""
         pattern = f"%{_escape_like(query)}%"
