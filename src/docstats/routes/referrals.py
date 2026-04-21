@@ -35,7 +35,7 @@ from docstats.domain.rules import (
     rules_based_completeness,
 )
 from docstats.phi import require_phi_consent
-from docstats.routes._common import get_scope, render, saved_count
+from docstats.routes._common import assigned_open_count, get_scope, render, saved_count
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
@@ -46,12 +46,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/referrals", tags=["referrals"])
 
 
-def _ctx(request: Request, user: dict, storage: StorageBase, **extra) -> dict:
+def _ctx(
+    request: Request,
+    user: dict,
+    storage: StorageBase,
+    scope: Scope | None = None,
+    **extra,
+) -> dict:
+    uid = user["id"]
     return {
         "request": request,
         "active_page": "referrals",
         "user": user,
-        "saved_count": saved_count(storage, user["id"]),
+        "saved_count": saved_count(storage, uid),
+        "assigned_open_count": assigned_open_count(storage, scope, uid) if scope else 0,
         **extra,
     }
 
@@ -84,6 +92,11 @@ async def referrals_workspace(
     urgency: str | None = Query(None, max_length=16),
     patient_id: int | None = Query(None, ge=1),
     assigned_to_user_id: int | None = Query(None, ge=1),
+    # Phase 7.C: shorthand alias for assigned_to_user_id. ``me`` resolves
+    # to the caller; a numeric string resolves to that user id (same as
+    # ``assigned_to_user_id``, but accessible from a bookmarkable URL
+    # without the caller needing to know their own id).
+    assignee: str | None = Query(None, max_length=16),
     current_user: dict = Depends(require_phi_consent),
     scope: Scope = Depends(get_scope),
     storage: StorageBase = Depends(get_storage),
@@ -91,12 +104,22 @@ async def referrals_workspace(
     status_filter = status if status in STATUS_VALUES else None
     urgency_filter = urgency if urgency in URGENCY_VALUES else None
 
+    # Resolve assignee shorthand. ``assignee`` takes precedence over the
+    # legacy numeric param when both are supplied.
+    assignee_clean = _clean(assignee)
+    if assignee_clean == "me":
+        effective_assigned = current_user["id"]
+    elif assignee_clean and assignee_clean.isdigit():
+        effective_assigned = int(assignee_clean)
+    else:
+        effective_assigned = assigned_to_user_id
+
     referrals = storage.list_referrals(
         scope,
         patient_id=patient_id,
         status=status_filter,
         urgency=urgency_filter,
-        assigned_to_user_id=assigned_to_user_id,
+        assigned_to_user_id=effective_assigned,
         limit=50,
     )
 
@@ -111,6 +134,7 @@ async def referrals_workspace(
             request,
             current_user,
             storage,
+            scope,
             referrals=referrals,
             patients_by_id=patients_by_id,
             status_values=STATUS_VALUES,
@@ -119,7 +143,9 @@ async def referrals_workspace(
                 "status": status_filter or "",
                 "urgency": urgency_filter or "",
                 "patient_id": patient_id or "",
-                "assigned_to_user_id": assigned_to_user_id or "",
+                "assigned_to_user_id": effective_assigned or "",
+                "assignee": assignee_clean or "",
+                "assignee_is_me": assignee_clean == "me",
             },
         ),
     )
@@ -161,6 +187,7 @@ async def referral_intake_questions(
             request,
             current_user,
             storage,
+            scope,
             specialty_rule=rule,
             prompts=prompts,
             rejection_hints=rejection_hints,
@@ -182,6 +209,7 @@ async def referral_new_form(
             request,
             current_user,
             storage,
+            scope,
             patients=patients,
             urgency_values=URGENCY_VALUES,
             values={},
@@ -220,6 +248,7 @@ async def referral_create(
                 request,
                 current_user,
                 storage,
+                scope,
                 patients=patients,
                 urgency_values=URGENCY_VALUES,
                 values={
@@ -382,12 +411,33 @@ def _render_detail(
     responses = storage.list_referral_responses(scope, referral_id)
     completeness = rules_based_completeness(storage, scope, referral)
     actors_by_id = _build_actor_map(storage, events)
+    # Assignable users for the Assign dropdown (Phase 7.C). Solo scope → just
+    # self; org scope → every live member. Include the currently-assigned
+    # user even if they've since left the org so the dropdown still shows
+    # them (displayed with an "(off-team)" suffix in the template).
+    assignable: list[tuple[int, str]] = []
+    if scope.is_org and scope.organization_id is not None:
+        for m in storage.list_memberships_for_org(scope.organization_id):
+            if m.deleted_at is None:
+                member_user = storage.get_user_by_id(m.user_id)
+                assignable.append((m.user_id, _format_actor(member_user)))
+        assignable.sort(key=lambda pair: pair[1].lower())
+    else:
+        assignable.append((current_user["id"], _format_actor(current_user)))
+
+    assigned_display = (
+        _format_actor(storage.get_user_by_id(referral.assigned_to_user_id))
+        if referral.assigned_to_user_id is not None
+        else None
+    )
+
     return render(
         "referral_detail.html",
         _ctx(
             request,
             current_user,
             storage,
+            scope,
             referral=referral,
             patient=patient,
             events=events,
@@ -398,6 +448,8 @@ def _render_detail(
             auth_status_values=AUTH_STATUS_VALUES,
             received_via_values=RECEIVED_VIA_VALUES,
             allowed_next=_allowed_next_statuses(referral.status),
+            assignable_users=assignable,
+            assigned_display=assigned_display,
             errors=errors,
             response_errors=response_errors,
             response_values=response_values or {},
@@ -436,6 +488,7 @@ async def referral_completeness(
             request,
             current_user,
             storage,
+            scope,
             referral=referral,
             completeness=completeness,
         ),
@@ -693,6 +746,117 @@ async def referral_clear_field(
         entity_id=str(referral_id),
         metadata={"cleared": field},
     )
+    dest = f"/referrals/{referral_id}"
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": dest})
+    return Response(status_code=303, headers={"Location": dest})
+
+
+def _assignable_user_ids(storage: StorageBase, scope: Scope, current_user_id: int) -> set[int]:
+    """User IDs the current scope can legitimately assign a referral to.
+
+    * **Solo mode**: ``{current_user_id}`` — nobody else exists in this scope.
+    * **Org mode**: every live member of the active org. Soft-deleted
+      memberships are excluded.
+
+    Used by :func:`referral_assign` to gate the write so a cross-scope
+    ``user_id`` can't be forged through the form. The storage layer's own
+    ``assigned_to_user_id`` column has no FK to scope (it's a plain
+    ``users.id`` FK), so this is the guard.
+    """
+    if scope.is_solo:
+        return {current_user_id}
+    if scope.is_org and scope.organization_id is not None:
+        return {
+            m.user_id
+            for m in storage.list_memberships_for_org(scope.organization_id)
+            if m.deleted_at is None
+        }
+    return set()
+
+
+@router.post("/{referral_id}/assign", response_class=HTMLResponse)
+async def referral_assign(
+    request: Request,
+    referral_id: int = Path(..., ge=1),
+    # Blank / missing / "unassign" = clear. "me" or numeric = assign.
+    user_id: str | None = Form(None, max_length=16),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Assign a referral to a user, or clear the assignment.
+
+    Emits an ``assigned`` ReferralEvent on assign (with the target user id
+    in ``to_value``) or ``unassigned`` on clear. Audit action
+    ``referral.assign`` / ``referral.unassign``.
+    """
+    existing = storage.get_referral(scope, referral_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+
+    raw = _clean(user_id) or ""
+    # Shorthand: "me" always resolves to the caller.
+    target: int | None
+    if raw in ("", "unassign"):
+        target = None
+    elif raw == "me":
+        target = current_user["id"]
+    else:
+        try:
+            target = int(raw)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="user_id must be an integer or 'me'.")
+        if target < 1:
+            raise HTTPException(status_code=422, detail="user_id must be positive.")
+
+    # No-op? Return 303 without touching the row or emitting an event.
+    if target == existing.assigned_to_user_id:
+        dest = f"/referrals/{referral_id}"
+        if request.headers.get("HX-Request"):
+            return Response(status_code=200, headers={"HX-Redirect": dest})
+        return Response(status_code=303, headers={"Location": dest})
+
+    if target is not None:
+        allowed = _assignable_user_ids(storage, scope, current_user["id"])
+        if target not in allowed:
+            raise HTTPException(
+                status_code=422,
+                detail="Target user is not assignable from this scope.",
+            )
+        updated = storage.update_referral(scope, referral_id, assigned_to_user_id=target)
+    else:
+        updated = storage.clear_referral_field(scope, referral_id, "assigned_to_user_id")
+
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+
+    prev = existing.assigned_to_user_id
+    event_type = "assigned" if target is not None else "unassigned"
+    try:
+        storage.record_referral_event(
+            scope,
+            referral_id,
+            event_type=event_type,
+            from_value=None if prev is None else str(prev),
+            to_value=None if target is None else str(target),
+            actor_user_id=current_user["id"],
+        )
+    except Exception:
+        logger.exception("Failed to record %s event for referral %s", event_type, referral_id)
+
+    audit_record(
+        storage,
+        action=f"referral.{event_type}",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral",
+        entity_id=str(referral_id),
+        metadata={"from": prev, "to": target},
+    )
+
     dest = f"/referrals/{referral_id}"
     if request.headers.get("HX-Request"):
         return Response(status_code=200, headers={"HX-Redirect": dest})

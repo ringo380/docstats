@@ -102,6 +102,26 @@ def saved_count(storage: StorageBase, user_id: int | None) -> int:
     return len(storage.list_providers(user_id))
 
 
+def assigned_open_count(
+    storage: StorageBase, scope: Scope, user_id: int | None, *, cap: int = 200
+) -> int:
+    """Count of non-terminal referrals assigned to ``user_id`` in ``scope``.
+
+    Powers the Referrals nav badge (Phase 7.C). Anonymous scope / missing
+    user_id returns 0. Fetches up to ``cap`` rows and filters in Python;
+    the badge shows "200+" when the real count exceeds 200, so the helper
+    protects pages from pathological list sizes without a dedicated
+    count-only storage method.
+    """
+    if user_id is None or scope.is_anonymous:
+        return 0
+    # Import locally to keep _common.py free of domain cycles.
+    from docstats.domain.referrals import TERMINAL_STATUSES
+
+    referrals = storage.list_referrals(scope, assigned_to_user_id=user_id, limit=cap)
+    return sum(1 for r in referrals if r.status not in TERMINAL_STATUSES)
+
+
 def get_scope(
     current_user: dict | None = Depends(get_current_user),
     storage: StorageBase = Depends(get_storage),

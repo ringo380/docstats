@@ -35,9 +35,13 @@
     <input type="number" name="patient_id" min="1" value="{{ filters.patient_id }}" placeholder="—" onchange="this.form.submit()">
   </label>
   <label>Assignee user ID
-    <input type="number" name="assigned_to_user_id" min="1" value="{{ filters.assigned_to_user_id }}" placeholder="—" onchange="this.form.submit()">
+    <input type="number" name="assigned_to_user_id" min="1" value="{{ filters.assigned_to_user_id if not filters.assignee_is_me else '' }}" placeholder="—" onchange="this.form.submit()">
   </label>
-  {% if filters.status or filters.urgency or filters.patient_id or filters.assigned_to_user_id %}
+  <label class="filter-me">
+    <input type="checkbox" name="assignee" value="me" {% if filters.assignee_is_me %}checked{% endif %} onchange="this.form.submit()">
+    Assigned to me
+  </label>
+  {% if filters.status or filters.urgency or filters.patient_id or filters.assigned_to_user_id or filters.assignee %}
     <a href="/referrals" class="btn btn-secondary btn-sm">Clear filters</a>
   {% endif %}
 </form>
