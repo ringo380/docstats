@@ -499,20 +499,37 @@ async def specialty_rule_save(
     )
 
     if existing_override is None:
-        storage.create_specialty_rule(
-            specialty_code=specialty_code,
-            organization_id=scope.organization_id,
-            display_name=payload["display_name"],
-            required_fields=payload["required_fields"],
-            recommended_attachments=payload["recommended_attachments"],
-            intake_questions=payload["intake_questions"],
-            urgency_red_flags=payload["urgency_red_flags"],
-            common_rejection_reasons=payload["common_rejection_reasons"],
-            source="admin_override",
-        )
+        try:
+            storage.create_specialty_rule(
+                specialty_code=specialty_code,
+                organization_id=scope.organization_id,
+                display_name=payload["display_name"],
+                required_fields=payload["required_fields"],
+                recommended_attachments=payload["recommended_attachments"],
+                intake_questions=payload["intake_questions"],
+                urgency_red_flags=payload["urgency_red_flags"],
+                common_rejection_reasons=payload["common_rejection_reasons"],
+                source="admin_override",
+            )
+        except Exception:
+            # Race: another admin created an override for the same
+            # ``(organization_id, specialty_code)`` between our guard read
+            # and this insert. The partial unique index surfaces that as a
+            # backend-specific IntegrityError (sqlite3 / psycopg). Re-query
+            # and fall through to the update branch — "last write wins" is
+            # acceptable semantics for concurrent admin edits.
+            existing_override = _find_specialty_rule_for(
+                storage,
+                organization_id=scope.organization_id,
+                specialty_code=specialty_code,
+            )
+            if existing_override is None:
+                # Couldn't recover — real error, re-raise.
+                raise
         audit_action = "admin.specialty_rule.create_override"
-    else:
-        storage.update_specialty_rule(
+
+    if existing_override is not None:
+        updated = storage.update_specialty_rule(
             existing_override.id,
             display_name=payload["display_name"],
             required_fields=payload["required_fields"],
@@ -532,6 +549,12 @@ async def specialty_rule_save(
             # field expects it cleared, not preserved.
             overwrite=True,
         )
+        if updated is None:
+            # TOCTOU: the override was deleted between our guard read and
+            # this update (e.g. another admin just reverted it). Don't
+            # emit an audit event for a write that didn't land — surface
+            # a 404 so the client knows to retry.
+            raise HTTPException(status_code=404, detail="Specialty rule override not found.")
         audit_action = "admin.specialty_rule.update_override"
 
     audit_record(
@@ -862,20 +885,34 @@ async def payer_rule_save(
     }
 
     if existing_override is None:
-        storage.create_payer_rule(
-            payer_key=payer_key,
-            organization_id=scope.organization_id,
-            display_name=payload["display_name"],
-            referral_required=payload["referral_required"],
-            auth_required_services=payload["auth_required_services"],
-            auth_typical_turnaround_days=payload["auth_typical_turnaround_days"],
-            records_required=payload["records_required"],
-            notes=payload["notes"],
-            source="admin_override",
-        )
+        try:
+            storage.create_payer_rule(
+                payer_key=payer_key,
+                organization_id=scope.organization_id,
+                display_name=payload["display_name"],
+                referral_required=payload["referral_required"],
+                auth_required_services=payload["auth_required_services"],
+                auth_typical_turnaround_days=payload["auth_typical_turnaround_days"],
+                records_required=payload["records_required"],
+                notes=payload["notes"],
+                source="admin_override",
+            )
+        except Exception:
+            # Race: another admin created an override for the same
+            # ``(organization_id, payer_key)`` between our guard read and
+            # this insert. Re-query and fall through to the update path.
+            # Same pattern + rationale as specialty_rule_save above.
+            existing_override = _find_payer_rule_for(
+                storage,
+                organization_id=scope.organization_id,
+                payer_key=payer_key,
+            )
+            if existing_override is None:
+                raise
         audit_action = "admin.payer_rule.create_override"
-    else:
-        storage.update_payer_rule(
+
+    if existing_override is not None:
+        updated = storage.update_payer_rule(
             existing_override.id,
             display_name=payload["display_name"],
             referral_required=payload["referral_required"],
@@ -890,6 +927,11 @@ async def payer_rule_save(
             # default "leave unchanged" contract preserving the old value.
             overwrite=True,
         )
+        if updated is None:
+            # TOCTOU: the override was deleted between our guard read and
+            # this update. Don't emit an audit event for a write that
+            # didn't land — surface a 404 so the client knows to retry.
+            raise HTTPException(status_code=404, detail="Payer rule override not found.")
         audit_action = "admin.payer_rule.update_override"
 
     audit_record(
@@ -1142,6 +1184,25 @@ _KNOWN_AUDIT_ACTIONS: tuple[str, ...] = (
 )
 
 
+def _parse_actor_user_id(value: str | None) -> int | None:
+    """Parse the audit filter's ``actor_user_id`` query param.
+
+    Accepted as a string so a blank form submission (``?actor_user_id=``)
+    doesn't fail FastAPI's int validator — browsers always include empty
+    inputs in GET forms, so the filter must treat blank as "no filter"
+    rather than "invalid". Non-integer or non-positive values raise 422.
+    """
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = int(value.strip())
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"actor_user_id must be an integer: {value!r}")
+    if parsed < 1:
+        raise HTTPException(status_code=422, detail="actor_user_id must be >= 1")
+    return parsed
+
+
 def _parse_date_filter(value: str | None, *, end_of_day: bool) -> datetime | None:
     """Parse an HTML ``<input type="date">`` value (``YYYY-MM-DD``) to UTC.
 
@@ -1168,16 +1229,22 @@ def _parse_date_filter(value: str | None, *, end_of_day: bool) -> datetime | Non
     return datetime.combine(d, time.min, tzinfo=timezone.utc)
 
 
+_MAX_AUDIT_OFFSET = 10_000
+
+
 @router.get("/audit", response_class=HTMLResponse)
 async def audit_log(
     request: Request,
     action: str | None = Query(None, max_length=64),
     entity_type: str | None = Query(None, max_length=32),
     entity_id: str | None = Query(None, max_length=64),
-    actor_user_id: int | None = Query(None, ge=1),
+    # Accept as string so a blank form field (``?actor_user_id=``) doesn't
+    # 422 through FastAPI's int validator. Coerced below; non-integer or
+    # non-positive values raise 422 explicitly.
+    actor_user_id: str | None = Query(None, max_length=16),
     since: str | None = Query(None, max_length=10),
     until: str | None = Query(None, max_length=10),
-    offset: int = Query(0, ge=0, le=10_000),
+    offset: int = Query(0, ge=0, le=_MAX_AUDIT_OFFSET),
     current_user: dict = Depends(require_user),
     scope: Scope = Depends(require_admin_scope),
     storage: StorageBase = Depends(get_storage),
@@ -1191,6 +1258,8 @@ async def audit_log(
     entity_type_clean = entity_type.strip() if entity_type and entity_type.strip() else None
     entity_id_clean = entity_id.strip() if entity_id and entity_id.strip() else None
 
+    actor_user_id_clean = _parse_actor_user_id(actor_user_id)
+
     since_dt = _parse_date_filter(since, end_of_day=False)
     until_dt = _parse_date_filter(until, end_of_day=True)
 
@@ -1200,7 +1269,7 @@ async def audit_log(
         action=action_clean,
         entity_type=entity_type_clean,
         entity_id=entity_id_clean,
-        actor_user_id=actor_user_id,
+        actor_user_id=actor_user_id_clean,
         since=since_dt,
         until=until_dt,
         limit=_AUDIT_PAGE_SIZE + 1,
@@ -1210,7 +1279,11 @@ async def audit_log(
     if has_next:
         events = events[:_AUDIT_PAGE_SIZE]
     has_prev = offset > 0
-    next_offset = offset + _AUDIT_PAGE_SIZE if has_next else None
+    # Clamp next_offset at the same cap we accept on input — otherwise the
+    # admin paging past 9950 would render a Next link that triggers a 422
+    # on click. Once the next step would exceed the cap, hide the link.
+    raw_next = offset + _AUDIT_PAGE_SIZE
+    next_offset = raw_next if has_next and raw_next <= _MAX_AUDIT_OFFSET else None
     prev_offset = max(0, offset - _AUDIT_PAGE_SIZE) if has_prev else None
 
     # Reflect the current filter state back into the template so form

@@ -463,6 +463,103 @@ def test_save_success_hx_redirect(storage: Storage, org_admin) -> None:
 # --- Regression: update path honors cleared display_name ---
 
 
+def test_update_override_returns_404_when_row_vanishes_mid_flight(
+    storage: Storage, org_admin
+) -> None:
+    """TOCTOU: the override is soft/hard-deleted between the route's
+    guard read and the storage update. The update must surface a 404
+    and NOT emit an audit event against the vanished row."""
+    _, org, user = org_admin
+    override = storage.create_specialty_rule(
+        specialty_code="207RC0000X",
+        organization_id=org.id,
+        display_name="will vanish",
+        source="admin_override",
+    )
+    # Simulate the race: monkey-patch update_specialty_rule to return None
+    # (what storage does when the row has been deleted). Keep the original
+    # for other callers.
+    original = storage.update_specialty_rule
+    calls = {"n": 0}
+
+    def fake_update(*args, **kwargs):
+        calls["n"] += 1
+        return None
+
+    storage.update_specialty_rule = fake_update  # type: ignore[method-assign]
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X",
+            data={"display_name": "new"},
+        )
+        assert resp.status_code == 404
+        events = storage.list_audit_events(scope_organization_id=org.id)
+        assert all(e.action != "admin.specialty_rule.update_override" for e in events)
+    finally:
+        storage.update_specialty_rule = original  # type: ignore[method-assign]
+        # Clean up the real row.
+        storage.delete_specialty_rule(override.id)
+        _cleanup()
+
+
+def test_save_race_on_create_falls_through_to_update(storage: Storage, org_admin) -> None:
+    """Concurrent create race: admin A and admin B both click "Create
+    override" for the same specialty. A wins; B's insert hits the partial
+    unique index and raises IntegrityError. The route must catch it,
+    re-find the now-existing override, and route through update (treating
+    the second admin's edits as a transparent update)."""
+    _, org, user = org_admin
+
+    # Pre-insert an override to simulate the race winner. The route's
+    # _find_specialty_rule_for call at the top won't see it because we
+    # monkey-patch that check to return None (simulating the pre-race
+    # state), then let the real storage.create hit the unique-index
+    # violation.
+    winner = storage.create_specialty_rule(
+        specialty_code="207RC0000X",
+        organization_id=org.id,
+        display_name="winner",
+        source="admin_override",
+    )
+
+    # Patch _find_specialty_rule_for to return None on first call only
+    # (pre-race state). The route also calls it inside the except block;
+    # that call should return the real winner row.
+    import docstats.routes.admin as admin_mod
+
+    original_find = admin_mod._find_specialty_rule_for
+    calls = {"n": 0}
+
+    def fake_find(storage_arg, *, organization_id, specialty_code):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # First call: pretend no override exists (pre-race).
+            return None
+        return original_find(
+            storage_arg, organization_id=organization_id, specialty_code=specialty_code
+        )
+
+    admin_mod._find_specialty_rule_for = fake_find  # type: ignore[assignment]
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X",
+            data={
+                "display_name": "second admin edits",
+                "required_field": ["reason"],
+            },
+            follow_redirects=False,
+        )
+        # Should succeed as a redirect, not 500.
+        assert resp.status_code == 303
+        # The winner row should now have the second admin's edits.
+        row = storage.get_specialty_rule(winner.id)
+        assert row is not None
+        assert row.display_name == "second admin edits"
+    finally:
+        admin_mod._find_specialty_rule_for = original_find  # type: ignore[assignment]
+        _cleanup()
+
+
 def test_update_override_clears_display_name_when_field_emptied(
     storage: Storage, org_admin
 ) -> None:

@@ -887,10 +887,25 @@ class StorageBase(ABC):
         ``None`` means "leave unchanged" by default. Pass ``overwrite=True`` to
         write every kwarg literally (including ``None``) — used by
         :func:`docstats.domain.seed.seed_platform_defaults` so seed re-runs
-        can restore a field to ``None`` that an admin previously filled in.
-        ``bump_version`` defaults to ``True``; callers that just fix seed
-        typos or push canonical values back should pass ``False`` so
-        rule-engine caches aren't invalidated.
+        can restore a field to ``None`` that an admin previously filled in,
+        and by the Phase 6.B admin route so clearing ``display_name`` via
+        the edit form writes ``NULL`` through instead of being silently
+        skipped. ``bump_version`` defaults to ``True``; callers that just
+        fix seed typos or push canonical values back should pass ``False``
+        so rule-engine caches aren't invalidated.
+
+        With ``overwrite=True``, the concrete implementations raise
+        ``ValueError`` if any known-NOT-NULL JSONB column
+        (``required_fields``, ``recommended_attachments``,
+        ``intake_questions``, ``urgency_red_flags``,
+        ``common_rejection_reasons``) is ``None``. Callers must supply a
+        dict (possibly empty, e.g. ``{}`` or ``{"fields": []}``) for each
+        of those kwargs in overwrite mode.
+
+        Returns the updated :class:`SpecialtyRule`, or ``None`` if the row
+        is missing (TOCTOU — deleted between the caller's read and this
+        write). Callers should treat ``None`` as "write didn't land" and
+        NOT emit audit events against the vanished row.
         """
         ...
 
@@ -954,8 +969,20 @@ class StorageBase(ABC):
         """Same shape as :meth:`update_specialty_rule`: pass ``overwrite=True``
         to write all kwargs literally, including ``None`` (lets the seeder
         reset e.g. Medicare's ``auth_typical_turnaround_days`` back to
-        ``None``). ``bump_version=False`` skips the version_id bump for seed
-        re-runs that restore canonical values.
+        ``None``, and lets the Phase 6.C admin route clear ``display_name``
+        / ``notes`` / ``auth_typical_turnaround_days``). ``bump_version=False``
+        skips the version_id bump for seed re-runs that restore canonical
+        values.
+
+        With ``overwrite=True``, the concrete implementations raise
+        ``ValueError`` if ``auth_required_services`` or ``records_required``
+        is ``None``. Both are NOT NULL JSONB columns in the schema —
+        callers must supply a dict (``{}`` or ``{"services": []}`` are
+        fine).
+
+        Returns the updated :class:`PayerRule`, or ``None`` if the row is
+        missing (TOCTOU). Callers should treat ``None`` as "write didn't
+        land" and NOT emit audit events against the vanished row.
         """
         ...
 
