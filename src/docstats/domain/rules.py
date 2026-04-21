@@ -231,8 +231,15 @@ def evaluate(referral: Referral, ruleset: ResolvedRuleSet) -> CompletenessReport
     """Full completeness check — baseline + specialty overlay + payer overlay.
 
     The baseline items always appear first so the UI's "required" section
-    stays stable. Specialty-required fields append NEW items only — a field
-    already covered by baseline (e.g. ``reason``) won't double-report.
+    stays stable. Specialty-required fields whose names are NOT mapped in
+    ``_FIELD_TO_BASELINE_CODE`` append NEW items. Fields whose names ARE
+    mapped instead PROMOTE the existing baseline item — flipping
+    ``required`` to True AND tightening ``satisfied`` by intersecting the
+    baseline's check with a specialty-specific ``_check_referral_field``
+    call (e.g. baseline ``primary_diagnosis`` is satisfied by either
+    ``diagnosis_primary_icd`` OR ``diagnosis_primary_text``; when a
+    specialty requires the ICD specifically, the promoted item is
+    satisfied only when the ICD is present).
 
     Payer rules contribute ``referral_required`` / ``auth_required_services``
     hints via ``rejection_hints`` today — when Phase 11 ships eligibility
