@@ -1,0 +1,39 @@
+{# Closed-loop response entry form (Phase 7.A).
+   Used both for creating a new response and editing an existing one.
+   Variables: action (URL), response (ReferralResponse | None), received_via_values,
+   response_errors (list | None), response_values (dict — fallback on re-render). #}
+<form method="post" action="{{ action }}" class="response-form">
+  {% if response_errors %}
+    <div class="alert alert-error">
+      <ul>{% for e in response_errors %}<li>{{ e }}</li>{% endfor %}</ul>
+    </div>
+  {% endif %}
+  <div class="grid-2">
+    <label>Appointment date
+      <input type="date" name="appointment_date"
+             value="{{ (response.appointment_date if response else response_values.appointment_date) or '' }}">
+    </label>
+    <label>Received via
+      <select name="received_via">
+        {% for v in received_via_values %}
+          {% set current_via = response.received_via if response else (response_values.received_via or 'manual') %}
+          <option value="{{ v }}" {% if current_via == v %}selected{% endif %}>{{ v | title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+  <label>Recommendations / consult notes
+    <textarea name="recommendations_text" rows="3" maxlength="4000">{{ (response.recommendations_text if response else response_values.recommendations_text) or '' }}</textarea>
+  </label>
+  <label class="checkbox-row">
+    <input type="checkbox" name="consult_completed" value="on"
+           {% if response and response.consult_completed %}checked
+           {% elif not response and response_values.consult_completed %}checked{% endif %}>
+    Consult completed (recommendations captured)
+  </label>
+  <div class="action-bar">
+    <button type="submit" class="btn btn-primary">
+      {% if response %}Save response{% else %}Record response{% endif %}
+    </button>
+  </div>
+</form>

@@ -167,6 +167,21 @@
         style="display:none;"></form>
 
   <aside class="side-rail">
+    <section class="card" id="responses-panel">
+      <h3>Closed-loop responses</h3>
+      {% include "_response_list.html" %}
+      <details class="response-new" {% if response_errors %}open{% endif %}>
+        <summary>+ Record response</summary>
+        {% with action = "/referrals/" ~ referral.id ~ "/response", response = None %}
+          {% include "_response_form.html" %}
+        {% endwith %}
+      </details>
+      <p class="sub" style="margin-top:8px;">
+        Marking a response <strong>completed</strong> auto-transitions the
+        referral to <em>completed</em> if it's currently <em>scheduled</em>.
+      </p>
+    </section>
+
     <div id="completeness-panel">
       {% include "_referral_completeness.html" %}
     </div>
@@ -181,13 +196,15 @@
               {% if e.from_value or e.to_value %}
                 <div class="sub">
                   {% if e.event_type == 'field_edited' %}
-                    {{ e.from_value }}: {{ e.to_value or '—' }}
+                    {{ e.note or e.from_value }}: {{ e.from_value }} → {{ e.to_value or '—' }}
                   {% elif e.event_type == 'status_changed' %}
-                    {{ e.from_value }} → {{ e.to_value }}
+                    {{ e.from_value }} → {{ e.to_value }}{% if e.note %} <em>({{ e.note }})</em>{% endif %}
                   {% else %}
-                    {{ e.to_value or e.from_value }}
+                    {{ e.to_value or e.from_value }}{% if e.note %} <em>({{ e.note }})</em>{% endif %}
                   {% endif %}
                 </div>
+              {% elif e.note %}
+                <div class="sub">{{ e.note }}</div>
               {% endif %}
               <div class="sub">{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
             </li>

@@ -1,0 +1,31 @@
+{# List of prior responses on a referral (Phase 7.A).
+   Variables: responses (list[ReferralResponse]), referral.id. #}
+{% if responses %}
+  <ul class="response-list">
+    {% for r in responses %}
+      <li class="response-item{% if r.consult_completed %} response-completed{% endif %}">
+        <div class="response-header">
+          <span class="response-via">{{ r.received_via | title }}</span>
+          {% if r.appointment_date %}
+            <span class="response-appt">Appt {{ r.appointment_date }}</span>
+          {% endif %}
+          {% if r.consult_completed %}
+            <span class="response-chip response-chip-completed">Completed</span>
+          {% else %}
+            <span class="response-chip response-chip-pending">Pending</span>
+          {% endif %}
+          <span class="response-ts">{{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+        </div>
+        {% if r.recommendations_text %}
+          <div class="response-recs">{{ r.recommendations_text }}</div>
+        {% endif %}
+        <button type="button"
+                hx-delete="/referrals/{{ referral.id }}/response/{{ r.id }}"
+                hx-confirm="Delete this response? The parent referral is untouched."
+                class="btn btn-secondary btn-sm">Delete</button>
+      </li>
+    {% endfor %}
+  </ul>
+{% else %}
+  <p class="sub">No responses yet.</p>
+{% endif %}
