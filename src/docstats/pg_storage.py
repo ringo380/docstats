@@ -951,12 +951,15 @@ class PostgresStorage(StorageBase):
             query = query.lt("created_at", _to_pg_iso(until))
         # Tiebreaker on id DESC so same-millisecond rows stay deterministic.
         # supabase-py ``.range(start, end)`` is inclusive zero-indexed, so
-        # offset + limit - 1 is the right upper bound.
-        query = query.order("created_at", desc=True).order("id", desc=True)
-        if offset:
-            result = query.range(offset, offset + int(limit) - 1).execute()
-        else:
-            result = query.limit(int(limit)).execute()
+        # ``offset + limit - 1`` is the right upper bound. This matches
+        # the pattern used by every other paginated ``list_*`` method
+        # (list_patients / list_referrals / list_csv_import_rows).
+        result = (
+            query.order("created_at", desc=True)
+            .order("id", desc=True)
+            .range(offset, offset + int(limit) - 1)
+            .execute()
+        )
         return [_row_to_audit_event(row) for row in result.data]
 
     # --- Organizations & memberships ---
