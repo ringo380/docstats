@@ -149,6 +149,46 @@ class StorageBase(ABC):
     def soft_delete_organization(self, organization_id: int) -> bool: ...
 
     @abstractmethod
+    def update_organization(
+        self,
+        organization_id: int,
+        *,
+        name: str | None = None,
+        npi: str | None = None,
+        address_line1: str | None = None,
+        address_line2: str | None = None,
+        address_city: str | None = None,
+        address_state: str | None = None,
+        address_zip: str | None = None,
+        phone: str | None = None,
+        fax: str | None = None,
+        overwrite: bool = False,
+    ) -> "Organization | None":
+        """Update an org's mutable columns.
+
+        ``slug`` is intentionally NOT editable via this method — changing it
+        would break bookmarked URLs, stored references, and potentially any
+        downstream integration that keyed on the slug. Use a dedicated
+        admin-only migration if a slug must change.
+
+        ``None`` kwargs mean "leave unchanged" by default, matching the
+        contract on :meth:`update_specialty_rule` and
+        :meth:`update_payer_rule`. Pass ``overwrite=True`` to write every
+        kwarg literally — required by the admin save route so an empty
+        form submission clears optional fields rather than silently
+        preserving the prior value.
+
+        Raises ``ValueError`` if ``overwrite=True`` and ``name`` is ``None``
+        or empty — ``organizations.name`` is ``NOT NULL`` in the schema, so
+        clearing it would violate the constraint on write. Callers (the
+        admin route) validate ``name`` at the form boundary first.
+
+        Returns the updated :class:`Organization`, or ``None`` if the row
+        is missing or soft-deleted.
+        """
+        ...
+
+    @abstractmethod
     def create_membership(
         self,
         *,

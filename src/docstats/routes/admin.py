@@ -10,14 +10,15 @@ Solo users and sub-admin org members get a 403. The route body never executes
 for them — the dependency raises before the handler runs.
 
 This file ships Phase 6.A (foundation + ``GET /admin`` overview), Phase
-6.B (specialty-rules editor), and Phase 6.C (payer-rules editor).
-Subsequent slices land the remaining admin surfaces (org settings, audit
-viewer, members) as additional routes on the same router.
+6.B (specialty-rules editor), Phase 6.C (payer-rules editor), and Phase
+6.D (org settings). Subsequent slices land the remaining admin surfaces
+(audit viewer, members) as additional routes on the same router.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Path, Request
@@ -28,10 +29,11 @@ from docstats.domain.audit import record as audit_record
 from docstats.domain.orgs import Organization, has_role_at_least
 from docstats.domain.reference import PayerRule, SpecialtyRule
 from docstats.domain.rules import REQUIRED_FIELD_CHECKS
-from docstats.routes._common import get_scope, render, saved_count
+from docstats.routes._common import US_STATES, get_scope, render, saved_count
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
+from docstats.validators import ValidationError, validate_npi
 
 logger = logging.getLogger(__name__)
 
@@ -899,3 +901,190 @@ async def payer_rule_save(
         entity_id=payer_key,
     )
     return _redirect_after_save(request, "/admin/payer-rules")
+
+
+# ---------------------------------------------------------------------------
+# Org settings (Phase 6.D)
+#
+# Simple form — name + NPI + address + phone/fax. The org's ``slug`` is
+# intentionally not editable here: changing it would break bookmarked
+# URLs and any downstream integrations keyed on slug. Letterhead upload
+# is deferred to Phase 6.5.
+#
+# Storage: ``update_organization(org_id, *, overwrite=True, ...)`` writes
+# every kwarg literally so an empty form submission clears the optional
+# fields. ``name`` is NOT NULL in the schema; the route validates it's
+# non-empty before calling storage. Cross-tenant access is impossible —
+# the org_id comes from the resolved ``Scope`` via ``require_admin_scope``,
+# not from a path param.
+# ---------------------------------------------------------------------------
+
+_VALID_STATE_CODES: frozenset[str] = frozenset(code for code, _ in US_STATES)
+
+
+def _org_settings_form_values(org: Organization) -> dict[str, str]:
+    """Render the Organization row as a dict of form defaults (all strings)."""
+    return {
+        "name": org.name or "",
+        "npi": org.npi or "",
+        "address_line1": org.address_line1 or "",
+        "address_line2": org.address_line2 or "",
+        "address_city": org.address_city or "",
+        "address_state": org.address_state or "",
+        "address_zip": org.address_zip or "",
+        "phone": org.phone or "",
+        "fax": org.fax or "",
+    }
+
+
+@router.get("/org-settings", response_class=HTMLResponse)
+async def org_settings_form(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Render the org-settings form seeded from the current row."""
+    org = _require_org(scope, storage)
+    return render(
+        "admin/org_settings.html",
+        _ctx(
+            request,
+            current_user,
+            storage,
+            scope,
+            org,
+            active_section="org-settings",
+            form=_org_settings_form_values(org),
+            states=US_STATES,
+            errors=None,
+        ),
+    )
+
+
+def _clean(value: str | None) -> str | None:
+    """Trim whitespace; collapse empty/whitespace-only to None."""
+    if value is None:
+        return None
+    v = value.strip()
+    return v or None
+
+
+_ZIP_PATTERN = re.compile(r"^\d{5}(?:-?\d{4})?$")
+
+
+@router.post("/org-settings", response_class=HTMLResponse)
+async def org_settings_save(
+    request: Request,
+    name: str = Form(..., max_length=200),
+    npi: str = Form("", max_length=10),
+    address_line1: str = Form("", max_length=200),
+    address_line2: str = Form("", max_length=200),
+    address_city: str = Form("", max_length=100),
+    address_state: str = Form("", max_length=2),
+    address_zip: str = Form("", max_length=10),
+    phone: str = Form("", max_length=40),
+    fax: str = Form("", max_length=40),
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Save org settings. Empty form fields clear the column."""
+    org = _require_org(scope, storage)
+    name_clean = name.strip()
+    errors: list[str] = []
+    if not name_clean:
+        errors.append("Organization name is required.")
+
+    npi_clean = _clean(npi)
+    if npi_clean is not None:
+        try:
+            npi_clean = validate_npi(npi_clean)
+        except ValidationError as e:
+            errors.append(str(e))
+
+    state_clean = _clean(address_state)
+    if state_clean is not None:
+        state_clean = state_clean.upper()
+        if state_clean not in _VALID_STATE_CODES:
+            errors.append(f"Unknown state code: {state_clean!r}.")
+
+    zip_clean = _clean(address_zip)
+    if zip_clean is not None and not _ZIP_PATTERN.match(zip_clean):
+        errors.append("ZIP must be 5 digits or 5+4 (e.g. 94110 or 94110-1234).")
+
+    if errors:
+        # Re-render with the submitted values so the admin doesn't lose
+        # their typing on a validation error.
+        submitted = {
+            "name": name,
+            "npi": npi,
+            "address_line1": address_line1,
+            "address_line2": address_line2,
+            "address_city": address_city,
+            "address_state": address_state,
+            "address_zip": address_zip,
+            "phone": phone,
+            "fax": fax,
+        }
+        return render(
+            "admin/org_settings.html",
+            _ctx(
+                request,
+                current_user,
+                storage,
+                scope,
+                org,
+                active_section="org-settings",
+                form=submitted,
+                states=US_STATES,
+                errors=errors,
+            ),
+        )
+
+    try:
+        updated = storage.update_organization(
+            org.id,
+            name=name_clean,
+            npi=npi_clean,
+            address_line1=_clean(address_line1),
+            address_line2=_clean(address_line2),
+            address_city=_clean(address_city),
+            address_state=state_clean,
+            address_zip=zip_clean,
+            phone=_clean(phone),
+            fax=_clean(fax),
+            overwrite=True,
+        )
+    except ValueError as e:
+        return render(
+            "admin/org_settings.html",
+            _ctx(
+                request,
+                current_user,
+                storage,
+                scope,
+                org,
+                active_section="org-settings",
+                form=_org_settings_form_values(org),
+                states=US_STATES,
+                errors=[str(e)],
+            ),
+        )
+
+    if updated is None:
+        # Row vanished mid-flight (soft-deleted). Vanishingly unlikely under
+        # an admin's own session but the storage contract allows it — surface
+        # a 404 so the client knows the write didn't land.
+        raise HTTPException(status_code=404, detail="Organization not found.")
+
+    audit_record(
+        storage,
+        action="admin.org.update",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_organization_id=scope.organization_id,
+        entity_type="organization",
+        entity_id=str(org.id),
+    )
+    return _redirect_after_save(request, "/admin/org-settings")

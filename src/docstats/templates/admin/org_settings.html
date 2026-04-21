@@ -1,0 +1,75 @@
+{% extends "admin/_admin_layout.html" %}
+
+{% block admin_content %}
+<div class="saved-header">
+  <div>
+    <h1>Organization settings</h1>
+    <div class="sub">Contact info shown on outgoing packets and cover sheets.</div>
+  </div>
+</div>
+
+{% if errors %}
+  <div class="alert alert-error">
+    <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+{% endif %}
+
+<form method="post" action="/admin/org-settings" class="rule-edit-form card">
+  <div class="form-row">
+    <label>Organization name
+      <input type="text" name="name" value="{{ form.name }}" maxlength="200" required autocomplete="organization">
+      <span class="muted sub">Shown on fax covers, patient-friendly summaries, and the admin header.</span>
+    </label>
+  </div>
+
+  <div class="form-row">
+    <label>Organization NPI
+      <input type="text" name="npi" value="{{ form.npi }}" maxlength="10" inputmode="numeric" pattern="\d{10}">
+      <span class="muted sub">10 digits. Leave blank if your org doesn't have an NPI-2.</span>
+    </label>
+  </div>
+
+  <fieldset class="form-row">
+    <legend>Address</legend>
+    <div class="form-row">
+      <label>Street
+        <input type="text" name="address_line1" value="{{ form.address_line1 }}" maxlength="200" autocomplete="address-line1">
+      </label>
+    </div>
+    <div class="form-row">
+      <label>Suite / unit
+        <input type="text" name="address_line2" value="{{ form.address_line2 }}" maxlength="200" autocomplete="address-line2">
+      </label>
+    </div>
+    <div class="form-row" style="display:grid; grid-template-columns: 2fr 1fr 1fr; gap:10px;">
+      <label>City
+        <input type="text" name="address_city" value="{{ form.address_city }}" maxlength="100" autocomplete="address-level2">
+      </label>
+      <label>State
+        <select name="address_state" autocomplete="address-level1">
+          <option value=""{% if not form.address_state %} selected{% endif %}>—</option>
+          {% for code, label in states %}
+            <option value="{{ code }}"{% if form.address_state == code %} selected{% endif %}>{{ code }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>ZIP
+        <input type="text" name="address_zip" value="{{ form.address_zip }}" maxlength="10" autocomplete="postal-code">
+      </label>
+    </div>
+  </fieldset>
+
+  <div class="form-row" style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+    <label>Phone
+      <input type="tel" name="phone" value="{{ form.phone }}" maxlength="40" autocomplete="tel">
+    </label>
+    <label>Fax
+      <input type="tel" name="fax" value="{{ form.fax }}" maxlength="40" autocomplete="fax">
+    </label>
+  </div>
+
+  <div class="action-bar">
+    <button type="submit" class="btn btn-primary">Save settings</button>
+  </div>
+</form>
+{% endblock %}

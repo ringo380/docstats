@@ -134,6 +134,92 @@ def test_slug_can_be_reused_after_soft_delete(storage: Storage) -> None:
     assert second.id != first.id
 
 
+# --- update_organization (Phase 6.D) ---
+
+
+def test_update_organization_leaves_unchanged_by_default(storage: Storage) -> None:
+    """``None`` kwargs with default ``overwrite=False`` mean "leave unchanged"."""
+    org = storage.create_organization(
+        name="Original",
+        slug="orig",
+        npi="1111111111",
+        address_city="SF",
+        phone="4155550001",
+    )
+    # Caller passes only a new name; everything else is untouched.
+    updated = storage.update_organization(org.id, name="Renamed")
+    assert updated is not None
+    assert updated.name == "Renamed"
+    assert updated.npi == "1111111111"  # preserved
+    assert updated.address_city == "SF"
+    assert updated.phone == "4155550001"
+
+
+def test_update_organization_overwrite_clears_nulls(storage: Storage) -> None:
+    """With ``overwrite=True``, ``None`` kwargs write ``NULL`` to the column."""
+    org = storage.create_organization(
+        name="Original",
+        slug="overwrite",
+        npi="1111111111",
+        address_line1="100 Old St",
+        phone="4155550001",
+        fax="4155550002",
+    )
+    updated = storage.update_organization(
+        org.id,
+        name="Original",  # schema requires non-empty; pass existing value
+        npi=None,
+        address_line1=None,
+        phone=None,
+        fax=None,
+        overwrite=True,
+    )
+    assert updated is not None
+    assert updated.name == "Original"
+    assert updated.npi is None
+    assert updated.address_line1 is None
+    assert updated.phone is None
+    assert updated.fax is None
+
+
+def test_update_organization_overwrite_rejects_empty_name(storage: Storage) -> None:
+    """``organizations.name`` is NOT NULL in the schema; overwrite mode must
+    fail fast rather than let the DB reject the write with a cryptic error."""
+    org = storage.create_organization(name="Keep", slug="keep")
+    with pytest.raises(ValueError, match="non-empty"):
+        storage.update_organization(org.id, name=None, overwrite=True)
+    with pytest.raises(ValueError, match="non-empty"):
+        storage.update_organization(org.id, name="   ", overwrite=True)
+
+
+def test_update_organization_returns_none_for_missing(storage: Storage) -> None:
+    assert storage.update_organization(9999, name="Whatever") is None
+
+
+def test_update_organization_returns_none_for_soft_deleted(storage: Storage) -> None:
+    org = storage.create_organization(name="Ghost", slug="ghost")
+    storage.soft_delete_organization(org.id)
+    assert storage.update_organization(org.id, name="Zombie") is None
+
+
+def test_update_organization_does_not_touch_slug(storage: Storage) -> None:
+    """``slug`` is intentionally not an accepted kwarg — changing it would
+    break bookmarked URLs. The method signature enforces this."""
+    org = storage.create_organization(name="Stable", slug="stable-slug")
+    updated = storage.update_organization(org.id, name="Renamed")
+    assert updated is not None
+    assert updated.slug == "stable-slug"
+
+
+def test_update_organization_no_kwargs_returns_current_row(storage: Storage) -> None:
+    """Calling with no fields is a valid no-op; return the current row."""
+    org = storage.create_organization(name="NoOp", slug="noop")
+    unchanged = storage.update_organization(org.id)
+    assert unchanged is not None
+    assert unchanged.id == org.id
+    assert unchanged.name == "NoOp"
+
+
 # --- Memberships storage ---
 
 

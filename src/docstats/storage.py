@@ -1582,6 +1582,59 @@ class Storage(StorageBase):
         self._conn.commit()
         return cursor.rowcount > 0
 
+    def update_organization(
+        self,
+        organization_id: int,
+        *,
+        name: str | None = None,
+        npi: str | None = None,
+        address_line1: str | None = None,
+        address_line2: str | None = None,
+        address_city: str | None = None,
+        address_state: str | None = None,
+        address_zip: str | None = None,
+        phone: str | None = None,
+        fax: str | None = None,
+        overwrite: bool = False,
+    ) -> Organization | None:
+        # Gather (column, value) for each kwarg the caller supplied. In
+        # default mode (``overwrite=False``) only non-None values are
+        # written; in overwrite mode every kwarg (including None) is
+        # written literally so the admin-save path can clear optional
+        # fields. ``name`` must remain non-empty — schema is NOT NULL.
+        kwargs: dict[str, str | None] = {
+            "name": name,
+            "npi": npi,
+            "address_line1": address_line1,
+            "address_line2": address_line2,
+            "address_city": address_city,
+            "address_state": address_state,
+            "address_zip": address_zip,
+            "phone": phone,
+            "fax": fax,
+        }
+        if overwrite and (name is None or not name.strip()):
+            raise ValueError("Organization name must be non-empty when overwrite=True.")
+        fields: dict[str, str | None] = {}
+        for col, val in kwargs.items():
+            if overwrite:
+                fields[col] = val
+            elif val is not None:
+                fields[col] = val
+        if not fields:
+            # Nothing to write — return current row (may be None if missing).
+            return self.get_organization(organization_id)
+        set_clause = ", ".join(f"{col} = ?" for col in fields)
+        params = [*fields.values(), organization_id]
+        cursor = self._conn.execute(
+            f"UPDATE organizations SET {set_clause} WHERE id = ? AND deleted_at IS NULL",
+            params,
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_organization(organization_id)
+
     def create_membership(
         self,
         *,
