@@ -21,10 +21,12 @@ from fastapi.responses import HTMLResponse, Response
 from docstats.domain.audit import record as audit_record
 from docstats.domain.referrals import (
     AUTH_STATUS_VALUES,
+    RECEIVED_VIA_VALUES,
     STATUS_TRANSITIONS,
     STATUS_VALUES,
     URGENCY_VALUES,
     InvalidTransition,
+    transition_allowed,
     require_transition,
 )
 from docstats.domain.rules import (
@@ -338,12 +340,15 @@ def _render_detail(
     referral_id: int,
     *,
     errors: list[str] | None = None,
+    response_errors: list[str] | None = None,
+    response_values: dict | None = None,
 ) -> Response:
     referral = storage.get_referral(scope, referral_id)
     if referral is None:
         raise HTTPException(status_code=404, detail="Referral not found.")
     patient = storage.get_patient(scope, referral.patient_id)
     events = storage.list_referral_events(scope, referral_id, limit=50)
+    responses = storage.list_referral_responses(scope, referral_id)
     completeness = rules_based_completeness(storage, scope, referral)
     return render(
         "referral_detail.html",
@@ -354,11 +359,15 @@ def _render_detail(
             referral=referral,
             patient=patient,
             events=events,
+            responses=responses,
             completeness=completeness,
             urgency_values=URGENCY_VALUES,
             auth_status_values=AUTH_STATUS_VALUES,
+            received_via_values=RECEIVED_VIA_VALUES,
             allowed_next=_allowed_next_statuses(referral.status),
             errors=errors,
+            response_errors=response_errors,
+            response_values=response_values or {},
         ),
     )
 
@@ -681,3 +690,354 @@ async def referral_delete(
     if request.headers.get("HX-Request"):
         return Response(status_code=200, headers={"HX-Redirect": "/referrals"})
     return Response(status_code=303, headers={"Location": "/referrals"})
+
+
+# --- Closed-loop response capture (Phase 7.A) ---
+#
+# Responses are scope-transitive via the parent referral (storage methods gate
+# on ``get_referral(scope, ...)``). The route layer adds:
+#   * form parsing + enum validation at the boundary,
+#   * a ``response_received`` ReferralEvent on every successful create,
+#   * auto-transition to ``completed`` when ``consult_completed=True`` AND the
+#     state machine allows ``current_status → completed`` (today: only from
+#     ``scheduled``). Out-of-machine states silently skip the transition — the
+#     response is still recorded, and the coordinator can transition manually.
+
+
+def _clean_appointment_date(value: str | None) -> str | None:
+    """Accept blank; validate ISO YYYY-MM-DD; raise 422 on malformed.
+
+    HTML ``<input type="date">`` produces ISO strings, so the route-boundary
+    check catches only hand-crafted payloads — but we still guard since the
+    DB column is TEXT (no format enforcement in SQLite).
+    """
+    v = _clean(value)
+    if v is None:
+        return None
+    from datetime import date
+
+    try:
+        date.fromisoformat(v)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="appointment_date must be YYYY-MM-DD.")
+    return v
+
+
+def _maybe_auto_complete(
+    storage: StorageBase,
+    scope: Scope,
+    referral_id: int,
+    actor_user_id: int,
+) -> str | None:
+    """Attempt the ``current_status → completed`` auto-transition.
+
+    Re-reads the referral status just before the write to close the window
+    where a concurrent request may have transitioned the row. ``storage
+    .set_referral_status`` does NOT validate the state machine (by design —
+    it's dumb storage), so if we rely on a stale snapshot from the request
+    handler we can force-write ``completed`` over a racing ``cancelled``.
+    Fetching inside the helper shrinks the window to microseconds and reads
+    the actual status used for the transition check + emitted event.
+
+    Returns the new status if the transition landed, else None. Event-insert
+    failures are logged but not raised — matches the degradation posture of
+    ``referral_update``.
+    """
+    fresh = storage.get_referral(scope, referral_id)
+    if fresh is None:
+        return None
+    from_status = fresh.status
+    if not transition_allowed(from_status, "completed"):
+        return None
+    updated = storage.set_referral_status(scope, referral_id, "completed")
+    if updated is None:
+        return None
+    try:
+        storage.record_referral_event(
+            scope,
+            referral_id,
+            event_type="status_changed",
+            from_value=from_status,
+            to_value="completed",
+            actor_user_id=actor_user_id,
+            note="auto: consult completed",
+        )
+    except Exception:
+        logger.exception("Failed to record auto status_changed event for referral %s", referral_id)
+    return "completed"
+
+
+def _render_detail_with_response_error(
+    request: Request,
+    current_user: dict,
+    storage: StorageBase,
+    scope: Scope,
+    referral_id: int,
+    errors: list[str],
+    values: dict,
+) -> Response:
+    return _render_detail(
+        request,
+        current_user,
+        storage,
+        scope,
+        referral_id,
+        response_errors=errors,
+        response_values=values,
+    )
+
+
+@router.post("/{referral_id}/response", response_class=HTMLResponse)
+async def referral_response_create(
+    request: Request,
+    referral_id: int = Path(..., ge=1),
+    appointment_date: str | None = Form(None, max_length=10),
+    consult_completed: str | None = Form(None, max_length=8),
+    recommendations_text: str | None = Form(None, max_length=4000),
+    received_via: str = Form("manual", max_length=16),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    existing = storage.get_referral(scope, referral_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    if received_via not in RECEIVED_VIA_VALUES:
+        raise HTTPException(status_code=422, detail="Unknown received_via value.")
+
+    appt = _clean_appointment_date(appointment_date)
+    completed = consult_completed in ("on", "true", "1", "yes")
+    recs = _clean(recommendations_text)
+
+    if appt is None and not completed and recs is None:
+        return _render_detail_with_response_error(
+            request,
+            current_user,
+            storage,
+            scope,
+            referral_id,
+            ["Add an appointment date, recommendations, or mark the consult as completed."],
+            {
+                "appointment_date": appointment_date or "",
+                "consult_completed": completed,
+                "recommendations_text": recommendations_text or "",
+                "received_via": received_via,
+            },
+        )
+
+    created = storage.record_referral_response(
+        scope,
+        referral_id,
+        appointment_date=appt,
+        consult_completed=completed,
+        recommendations_text=recs,
+        received_via=received_via,
+        recorded_by_user_id=current_user["id"],
+    )
+    if created is None:
+        # Soft-deleted between the read and write — surface as 404.
+        raise HTTPException(status_code=404, detail="Referral not found.")
+
+    # Event log: one response_received per create. Use ``to_value`` to
+    # encode the terminal-ness of the response ("scheduled" vs "completed")
+    # so the timeline renders something useful without looking up the row.
+    summary = "completed" if completed else ("scheduled" if appt else "recorded")
+    try:
+        storage.record_referral_event(
+            scope,
+            referral_id,
+            event_type="response_received",
+            to_value=summary,
+            actor_user_id=current_user["id"],
+            note=f"via {received_via}",
+        )
+    except Exception:
+        logger.exception("Failed to record response_received event for referral %s", referral_id)
+
+    # Auto-transition to completed when the closed loop is complete AND the
+    # state machine permits it from the current status. Helper re-reads the
+    # row just before the write so a racing status change isn't clobbered.
+    auto_transitioned = False
+    if completed:
+        new_status = _maybe_auto_complete(storage, scope, referral_id, current_user["id"])
+        auto_transitioned = new_status is not None
+
+    audit_record(
+        storage,
+        action="referral.response.create",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral_response",
+        entity_id=str(created.id),
+        metadata={
+            "referral_id": referral_id,
+            "consult_completed": completed,
+            "received_via": received_via,
+            "auto_transitioned": auto_transitioned,
+        },
+    )
+    dest = f"/referrals/{referral_id}"
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": dest})
+    return Response(status_code=303, headers={"Location": dest})
+
+
+@router.post("/{referral_id}/response/{response_id}", response_class=HTMLResponse)
+async def referral_response_update(
+    request: Request,
+    referral_id: int = Path(..., ge=1),
+    response_id: int = Path(..., ge=1),
+    appointment_date: str | None = Form(None, max_length=10),
+    consult_completed: str | None = Form(None, max_length=8),
+    recommendations_text: str | None = Form(None, max_length=4000),
+    received_via: str | None = Form(None, max_length=16),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    existing = storage.get_referral(scope, referral_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    via_clean = _clean(received_via)
+    if via_clean is not None and via_clean not in RECEIVED_VIA_VALUES:
+        raise HTTPException(status_code=422, detail="Unknown received_via value.")
+
+    # Track whether the update is flipping consult_completed from False → True.
+    prior_responses = {r.id: r for r in storage.list_referral_responses(scope, referral_id)}
+    prior = prior_responses.get(response_id)
+    if prior is None:
+        raise HTTPException(status_code=404, detail="Response not found.")
+
+    appt = _clean_appointment_date(appointment_date)
+    # ``consult_completed`` is a checkbox — absent on unchecked, present on
+    # checked. On update, we always interpret it as the user's desired state
+    # (since the edit form always posts the checkbox state).
+    completed_flag = consult_completed in ("on", "true", "1", "yes")
+    recs = _clean(recommendations_text)
+
+    try:
+        updated = storage.update_referral_response(
+            scope,
+            referral_id,
+            response_id,
+            appointment_date=appt,
+            consult_completed=completed_flag,
+            recommendations_text=recs,
+            received_via=via_clean,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Response not found.")
+
+    newly_completed = completed_flag and not prior.consult_completed
+    auto_transitioned = False
+    if newly_completed:
+        new_status = _maybe_auto_complete(storage, scope, referral_id, current_user["id"])
+        auto_transitioned = new_status is not None
+
+    audit_record(
+        storage,
+        action="referral.response.update",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral_response",
+        entity_id=str(response_id),
+        metadata={
+            "referral_id": referral_id,
+            "consult_completed": completed_flag,
+            "auto_transitioned": auto_transitioned,
+        },
+    )
+    dest = f"/referrals/{referral_id}"
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": dest})
+    return Response(status_code=303, headers={"Location": dest})
+
+
+@router.delete("/{referral_id}/response/{response_id}")
+async def referral_response_delete(
+    request: Request,
+    referral_id: int = Path(..., ge=1),
+    response_id: int = Path(..., ge=1),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    existing = storage.get_referral(scope, referral_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    if not storage.delete_referral_response(scope, referral_id, response_id):
+        raise HTTPException(status_code=404, detail="Response not found.")
+    audit_record(
+        storage,
+        action="referral.response.delete",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral_response",
+        entity_id=str(response_id),
+        metadata={"referral_id": referral_id},
+    )
+    dest = f"/referrals/{referral_id}"
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": dest})
+    return Response(status_code=303, headers={"Location": dest})
+
+
+# Fields the POST .../clear/{field} endpoint will set to NULL. Matches
+# ``StorageBase.clear_referral_response_field``'s allow-list — keep in sync.
+_RESPONSE_CLEARABLE_FIELDS: frozenset[str] = frozenset(
+    {"appointment_date", "recommendations_text", "attached_consult_note_ref"}
+)
+
+
+@router.post("/{referral_id}/response/{response_id}/clear/{field}", response_class=HTMLResponse)
+async def referral_response_clear_field(
+    request: Request,
+    referral_id: int = Path(..., ge=1),
+    response_id: int = Path(..., ge=1),
+    field: str = Path(..., max_length=64),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Explicitly NULL one of the nullable text fields on a response.
+
+    Companion to :func:`referral_response_update`'s None-means-skip semantics
+    — the edit form can't distinguish "leave alone" from "set to NULL" for a
+    blank text input, so explicit clearing lives here. The allow-list
+    matches ``StorageBase.clear_referral_response_field``; unknown fields
+    return 422.
+    """
+    if field not in _RESPONSE_CLEARABLE_FIELDS:
+        raise HTTPException(status_code=422, detail=f"Field {field!r} is not clearable.")
+    existing_referral = storage.get_referral(scope, referral_id)
+    if existing_referral is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    try:
+        updated = storage.clear_referral_response_field(scope, referral_id, response_id, field)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Response not found.")
+    audit_record(
+        storage,
+        action="referral.response.update",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="referral_response",
+        entity_id=str(response_id),
+        metadata={"referral_id": referral_id, "cleared": field},
+    )
+    dest = f"/referrals/{referral_id}"
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": dest})
+    return Response(status_code=303, headers={"Location": dest})
