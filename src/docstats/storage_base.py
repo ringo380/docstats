@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 
 if TYPE_CHECKING:
+    from datetime import datetime  # forward-ref for list_audit_events kwargs
+
     from docstats.domain.audit import AuditEvent
     from docstats.domain.orgs import Membership, Organization
     from docstats.domain.patients import Patient
@@ -298,8 +300,26 @@ class StorageBase(ABC):
         scope_organization_id: int | None = None,
         entity_type: str | None = None,
         entity_id: str | None = None,
+        action: str | None = None,
+        since: "datetime | None" = None,
+        until: "datetime | None" = None,
         limit: int = 100,
-    ) -> list["AuditEvent"]: ...
+        offset: int = 0,
+    ) -> list["AuditEvent"]:
+        """Return audit events matching all provided filters, newest first.
+
+        All filters are AND'd; ``None`` means "no filter on this column".
+
+        - ``action`` is an exact-match filter (use e.g. ``"patient.create"``).
+        - ``since`` / ``until`` bound ``created_at`` (inclusive lower,
+          EXCLUSIVE upper — mirrors the common "this hour" / "today" UI
+          semantics and avoids boundary double-counting when chunking by
+          day).
+        - ``offset`` is for pagination (combined with ``limit``).
+
+        Returns ``[]`` when no rows match.
+        """
+        ...
 
     # --- Sessions (server-side row for remote revocation) ---
 
