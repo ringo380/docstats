@@ -1,0 +1,88 @@
+{% extends "admin/_admin_layout.html" %}
+
+{% block admin_content %}
+<div class="saved-header">
+  <div>
+    <h1>Audit log</h1>
+    <div class="sub">Every state-changing action recorded for this organization.</div>
+  </div>
+</div>
+
+<form method="get" action="/admin/audit" class="filter-bar">
+  <label>Action
+    <input type="text" name="action" value="{{ filters.action }}"
+           list="audit-actions" maxlength="64" autocomplete="off"
+           placeholder="e.g. patient.create">
+    <datalist id="audit-actions">
+      {% for a in known_actions %}<option value="{{ a }}">{% endfor %}
+    </datalist>
+  </label>
+  <label>Entity type
+    <input type="text" name="entity_type" value="{{ filters.entity_type }}"
+           maxlength="32" autocomplete="off" placeholder="e.g. patient">
+  </label>
+  <label>Entity id
+    <input type="text" name="entity_id" value="{{ filters.entity_id }}"
+           maxlength="64" autocomplete="off">
+  </label>
+  <label>Actor user id
+    <input type="number" name="actor_user_id" value="{{ filters.actor_user_id }}"
+           min="1" inputmode="numeric">
+  </label>
+  <label>From
+    <input type="date" name="since" value="{{ filters.since }}">
+  </label>
+  <label>To
+    <input type="date" name="until" value="{{ filters.until }}">
+  </label>
+  <button type="submit" class="btn btn-primary btn-sm">Filter</button>
+  <a href="/admin/audit" class="btn btn-secondary btn-sm">Clear</a>
+</form>
+
+<div class="card" style="margin-top:16px;">
+  {% if events %}
+    <table class="admin-events">
+      <thead>
+        <tr>
+          <th>When (UTC)</th>
+          <th>Action</th>
+          <th>Actor</th>
+          <th>Entity</th>
+          <th>IP</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in events %}
+          <tr>
+            <td class="muted">{{ event.created_at.strftime('%Y-%m-%d %H:%M:%S') if event.created_at else '—' }}</td>
+            <td><code>{{ event.action }}</code></td>
+            <td class="muted">{{ event.actor_user_id if event.actor_user_id is not none else '—' }}</td>
+            <td class="muted">
+              {% if event.entity_type %}{{ event.entity_type }}{% if event.entity_id %}&nbsp;#{{ event.entity_id }}{% endif %}{% else %}—{% endif %}
+            </td>
+            <td class="muted">{{ event.ip or '—' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No audit events match the current filters.</p>
+  {% endif %}
+  {# Pagination rendered outside the events-truthy branch so an admin who #}
+  {# pages past the end can still click Previous to back out.            #}
+  {% if prev_offset is not none or next_offset is not none %}
+    <div class="action-bar" style="margin-top:12px; display:flex; gap:8px; align-items:center;">
+      <span class="muted sub">Page offset {{ offset }} · showing {{ events | length }} of up to {{ page_size }}.</span>
+      <span style="flex:1;"></span>
+      {% if prev_offset is not none %}
+        {% set prev_qs = request.url.include_query_params(offset=prev_offset) %}
+        <a href="?{{ prev_qs.query }}" class="btn btn-secondary btn-sm">← Previous</a>
+      {% endif %}
+      {% if next_offset is not none %}
+        {% set next_qs = request.url.include_query_params(offset=next_offset) %}
+        <a href="?{{ next_qs.query }}" class="btn btn-secondary btn-sm">Next →</a>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

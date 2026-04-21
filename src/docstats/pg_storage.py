@@ -62,6 +62,18 @@ def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
+def _to_pg_iso(dt: datetime) -> str:
+    """Serialize a datetime to an ISO-8601 string for Supabase filter values.
+
+    Supabase/PostgREST accepts tz-aware ISO-8601. Tz-naive datetimes are
+    assumed to be UTC and get a UTC suffix attached for symmetry with
+    ``_now_iso``.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
 def _parse_ts(value: str | None) -> datetime | None:
     """Parse an ISO timestamp string from Supabase into a datetime."""
     if not value:
@@ -894,7 +906,11 @@ class PostgresStorage(StorageBase):
         scope_organization_id: int | None = None,
         entity_type: str | None = None,
         entity_id: str | None = None,
+        action: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[AuditEvent]:
         query = self._t("audit_events").select("*")
         if actor_user_id is not None:
@@ -907,8 +923,20 @@ class PostgresStorage(StorageBase):
             query = query.eq("entity_type", entity_type)
         if entity_id is not None:
             query = query.eq("entity_id", entity_id)
+        if action is not None:
+            query = query.eq("action", action)
+        if since is not None:
+            query = query.gte("created_at", _to_pg_iso(since))
+        if until is not None:
+            query = query.lt("created_at", _to_pg_iso(until))
         # Tiebreaker on id DESC so same-millisecond rows stay deterministic.
-        result = query.order("created_at", desc=True).order("id", desc=True).limit(limit).execute()
+        # supabase-py ``.range(start, end)`` is inclusive zero-indexed, so
+        # offset + limit - 1 is the right upper bound.
+        query = query.order("created_at", desc=True).order("id", desc=True)
+        if offset:
+            result = query.range(offset, offset + int(limit) - 1).execute()
+        else:
+            result = query.limit(int(limit)).execute()
         return [_row_to_audit_event(row) for row in result.data]
 
     # --- Organizations & memberships ---

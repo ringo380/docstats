@@ -84,6 +84,21 @@ def _parse_sqlite_utc(value: str | None) -> datetime | None:
     return dt
 
 
+def _to_sqlite_utc_iso(dt: datetime) -> str:
+    """Serialize a datetime to SQLite's ``datetime('now')`` text format.
+
+    SQLite stores timestamps as ``YYYY-MM-DD HH:MM:SS`` (no timezone
+    suffix, no microseconds). Lexicographic compare is ordering-correct
+    for that format, so passing the returned string into ``WHERE
+    created_at >= ?`` works as a timestamp filter. Tz-aware datetimes are
+    normalized to UTC first; naive datetimes are assumed to already be in
+    UTC.
+    """
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _row_to_organization(row: sqlite3.Row) -> Organization:
     """Convert a SQLite organizations row into an Organization model."""
     created = _parse_sqlite_utc(row["created_at"])
@@ -1491,7 +1506,11 @@ class Storage(StorageBase):
         scope_organization_id: int | None = None,
         entity_type: str | None = None,
         entity_id: str | None = None,
+        action: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[AuditEvent]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -1510,10 +1529,23 @@ class Storage(StorageBase):
         if entity_id is not None:
             clauses.append("entity_id = ?")
             params.append(entity_id)
+        if action is not None:
+            clauses.append("action = ?")
+            params.append(action)
+        if since is not None:
+            # SQLite stores created_at as an ISO-8601 TEXT (``datetime('now')``
+            # default). Lexicographic compare is correct for ISO-8601 strings.
+            clauses.append("created_at >= ?")
+            params.append(_to_sqlite_utc_iso(since))
+        if until is not None:
+            clauses.append("created_at < ?")
+            params.append(_to_sqlite_utc_iso(until))
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         # Tiebreaker on id DESC so same-second rows stay deterministic.
-        sql = f"SELECT * FROM audit_events{where} ORDER BY created_at DESC, id DESC LIMIT ?"
-        params.append(int(limit))
+        sql = (
+            f"SELECT * FROM audit_events{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([int(limit), int(offset)])
         rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_audit_event(row) for row in rows]
 

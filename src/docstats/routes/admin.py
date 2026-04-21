@@ -10,18 +10,19 @@ Solo users and sub-admin org members get a 403. The route body never executes
 for them — the dependency raises before the handler runs.
 
 This file ships Phase 6.A (foundation + ``GET /admin`` overview), Phase
-6.B (specialty-rules editor), Phase 6.C (payer-rules editor), and Phase
-6.D (org settings). Subsequent slices land the remaining admin surfaces
-(audit viewer, members) as additional routes on the same router.
+6.B (specialty-rules editor), Phase 6.C (payer-rules editor), Phase 6.D
+(org settings), and Phase 6.E (audit log viewer). The last remaining
+slice is 6.F (members + invitations).
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Path, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
 from docstats.auth import require_user
@@ -1088,3 +1089,155 @@ async def org_settings_save(
         entity_id=str(org.id),
     )
     return _redirect_after_save(request, "/admin/org-settings")
+
+
+# ---------------------------------------------------------------------------
+# Audit log viewer (Phase 6.E)
+#
+# Read-only surface. Filters: action (exact match), entity_type, entity_id,
+# actor_user_id, since/until (date-only inputs from the form; coerced to
+# midnight UTC). Pagination: offset + fixed page size. Scope is pinned to
+# the active org — an admin cannot see audit events for other tenants
+# through this UI.
+#
+# Action vocabulary: presented as a ``<datalist>`` for autocomplete so the
+# form stays typable for unknown action strings (e.g. actions added in
+# future phases) while still offering suggestions for the common ones.
+# ---------------------------------------------------------------------------
+
+_AUDIT_PAGE_SIZE = 50
+
+# The list doesn't have to be exhaustive — it just seeds the datalist UI.
+# New actions added in future phases don't need to touch this list
+# immediately; the free-text input still accepts them.
+_KNOWN_AUDIT_ACTIONS: tuple[str, ...] = (
+    "admin.org.update",
+    "admin.payer_rule.create_override",
+    "admin.payer_rule.revert_override",
+    "admin.payer_rule.update_override",
+    "admin.specialty_rule.create_override",
+    "admin.specialty_rule.revert_override",
+    "admin.specialty_rule.update_override",
+    "import.commit",
+    "import.create",
+    "import.map",
+    "import.row.edit",
+    "import.validate",
+    "patient.create",
+    "patient.delete",
+    "patient.update",
+    "provider.save",
+    "provider.unsave",
+    "referral.create",
+    "referral.delete",
+    "referral.export",
+    "referral.status",
+    "referral.update",
+    "user.login",
+    "user.login_failed",
+    "user.login_github",
+    "user.logout",
+    "user.signup",
+    "user.terms_accepted",
+)
+
+
+def _parse_date_filter(value: str | None, *, end_of_day: bool) -> datetime | None:
+    """Parse an HTML ``<input type="date">`` value (``YYYY-MM-DD``) to UTC.
+
+    The storage filter treats ``since`` as inclusive and ``until`` as
+    exclusive. For the UI that means:
+
+    - ``since`` → midnight UTC of the given date (inclusive, so all events
+      from the start of the day onwards match).
+    - ``until`` → midnight UTC of the day AFTER the given date (exclusive,
+      so the full day the admin typed is included).
+
+    Malformed inputs raise ``HTTPException(422)`` so a typo isn't silently
+    ignored.
+    """
+    if value is None or not value.strip():
+        return None
+    try:
+        d = datetime.strptime(value.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Date must be YYYY-MM-DD: {value!r}")
+    if end_of_day:
+        # Advance one day so the caller's date is inclusive (exclusive upper).
+        d = d + timedelta(days=1)
+    return datetime.combine(d, time.min, tzinfo=timezone.utc)
+
+
+@router.get("/audit", response_class=HTMLResponse)
+async def audit_log(
+    request: Request,
+    action: str | None = Query(None, max_length=64),
+    entity_type: str | None = Query(None, max_length=32),
+    entity_id: str | None = Query(None, max_length=64),
+    actor_user_id: int | None = Query(None, ge=1),
+    since: str | None = Query(None, max_length=10),
+    until: str | None = Query(None, max_length=10),
+    offset: int = Query(0, ge=0, le=10_000),
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Paginated audit-log viewer scoped to the active org."""
+    org = _require_org(scope, storage)
+
+    # Normalize empty strings to None so the storage filter treats them as
+    # "no filter" rather than exact-match "".
+    action_clean = action.strip() if action and action.strip() else None
+    entity_type_clean = entity_type.strip() if entity_type and entity_type.strip() else None
+    entity_id_clean = entity_id.strip() if entity_id and entity_id.strip() else None
+
+    since_dt = _parse_date_filter(since, end_of_day=False)
+    until_dt = _parse_date_filter(until, end_of_day=True)
+
+    # Fetch one extra row to know if there's a next page without a count query.
+    events = storage.list_audit_events(
+        scope_organization_id=scope.organization_id,
+        action=action_clean,
+        entity_type=entity_type_clean,
+        entity_id=entity_id_clean,
+        actor_user_id=actor_user_id,
+        since=since_dt,
+        until=until_dt,
+        limit=_AUDIT_PAGE_SIZE + 1,
+        offset=offset,
+    )
+    has_next = len(events) > _AUDIT_PAGE_SIZE
+    if has_next:
+        events = events[:_AUDIT_PAGE_SIZE]
+    has_prev = offset > 0
+    next_offset = offset + _AUDIT_PAGE_SIZE if has_next else None
+    prev_offset = max(0, offset - _AUDIT_PAGE_SIZE) if has_prev else None
+
+    # Reflect the current filter state back into the template so form
+    # inputs and pagination links preserve it.
+    filters = {
+        "action": action_clean or "",
+        "entity_type": entity_type_clean or "",
+        "entity_id": entity_id_clean or "",
+        "actor_user_id": str(actor_user_id) if actor_user_id is not None else "",
+        "since": since or "",
+        "until": until or "",
+    }
+    return render(
+        "admin/audit.html",
+        _ctx(
+            request,
+            current_user,
+            storage,
+            scope,
+            org,
+            active_section="audit",
+            events=events,
+            filters=filters,
+            known_actions=_KNOWN_AUDIT_ACTIONS,
+            page_size=_AUDIT_PAGE_SIZE,
+            offset=offset,
+            next_offset=next_offset,
+            prev_offset=prev_offset,
+        ),
+    )
