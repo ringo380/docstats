@@ -18,6 +18,8 @@ venv/
 supabase/.temp/
 .claude/
 CLAUDE.md
+AGENTS.md
+GEMINI.md
 .worktrees/
 .junie/
 .mcp.json
