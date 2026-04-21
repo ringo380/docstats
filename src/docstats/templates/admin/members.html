@@ -1,0 +1,128 @@
+{% extends "admin/_admin_layout.html" %}
+
+{% block admin_content %}
+<div class="saved-header">
+  <div>
+    <h1>Members</h1>
+    <div class="sub">Active members + pending invitations.</div>
+  </div>
+</div>
+
+{% if flash %}
+  <div class="alert alert-success">{{ flash }}</div>
+{% endif %}
+{% if flash_error %}
+  <div class="alert alert-error">{{ flash_error }}</div>
+{% endif %}
+
+{% if magic_link %}
+  <div class="card" style="margin-top:14px;">
+    <h3>Copyable invitation link</h3>
+    <p class="muted sub">Email delivery lands in a later phase. Until then, copy this link and send it to the invitee through your preferred channel.</p>
+    <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
+      <input type="text" readonly value="{{ magic_link }}" id="magic-link-input"
+             onclick="this.select()"
+             style="flex:1; font-family:var(--font-mono); font-size:0.82rem;">
+      <button type="button" class="btn btn-secondary btn-sm"
+              onclick="navigator.clipboard.writeText(document.getElementById('magic-link-input').value); this.textContent='Copied';">Copy</button>
+    </div>
+  </div>
+{% endif %}
+
+<div class="card" style="margin-top:16px;">
+  <h3>Active members ({{ member_rows | length }})</h3>
+  <table class="admin-rules">
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Role</th>
+        <th>Joined</th>
+        <th style="text-align:right;">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in member_rows %}
+        <tr>
+          <td>
+            {{ row.email }}{% if row.is_self %} <span class="muted">(you)</span>{% endif %}
+          </td>
+          <td>
+            <form method="post" action="/admin/members/{{ row.membership.user_id }}/role"
+                  style="display:inline-flex; gap:6px; align-items:center;">
+              <select name="role">
+                {% for r in roles %}
+                  <option value="{{ r }}" {% if row.membership.role == r %}selected{% endif %}>{{ r | replace('_', ' ') | title }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit" class="btn btn-secondary btn-sm">Save</button>
+            </form>
+          </td>
+          <td class="muted">
+            {{ row.membership.joined_at.strftime('%Y-%m-%d') if row.membership.joined_at else '—' }}
+          </td>
+          <td style="text-align:right;">
+            <form method="post" action="/admin/members/{{ row.membership.user_id }}/remove"
+                  style="display:inline;"
+                  onsubmit="return confirm('Remove {{ row.email }} from this org?');">
+              <button type="submit" class="btn btn-danger btn-sm">Remove</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3>Invite a new member</h3>
+  <form method="post" action="/admin/members/invite" class="rule-edit-form"
+        style="display:grid; grid-template-columns: 2fr 1fr auto; gap:10px; align-items:end; padding:0;">
+    <label>Email
+      <input type="email" name="email" required maxlength="254"
+             autocomplete="off" placeholder="new.member@example.com">
+    </label>
+    <label>Role
+      <select name="role">
+        {% for r in roles %}
+          <option value="{{ r }}" {% if r == 'staff' %}selected{% endif %}>{{ r | replace('_', ' ') | title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn btn-primary">Generate link</button>
+  </form>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3>Pending invitations ({{ invitations | length }})</h3>
+  {% if invitations %}
+    <table class="admin-rules">
+      <thead>
+        <tr>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Expires</th>
+          <th style="text-align:right;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for inv in invitations %}
+          <tr>
+            <td>{{ inv.email }}</td>
+            <td>{{ inv.role | replace('_', ' ') | title }}</td>
+            <td class="muted">{{ inv.expires_at.strftime('%Y-%m-%d %H:%M') if inv.expires_at else '—' }} UTC</td>
+            <td style="text-align:right;">
+              <form method="post" action="/admin/members/invitations/{{ inv.id }}/revoke"
+                    style="display:inline;"
+                    onsubmit="return confirm('Revoke this invitation?');">
+                <button type="submit" class="btn btn-danger btn-sm">Revoke</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No pending invitations.</p>
+  {% endif %}
+</div>
+{% endblock %}

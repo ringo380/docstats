@@ -27,6 +27,7 @@ from docstats.routes.api import router as api_router
 from docstats.routes.auth import router as auth_router
 from docstats.routes.exports import router as exports_router
 from docstats.routes.imports import router as imports_router
+from docstats.routes.invite import router as invite_router
 from docstats.routes.onboarding import router as onboarding_router
 from docstats.routes.patients import router as patients_router
 from docstats.routes.profile import router as profile_router
@@ -169,6 +170,7 @@ app.include_router(profile_router)
 app.include_router(search_router)
 app.include_router(api_router)
 app.include_router(admin_router)
+app.include_router(invite_router)
 app.include_router(patients_router)
 app.include_router(imports_router)
 app.include_router(exports_router)

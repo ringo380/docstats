@@ -23,6 +23,7 @@ from docstats.domain.imports import (
     CsvImport,
     CsvImportRow,
 )
+from docstats.domain.invitations import Invitation
 from docstats.domain.orgs import ROLES, Membership, Organization
 from docstats.domain.patients import Patient
 from docstats.domain.reference import (
@@ -406,6 +407,25 @@ def _row_to_payer_rule(row: sqlite3.Row) -> PayerRule:
     )
 
 
+def _row_to_invitation(row: sqlite3.Row) -> Invitation:
+    """Convert a SQLite organization_invitations row into an Invitation."""
+    created = _parse_sqlite_utc(row["created_at"])
+    expires = _parse_sqlite_utc(row["expires_at"])
+    assert created is not None and expires is not None
+    return Invitation(
+        id=row["id"],
+        organization_id=row["organization_id"],
+        email=row["email"],
+        role=row["role"],
+        token=row["token"],
+        invited_by_user_id=row["invited_by_user_id"],
+        expires_at=expires,
+        accepted_at=_parse_sqlite_utc(row["accepted_at"]),
+        revoked_at=_parse_sqlite_utc(row["revoked_at"]),
+        created_at=created,
+    )
+
+
 def _row_to_session(row: sqlite3.Row) -> Session:
     """Convert a SQLite sessions row into a Session model."""
     data_raw = row["data_json"]
@@ -532,6 +552,7 @@ class Storage(StorageBase):
         self._migrate_referral_responses()
         self._migrate_reference_data()
         self._migrate_csv_imports()
+        self._migrate_organization_invitations()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -1075,6 +1096,37 @@ class Storage(StorageBase):
                 WHERE status IN ('error','pending');
             CREATE UNIQUE INDEX IF NOT EXISTS idx_csv_import_rows_unique_index
                 ON csv_import_rows(import_id, row_index);
+        """)
+        self._conn.commit()
+
+    def _migrate_organization_invitations(self) -> None:
+        """Create organization_invitations (Phase 6.F)."""
+        # Token must be unique — that's how we look up by it. Email +
+        # organization_id is NOT unique (we allow re-inviting a
+        # previously-accepted or -revoked user).
+        #
+        # Partial unique index on (organization_id, email) WHERE the row
+        # is still pending — prevents an admin from generating two live
+        # invitations for the same email, which would be confusing.
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS organization_invitations (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id      INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+                email                TEXT NOT NULL,
+                role                 TEXT NOT NULL
+                    CHECK (role IN ('owner','admin','coordinator','clinician','staff','read_only')),
+                token                TEXT NOT NULL UNIQUE,
+                invited_by_user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                expires_at           TEXT NOT NULL,
+                accepted_at          TEXT,
+                revoked_at           TEXT,
+                created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_invitations_org
+                ON organization_invitations(organization_id, created_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_pending_unique
+                ON organization_invitations(organization_id, email)
+                WHERE accepted_at IS NULL AND revoked_at IS NULL;
         """)
         self._conn.commit()
 
@@ -1740,6 +1792,101 @@ class Storage(StorageBase):
             "UPDATE memberships SET deleted_at = datetime('now') "
             "WHERE organization_id = ? AND user_id = ? AND deleted_at IS NULL",
             (organization_id, user_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- Organization invitations (Phase 6.F) ---
+
+    def create_invitation(
+        self,
+        *,
+        organization_id: int,
+        email: str,
+        role: str,
+        token: str,
+        expires_at: datetime,
+        invited_by_user_id: int | None = None,
+    ) -> Invitation:
+        # Normalize email at the storage boundary so the partial unique
+        # index on ``(organization_id, email) WHERE pending`` matches
+        # consistently whether the caller lowercased or not.
+        normalized_email = normalize_email(email)
+        cursor = self._conn.execute(
+            "INSERT INTO organization_invitations "
+            "(organization_id, email, role, token, invited_by_user_id, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                organization_id,
+                normalized_email,
+                role,
+                token,
+                invited_by_user_id,
+                _to_sqlite_utc_iso(expires_at),
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM organization_invitations WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        return _row_to_invitation(row)
+
+    def get_invitation_by_token(self, token: str) -> Invitation | None:
+        row = self._conn.execute(
+            "SELECT * FROM organization_invitations WHERE token = ?",
+            (token,),
+        ).fetchone()
+        return _row_to_invitation(row) if row else None
+
+    def get_invitation(self, invitation_id: int) -> Invitation | None:
+        row = self._conn.execute(
+            "SELECT * FROM organization_invitations WHERE id = ?",
+            (invitation_id,),
+        ).fetchone()
+        return _row_to_invitation(row) if row else None
+
+    def list_invitations_for_org(
+        self,
+        organization_id: int,
+        *,
+        include_accepted: bool = False,
+        include_revoked: bool = False,
+        include_expired: bool = False,
+    ) -> list[Invitation]:
+        clauses = ["organization_id = ?"]
+        params: list[Any] = [organization_id]
+        if not include_accepted:
+            clauses.append("accepted_at IS NULL")
+        if not include_revoked:
+            clauses.append("revoked_at IS NULL")
+        if not include_expired:
+            # Expires_at is stored as SQLite text — string-compare works
+            # because ISO-8601 strings sort lexicographically.
+            clauses.append("expires_at > datetime('now')")
+        sql = (
+            "SELECT * FROM organization_invitations WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY created_at DESC, id DESC"
+        )
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_invitation(r) for r in rows]
+
+    def revoke_invitation(self, invitation_id: int) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE organization_invitations SET revoked_at = datetime('now') "
+            "WHERE id = ? AND accepted_at IS NULL AND revoked_at IS NULL",
+            (invitation_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def mark_invitation_accepted(self, invitation_id: int) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE organization_invitations SET accepted_at = datetime('now') "
+            "WHERE id = ? AND accepted_at IS NULL AND revoked_at IS NULL "
+            "AND expires_at > datetime('now')",
+            (invitation_id,),
         )
         self._conn.commit()
         return cursor.rowcount > 0
