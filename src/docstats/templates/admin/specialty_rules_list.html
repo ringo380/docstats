@@ -35,11 +35,12 @@
             </td>
             <td style="text-align:right;">
               {% if row.override or row.global_rule %}
-                <a href="/admin/specialty-rules/{{ row.code }}" class="btn btn-secondary btn-sm">
+                {% set encoded = row.code | urlencode %}
+                <a href="/admin/specialty-rules/{{ encoded }}" class="btn btn-secondary btn-sm">
                   {% if row.override %}Edit override{% else %}Create override{% endif %}
                 </a>
                 {% if row.override %}
-                  <form method="post" action="/admin/specialty-rules/{{ row.code }}/revert"
+                  <form method="post" action="/admin/specialty-rules/{{ encoded }}/revert"
                         style="display:inline;"
                         onsubmit="return confirm('Delete this override? The platform default will take effect.');">
                     <button type="submit" class="btn btn-danger btn-sm">Revert</button>

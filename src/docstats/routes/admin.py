@@ -448,6 +448,9 @@ def _collect_form_payload(
     }
 
 
+_MAX_REQUIRED_FIELDS = 64
+
+
 @router.post("/specialty-rules/{specialty_code}", response_class=HTMLResponse)
 async def specialty_rule_save(
     request: Request,
@@ -465,6 +468,15 @@ async def specialty_rule_save(
     storage: StorageBase = Depends(get_storage),
 ):
     """Create or update the org override for ``specialty_code``."""
+    # Cap the list size at the boundary so a malicious client can't force
+    # an unbounded iteration before the vocabulary filter kicks in.
+    # ``REQUIRED_FIELD_CHECKS`` today has 10 entries; 64 is generous
+    # headroom for future additions without breaking this cap.
+    if len(required_field) > _MAX_REQUIRED_FIELDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many required_field entries (max {_MAX_REQUIRED_FIELDS}).",
+        )
     # Side-effect only: validates the org row exists; redirect on save so
     # the full template ctx isn't needed here.
     _require_org(scope, storage)
@@ -1056,20 +1068,23 @@ async def org_settings_save(
     if zip_clean is not None and not _ZIP_PATTERN.match(zip_clean):
         errors.append("ZIP must be 5 digits or 5+4 (e.g. 94110 or 94110-1234).")
 
+    # Preserve the admin's typing across every error path below — both the
+    # route-level validation branch and the storage ValueError branch
+    # re-render from this dict so a rejected save doesn't cost them the
+    # values they already typed.
+    submitted = {
+        "name": name,
+        "npi": npi,
+        "address_line1": address_line1,
+        "address_line2": address_line2,
+        "address_city": address_city,
+        "address_state": address_state,
+        "address_zip": address_zip,
+        "phone": phone,
+        "fax": fax,
+    }
+
     if errors:
-        # Re-render with the submitted values so the admin doesn't lose
-        # their typing on a validation error.
-        submitted = {
-            "name": name,
-            "npi": npi,
-            "address_line1": address_line1,
-            "address_line2": address_line2,
-            "address_city": address_city,
-            "address_state": address_state,
-            "address_zip": address_zip,
-            "phone": phone,
-            "fax": fax,
-        }
         return render(
             "admin/org_settings.html",
             _ctx(
@@ -1109,7 +1124,7 @@ async def org_settings_save(
                 scope,
                 org,
                 active_section="org-settings",
-                form=_org_settings_form_values(org),
+                form=submitted,
                 states=US_STATES,
                 errors=[str(e)],
             ),

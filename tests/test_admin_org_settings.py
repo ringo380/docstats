@@ -321,6 +321,42 @@ def test_save_accepts_valid_zip_formats(storage: Storage, org_admin, zip_code: s
         _cleanup()
 
 
+def test_save_preserves_user_input_on_storage_value_error(storage: Storage, org_admin) -> None:
+    """The storage-level ValueError branch must re-render with the submitted
+    values (not the stored row) so a rejected save doesn't cost the admin
+    their typing. Monkey-patch update_organization to force the branch."""
+    _, _, user = org_admin
+
+    import docstats.storage as storage_mod
+
+    original = storage_mod.Storage.update_organization
+
+    def fake_update(self, *args, **kwargs):
+        raise ValueError("simulated storage-level failure")
+
+    storage_mod.Storage.update_organization = fake_update  # type: ignore[method-assign]
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/org-settings",
+            data={
+                "name": "Freshly typed name",
+                "npi": "2222222222",
+                "address_city": "New City",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        # Submitted values round-trip into the re-rendered form.
+        assert 'value="Freshly typed name"' in body
+        assert 'value="2222222222"' in body
+        assert 'value="New City"' in body
+        # Storage ValueError message surfaced.
+        assert "simulated storage-level failure" in body
+    finally:
+        storage_mod.Storage.update_organization = original  # type: ignore[method-assign]
+        _cleanup()
+
+
 def test_save_preserves_user_input_on_validation_error(storage: Storage, org_admin) -> None:
     """Admin shouldn't lose typing when the form rejects — re-render with
     submitted values, not the stored row."""

@@ -174,6 +174,60 @@ def test_list_highlights_existing_override(storage: Storage, org_admin) -> None:
 # --- Edit form GET ---
 
 
+def test_list_urlencodes_specialty_code_with_unsafe_chars(storage: Storage, org_admin) -> None:
+    """List view must URL-encode ``specialty_code`` on Edit/Revert URLs so
+    codes with pipes, spaces, or other unsafe characters round-trip back
+    through FastAPI's path parser. Matches the payer template which has
+    always applied ``| urlencode``."""
+    _, org, user = org_admin
+    # Insert a rule with an unsafe-char code. Seeded NUCC codes are
+    # alphanumeric so this path only hits when an admin creates a
+    # custom specialty — but once possible, the URL encoding must hold.
+    storage.create_specialty_rule(
+        specialty_code="TEST|ONE",
+        organization_id=org.id,
+        display_name="Custom with pipe",
+        source="admin_override",
+    )
+    try:
+        resp = _client_with(storage, user).get("/admin/specialty-rules")
+        assert resp.status_code == 200
+        body = resp.text
+        # Encoded form must appear in the Edit/Revert URLs.
+        assert "/admin/specialty-rules/TEST%7CONE" in body
+        # The raw pipe must NOT appear inside an ``href`` / ``action`` URL
+        # (it IS fine inside the ``<code>`` tag that displays the key).
+        for fragment in (
+            'href="/admin/specialty-rules/TEST|',
+            'action="/admin/specialty-rules/TEST|',
+        ):
+            assert fragment not in body
+    finally:
+        _cleanup()
+
+
+def test_edit_form_action_urlencodes_unsafe_chars(storage: Storage, org_admin) -> None:
+    """The edit form's ``action`` attribute must URL-encode the specialty
+    code. Verified with a pipe character so encoded ≠ raw."""
+    _, org, user = org_admin
+    storage.create_specialty_rule(
+        specialty_code="TEST|TWO",
+        organization_id=org.id,
+        display_name="Custom edit target",
+        source="admin_override",
+    )
+    try:
+        # The Path param will URL-decode on the way in, so we send the
+        # encoded form here.
+        resp = _client_with(storage, user).get("/admin/specialty-rules/TEST%7CTWO")
+        assert resp.status_code == 200
+        # Form action must carry the encoded form back so POST round-trips.
+        assert 'action="/admin/specialty-rules/TEST%7CTWO"' in resp.text
+        assert 'action="/admin/specialty-rules/TEST|TWO"' not in resp.text
+    finally:
+        _cleanup()
+
+
 def test_edit_form_prepopulates_from_global_when_no_override(storage: Storage, org_admin) -> None:
     _, _, user = org_admin
     try:
@@ -274,6 +328,49 @@ def test_save_creates_org_override(storage: Storage, org_admin) -> None:
         events = storage.list_audit_events(scope_organization_id=org.id)
         actions = [e.action for e in events]
         assert "admin.specialty_rule.create_override" in actions
+    finally:
+        _cleanup()
+
+
+def test_save_rejects_oversized_required_field_list(storage: Storage, org_admin) -> None:
+    """Defense-in-depth: a malicious client submitting thousands of
+    required_field entries shouldn't force an unbounded iteration. Cap at
+    64 entries (generous headroom over the 10-item REQUIRED_FIELD_CHECKS
+    vocabulary)."""
+    _, _, user = org_admin
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X",
+            data={
+                "display_name": "X",
+                "required_field": ["reason"] * 100,
+            },
+        )
+        assert resp.status_code == 422
+    finally:
+        _cleanup()
+
+
+def test_save_accepts_required_field_list_at_cap(storage: Storage, org_admin) -> None:
+    """Boundary: 64 entries exactly should still save. Unknown names get
+    filtered by the vocabulary guard, so the saved list can still be
+    smaller than submitted."""
+    _, org, user = org_admin
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/specialty-rules/207RC0000X",
+            data={
+                "display_name": "At cap",
+                "required_field": ["reason"] * 64,
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        overrides = storage.list_specialty_rules(organization_id=org.id, include_globals=False)
+        # Vocabulary filter + list-dedupe happens later; the only known
+        # required field here is "reason", so the saved list is ["reason"]
+        # × 64 (filter keeps all entries that pass the vocabulary check).
+        assert overrides[0].required_fields["fields"].count("reason") == 64
     finally:
         _cleanup()
 

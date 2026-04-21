@@ -28,7 +28,7 @@
   </div>
 {% endif %}
 
-<form method="post" action="/admin/specialty-rules/{{ specialty_code }}" class="rule-edit-form card">
+<form method="post" action="/admin/specialty-rules/{{ specialty_code | urlencode }}" class="rule-edit-form card">
   <div class="form-row">
     <label>Display name
       <input type="text" name="display_name" value="{{ form.display_name }}" maxlength="200" autocomplete="off">
