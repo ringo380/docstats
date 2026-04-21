@@ -208,6 +208,127 @@ def test_invite_rejects_bad_email(storage: Storage, org_admin) -> None:
         _cleanup()
 
 
+def test_invite_by_admin_cannot_grant_owner_role(storage: Storage, org_admin) -> None:
+    """Privilege-escalation guard: a plain admin must not be able to
+    invite a new member at ``owner`` level. Only an owner can grant
+    owner."""
+    try:
+        resp = _client(storage, org_admin["user"]).post(
+            "/admin/members/invite",
+            data={"email": "usurper@example.com", "role": "owner"},
+        )
+        assert resp.status_code == 200
+        assert "have permission" in resp.text  # HTML-escapes apostrophe
+        assert len(storage.list_invitations_for_org(org_admin["org"].id)) == 0
+    finally:
+        _cleanup()
+
+
+def test_invite_by_owner_can_grant_owner_role(storage: Storage, org_admin) -> None:
+    """Owner IS allowed to invite another owner."""
+    owner_user = _fake_user(
+        org_admin["owner_id"],
+        "owner@example.com",
+        active_org_id=org_admin["org"].id,
+        is_org_admin=True,
+    )
+    try:
+        resp = _client(storage, owner_user).post(
+            "/admin/members/invite",
+            data={"email": "co-owner@example.com", "role": "owner"},
+        )
+        assert resp.status_code == 200
+        assert "Invitation created" in resp.text
+        invs = storage.list_invitations_for_org(org_admin["org"].id)
+        assert len(invs) == 1
+        assert invs[0].role == "owner"
+    finally:
+        _cleanup()
+
+
+def test_role_change_by_admin_cannot_grant_owner(storage: Storage, org_admin) -> None:
+    """Same escalation guard on the role-change path — a plain admin
+    can't promote anyone (including themselves) to owner."""
+    try:
+        resp = _client(storage, org_admin["user"]).post(
+            f"/admin/members/{org_admin['admin_id']}/role",
+            data={"role": "owner"},
+        )
+        assert resp.status_code == 200
+        assert "have permission" in resp.text  # HTML-escapes apostrophe
+        # Admin's role unchanged.
+        m = storage.get_membership(org_admin["org"].id, org_admin["admin_id"])
+        assert m is not None and m.role == "admin"
+    finally:
+        _cleanup()
+
+
+def test_role_change_by_owner_can_grant_owner(storage: Storage, org_admin) -> None:
+    owner_user = _fake_user(
+        org_admin["owner_id"],
+        "owner@example.com",
+        active_org_id=org_admin["org"].id,
+        is_org_admin=True,
+    )
+    try:
+        resp = _client(storage, owner_user).post(
+            f"/admin/members/{org_admin['staff_id']}/role",
+            data={"role": "owner"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        m = storage.get_membership(org_admin["org"].id, org_admin["staff_id"])
+        assert m is not None and m.role == "owner"
+    finally:
+        _cleanup()
+
+
+def test_reinvite_after_natural_expiry_works(storage: Storage, org_admin) -> None:
+    """Regression: the partial unique index on ``(organization_id, email)
+    WHERE pending`` can't filter on expires_at (non-deterministic function
+    in partial-index predicates is forbidden by SQLite + Postgres). The
+    invite handler must auto-revoke expired pending rows before creating
+    a new one, or the admin gets permanently stuck unable to re-invite."""
+    # Insert an expired pending invitation directly.
+    past = datetime.now(tz=timezone.utc) - timedelta(hours=1)
+    token = generate_token()
+    storage._conn.execute(
+        "INSERT INTO organization_invitations (organization_id, email, role, token, expires_at) "
+        "VALUES (?, ?, ?, ?, datetime(?))",
+        (
+            org_admin["org"].id,
+            "stale@example.com",
+            "staff",
+            token,
+            past.strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+    storage._conn.commit()
+    try:
+        resp = _client(storage, org_admin["user"]).post(
+            "/admin/members/invite",
+            data={"email": "stale@example.com", "role": "staff"},
+        )
+        assert resp.status_code == 200
+        # The new invitation was created despite the expired one holding
+        # the slot pre-fix.
+        assert "Invitation created" in resp.text
+        # The stale row was auto-revoked.
+        all_for_email = [
+            i
+            for i in storage.list_invitations_for_org(
+                org_admin["org"].id, include_revoked=True, include_expired=True
+            )
+            if i.email == "stale@example.com"
+        ]
+        revoked = [i for i in all_for_email if i.revoked_at is not None]
+        assert len(revoked) == 1
+        pending = [i for i in all_for_email if i.is_pending(now=datetime.now(tz=timezone.utc))]
+        assert len(pending) == 1
+    finally:
+        _cleanup()
+
+
 def test_invite_rejects_bad_role(storage: Storage, org_admin) -> None:
     try:
         resp = _client(storage, org_admin["user"]).post(
@@ -448,6 +569,51 @@ def test_invite_accept_happy_path(storage: Storage, org_admin) -> None:
         # Audit recorded.
         events = storage.list_audit_events(scope_organization_id=org_admin["org"].id)
         assert any(e.action == "admin.member.joined" for e in events)
+    finally:
+        _cleanup()
+
+
+def test_invite_accept_admin_role_redirects_to_admin(storage: Storage, org_admin) -> None:
+    """Regression: post-accept redirect must use the invitation's role,
+    not the stale ``current_user.is_org_admin`` flag (which reflects the
+    OLD active_org_id computed at request start)."""
+    new_user_id = storage.create_user("newadmin@example.com", "hashed")
+    token = generate_token()
+    storage.create_invitation(
+        organization_id=org_admin["org"].id,
+        email="newadmin@example.com",
+        role="admin",
+        token=token,
+        expires_at=compute_expires_at(DEFAULT_INVITATION_TTL_SECONDS),
+    )
+    # is_org_admin=False because user has no active_org_id yet.
+    newbie = _fake_user(new_user_id, "newadmin@example.com", active_org_id=None, is_org_admin=False)
+    try:
+        resp = _client(storage, newbie).post(f"/invite/{token}/accept", follow_redirects=False)
+        assert resp.status_code == 303
+        # Should redirect to /admin because invitation.role == "admin",
+        # NOT to /referrals (which the stale is_org_admin=False flag
+        # would have produced pre-fix).
+        assert resp.headers["location"] == "/admin"
+    finally:
+        _cleanup()
+
+
+def test_invite_accept_non_admin_role_redirects_to_referrals(storage: Storage, org_admin) -> None:
+    new_user_id = storage.create_user("newstaff@example.com", "hashed")
+    token = generate_token()
+    storage.create_invitation(
+        organization_id=org_admin["org"].id,
+        email="newstaff@example.com",
+        role="staff",
+        token=token,
+        expires_at=compute_expires_at(DEFAULT_INVITATION_TTL_SECONDS),
+    )
+    newbie = _fake_user(new_user_id, "newstaff@example.com", active_org_id=None, is_org_admin=False)
+    try:
+        resp = _client(storage, newbie).post(f"/invite/{token}/accept", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/referrals"
     finally:
         _cleanup()
 

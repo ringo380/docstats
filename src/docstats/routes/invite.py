@@ -33,6 +33,7 @@ from fastapi.responses import HTMLResponse, Response
 from docstats.auth import get_current_user, require_user
 from docstats.domain.audit import record as audit_record
 from docstats.domain.invitations import Invitation
+from docstats.domain.orgs import has_role_at_least
 from docstats.routes._common import render, saved_count
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase, normalize_email
@@ -241,9 +242,16 @@ async def invite_accept(
         metadata={"role": invitation.role, "invitation_id": invitation.id},
     )
 
-    # Land the user on the admin overview if they can see it (admin+),
-    # else the referrals workspace (default authenticated home).
-    if current_user.get("is_org_admin"):
+    # Land the user on the admin overview if the invitation role gives
+    # them admin console access, else the referrals workspace.
+    #
+    # Use ``invitation.role`` directly — ``current_user["is_org_admin"]``
+    # is computed by ``get_current_user`` at the start of the request
+    # from the user's OLD active_org_id (None for first-time joiners).
+    # The membership we just created is the authoritative source for
+    # post-accept routing; the stale dict flag would always send a new
+    # admin-role joiner to /referrals on their first load.
+    if has_role_at_least(invitation.role, "admin"):
         dest = "/admin"
     else:
         dest = "/referrals"

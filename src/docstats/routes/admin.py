@@ -1178,6 +1178,11 @@ _AUDIT_PAGE_SIZE = 50
 # New actions added in future phases don't need to touch this list
 # immediately; the free-text input still accepts them.
 _KNOWN_AUDIT_ACTIONS: tuple[str, ...] = (
+    "admin.member.invitation_revoke",
+    "admin.member.invite",
+    "admin.member.joined",
+    "admin.member.remove",
+    "admin.member.role_change",
     "admin.org.update",
     "admin.payer_rule.create_override",
     "admin.payer_rule.revert_override",
@@ -1373,6 +1378,24 @@ def _count_active_members_with_role(storage: StorageBase, organization_id: int, 
     )
 
 
+def _can_grant_role(actor_role: str | None, target_role: str) -> bool:
+    """Return True iff the actor's role permits granting ``target_role``.
+
+    Enforces the ROLES hierarchy at the route boundary: an actor may
+    grant any role up to and including their own — admins can grant
+    admin / coordinator / clinician / staff / read_only; only an owner
+    can grant owner. Without this check, a plain admin could invite or
+    promote any member (including themselves) to owner and silently
+    bypass the sole-owner guards on role_change / remove, collapsing
+    the documented ROLES hierarchy.
+
+    ``actor_role`` of ``None`` or an unknown string fails closed.
+    """
+    if actor_role is None or actor_role not in ROLES or target_role not in ROLES:
+        return False
+    return ROLES.index(actor_role) >= ROLES.index(target_role)
+
+
 def _members_page_context(
     request: Request,
     current_user: dict,
@@ -1469,6 +1492,14 @@ async def members_invite(
         errors.append(str(e))
         role_clean = ""
 
+    # Guard: actor can't grant a role above their own (admin→owner
+    # escalation). `_can_grant_role` fails closed on unknown/None roles.
+    if role_clean and not _can_grant_role(scope.membership_role, role_clean):
+        errors.append(
+            f"You don't have permission to invite at role {role_clean!r}. "
+            f"Ask an owner if you need to create another owner."
+        )
+
     # Guard: can't invite a user who's already an active member. Check by
     # email lookup; if the user doesn't exist yet, no membership can
     # exist either.
@@ -1496,6 +1527,29 @@ async def members_invite(
         )
 
     token = generate_token()
+    # Auto-revoke any EXPIRED pending invitation to the same email
+    # before creating a new one. The partial unique index on
+    # ``(organization_id, email) WHERE accepted_at IS NULL AND
+    # revoked_at IS NULL`` can't filter on ``expires_at`` (it's a
+    # non-deterministic function in both SQLite and Postgres — forbidden
+    # in partial-index predicates). Without this sweep, an admin who
+    # lets an invitation expire naturally can never re-invite the same
+    # email without manual DB surgery, since `list_invitations_for_org`
+    # default-hides expired rows and the unique index still holds the
+    # slot. Include_expired=True surfaces them so we can clean up.
+    now_utc = datetime.now(tz=timezone.utc)
+    for stale in storage.list_invitations_for_org(
+        scope.organization_id,  # type: ignore[arg-type]
+        include_expired=True,
+    ):
+        if stale.email == email_clean and not stale.is_pending(now=now_utc):
+            # Only touches already-expired (or already-accepted / revoked)
+            # rows. ``revoke_invitation`` is a no-op on non-pending rows,
+            # but our goal is to free the ``(org, email) WHERE pending``
+            # slot — and by definition an expired row still satisfies
+            # that predicate. Mark revoked so the index is freed.
+            if stale.revoked_at is None and stale.accepted_at is None:
+                storage.revoke_invitation(stale.id)
     try:
         invitation = storage.create_invitation(
             organization_id=scope.organization_id,  # type: ignore[arg-type]
@@ -1601,6 +1655,24 @@ async def members_role_change(
         new_role = validate_role(role)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+    # Guard: actor can't grant a role above their own. Prevents admin→
+    # owner self-promotion AND admin-promotes-peer-to-owner.
+    if not _can_grant_role(scope.membership_role, new_role):
+        return render(
+            "admin/members.html",
+            _members_page_context(
+                request,
+                current_user,
+                storage,
+                scope,
+                org,
+                flash_error=(
+                    f"You don't have permission to grant role {new_role!r}. "
+                    f"Only an owner can promote to owner."
+                ),
+            ),
+        )
 
     membership = storage.get_membership(org_id, user_id)
     if membership is None or not membership.is_active:
