@@ -971,6 +971,53 @@ class PostgresStorage(StorageBase):
         )
         return bool(result.data)
 
+    def update_organization(
+        self,
+        organization_id: int,
+        *,
+        name: str | None = None,
+        npi: str | None = None,
+        address_line1: str | None = None,
+        address_line2: str | None = None,
+        address_city: str | None = None,
+        address_state: str | None = None,
+        address_zip: str | None = None,
+        phone: str | None = None,
+        fax: str | None = None,
+        overwrite: bool = False,
+    ) -> Organization | None:
+        kwargs: dict[str, str | None] = {
+            "name": name,
+            "npi": npi,
+            "address_line1": address_line1,
+            "address_line2": address_line2,
+            "address_city": address_city,
+            "address_state": address_state,
+            "address_zip": address_zip,
+            "phone": phone,
+            "fax": fax,
+        }
+        if overwrite and (name is None or not name.strip()):
+            raise ValueError("Organization name must be non-empty when overwrite=True.")
+        fields: dict[str, str | None] = {}
+        for col, val in kwargs.items():
+            if overwrite:
+                fields[col] = val
+            elif val is not None:
+                fields[col] = val
+        if not fields:
+            return self.get_organization(organization_id)
+        result = (
+            self._t("organizations")
+            .update(fields)
+            .eq("id", organization_id)
+            .is_("deleted_at", None)
+            .execute()
+        )
+        if not result.data:
+            return None
+        return _row_to_organization(result.data[0])
+
     def create_membership(
         self,
         *,
