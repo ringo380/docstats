@@ -308,6 +308,11 @@ class StorageBase(ABC):
     def list_providers(self, user_id: int) -> list[SavedProvider]: ...
 
     @abstractmethod
+    def count_providers(self, user_id: int) -> int:
+        """Return the number of saved providers for ``user_id``."""
+        ...
+
+    @abstractmethod
     def search_providers(self, user_id: int, query: str) -> list[SavedProvider]: ...
 
     @abstractmethod

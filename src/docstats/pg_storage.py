@@ -712,6 +712,16 @@ class PostgresStorage(StorageBase):
         )
         return [self._row_to_provider(r) for r in result.data]
 
+    def count_providers(self, user_id: int) -> int:
+        """Return the number of saved providers for ``user_id``."""
+        result = (
+            self._t("saved_providers")
+            .select("id", count="exact", head=True)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return int(result.count or 0)
+
     def search_providers(self, user_id: int, query: str) -> list[SavedProvider]:
         # Fetch all providers and filter in Python to avoid PostgREST .or_()
         # escaping issues (commas, %, _ in query break the filter DSL string).

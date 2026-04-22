@@ -144,6 +144,17 @@ def _inject_nav_context(context: dict) -> None:
         context["assigned_open_count"] = assigned_open_count(storage, scope, user_id)
 
 
+def redirect_htmx(request: Request, dest: str) -> Response:
+    """Return an ``HX-Redirect`` (200) for htmx callers, else a 303 redirect.
+
+    htmx doesn't follow 3xx redirects, so every mutating handler's exit
+    path should use this helper rather than inlining the conditional.
+    """
+    if request.headers.get("HX-Request"):
+        return Response(status_code=200, headers={"HX-Redirect": dest})
+    return Response(status_code=303, headers={"Location": dest})
+
+
 def render(name: str, context: dict) -> Response:
     """Render a template, compatible with Starlette 0.50+."""
     _inject_nav_context(context)
@@ -151,24 +162,52 @@ def render(name: str, context: dict) -> Response:
     return templates.TemplateResponse(request, name, context)
 
 
+def format_actor(user_row: dict | None) -> str:
+    """Return a display name for a user dict from storage.
+
+    Prefer ``first_name last_name`` when both are set; fall back to
+    ``display_name``; then the bare email. Returns ``"—"`` when the row
+    is None (actor hard-deleted — audit FK is SET NULL on user delete).
+
+    Mirrors the nav-bar display-name formula from base.html.
+    """
+    if user_row is None:
+        return "—"
+    first = (user_row.get("first_name") or "").strip()
+    last = (user_row.get("last_name") or "").strip()
+    if first and last:
+        return f"{first} {last}"
+    display = (user_row.get("display_name") or "").strip()
+    if display:
+        return display
+    email = (user_row.get("email") or "").strip()
+    return email or "—"
+
+
+def build_actor_map(storage: StorageBase, events: list) -> dict[int, str]:
+    """Fetch display names for every distinct ``actor_user_id`` on the event list.
+
+    Per-request cache: ~50 events × small actor cardinality means this is at
+    most a handful of ``get_user_by_id`` calls.
+    """
+    ids: set[int] = {e.actor_user_id for e in events if e.actor_user_id is not None}
+    return {uid: format_actor(storage.get_user_by_id(uid)) for uid in ids}
+
+
 def saved_count(storage: StorageBase, user_id: int | None) -> int:
     if user_id is None:
         return 0
-    return len(storage.list_providers(user_id))
+    return storage.count_providers(user_id)
 
 
-def assigned_open_count(
-    storage: StorageBase, scope: Scope, user_id: int | None, *, cap: int | None = None
-) -> int:
+def assigned_open_count(storage: StorageBase, scope: Scope, user_id: int | None) -> int:
     """Count of non-terminal referrals assigned to ``user_id`` in ``scope``.
 
     Powers the Referrals nav badge (Phase 7.C). Anonymous scope / missing
     user_id returns 0. Uses a storage count query filtered to non-terminal
     statuses before counting, so recently completed referrals cannot hide
-    older open work. ``cap`` is retained for older callers and intentionally
-    ignored because the nav needs the real open count.
+    older open work.
     """
-    _ = cap
     if user_id is None or scope.is_anonymous:
         return 0
     # Import locally to keep _common.py free of domain cycles.

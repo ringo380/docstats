@@ -59,9 +59,6 @@ REQUIRED_FIELD_CHECKS: dict[str, str] = {
     "authorization_status": "Authorization status",
     "referring_provider_name": "Referring provider name",
 }
-# Alias for back-compat with internal callers; remove in Phase 7 after
-# any vendored imports migrate.
-_REQUIRED_FIELD_CHECKS = REQUIRED_FIELD_CHECKS
 
 
 @dataclass(frozen=True)
@@ -268,7 +265,7 @@ def evaluate(referral: Referral, ruleset: ResolvedRuleSet) -> CompletenessReport
             specialty.required_fields.get("fields", []) if specialty.required_fields else []
         )
         for field_name in spec_required:
-            if not isinstance(field_name, str) or field_name not in _REQUIRED_FIELD_CHECKS:
+            if not isinstance(field_name, str) or field_name not in REQUIRED_FIELD_CHECKS:
                 continue
             baseline_code = _FIELD_TO_BASELINE_CODE.get(field_name)
             if baseline_code and baseline_code in items_by_code:
@@ -306,7 +303,7 @@ def evaluate(referral: Referral, ruleset: ResolvedRuleSet) -> CompletenessReport
             items.append(
                 CompletenessItem(
                     code=code,
-                    label=_REQUIRED_FIELD_CHECKS[field_name],
+                    label=REQUIRED_FIELD_CHECKS[field_name],
                     required=True,
                     satisfied=_check_referral_field(referral, field_name),
                 )

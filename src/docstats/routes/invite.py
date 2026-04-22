@@ -28,13 +28,13 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse
 
 from docstats.auth import get_current_user, require_user
 from docstats.domain.audit import record as audit_record
 from docstats.domain.invitations import Invitation
 from docstats.domain.orgs import has_role_at_least
-from docstats.routes._common import render, saved_count
+from docstats.routes._common import redirect_htmx, render, saved_count
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase, normalize_email
 
@@ -255,6 +255,4 @@ async def invite_accept(
         dest = "/admin"
     else:
         dest = "/referrals"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)

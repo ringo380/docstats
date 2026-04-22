@@ -37,7 +37,10 @@ from docstats.domain.rules import (
 from docstats.phi import require_phi_consent
 from docstats.routes._common import (
     assigned_open_count,
+    build_actor_map,
+    format_actor,
     get_scope,
+    redirect_htmx,
     render,
     resolve_assignee_filter,
     saved_count,
@@ -336,7 +339,7 @@ async def referral_create(
         action="referral.create",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="referral",
         entity_id=str(referral.id),
@@ -348,9 +351,7 @@ async def referral_create(
         },
     )
     dest = f"/referrals/{referral.id}"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 # --- Detail + inline edit (Phase 2.D) ---
@@ -363,35 +364,6 @@ def _allowed_next_statuses(current: str) -> list[str]:
     mapping so we convert before sorting.
     """
     return sorted(STATUS_TRANSITIONS.get(current, frozenset()))
-
-
-def _format_actor(user_row: dict | None) -> str:
-    """Mirror the nav-bar display-name formula from base.html.
-
-    Prefer ``first_name last_name`` when both are set; fall back to
-    ``display_name``; then the bare email. Returns ``"—"`` when the row
-    is None (actor hard-deleted — audit FK is SET NULL on user delete).
-    """
-    if user_row is None:
-        return "—"
-    first = (user_row.get("first_name") or "").strip()
-    last = (user_row.get("last_name") or "").strip()
-    if first and last:
-        return f"{first} {last}"
-    display = (user_row.get("display_name") or "").strip()
-    if display:
-        return display
-    email = (user_row.get("email") or "").strip()
-    return email or "—"
-
-
-def _build_actor_map(storage: StorageBase, events: list) -> dict[int, str]:
-    """Fetch display names for every distinct ``actor_user_id`` on the
-    event list. Per-request cache: ~50 events × small actor cardinality
-    means this is at most a handful of ``get_user_by_id`` calls.
-    """
-    ids: set[int] = {e.actor_user_id for e in events if e.actor_user_id is not None}
-    return {uid: _format_actor(storage.get_user_by_id(uid)) for uid in ids}
 
 
 def _render_detail(
@@ -414,7 +386,7 @@ def _render_detail(
     events = storage.list_referral_events(scope, referral_id, limit=50)
     responses = storage.list_referral_responses(scope, referral_id)
     completeness = rules_based_completeness(storage, scope, referral)
-    actors_by_id = _build_actor_map(storage, events)
+    actors_by_id = build_actor_map(storage, events)
     # Assignable users for the Assign dropdown (Phase 7.C). Solo scope → just
     # self; org scope → every live member. Include the currently-assigned
     # user even if they've since left the org so the dropdown still shows
@@ -424,13 +396,13 @@ def _render_detail(
         for m in storage.list_memberships_for_org(scope.organization_id):
             if m.deleted_at is None:
                 member_user = storage.get_user_by_id(m.user_id)
-                assignable.append((m.user_id, _format_actor(member_user)))
+                assignable.append((m.user_id, format_actor(member_user)))
         assignable.sort(key=lambda pair: pair[1].lower())
     else:
-        assignable.append((current_user["id"], _format_actor(current_user)))
+        assignable.append((current_user["id"], format_actor(current_user)))
 
     assigned_display = (
-        _format_actor(storage.get_user_by_id(referral.assigned_to_user_id))
+        format_actor(storage.get_user_by_id(referral.assigned_to_user_id))
         if referral.assigned_to_user_id is not None
         else None
     )
@@ -626,16 +598,14 @@ async def referral_update(
         action="referral.update",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="referral",
         entity_id=str(referral_id),
         metadata={"fields": sorted(changed.keys())},
     )
     dest = f"/referrals/{referral_id}"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 @router.post("/{referral_id}/status", response_class=HTMLResponse)
@@ -687,16 +657,14 @@ async def referral_set_status(
         action="referral.status",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="referral",
         entity_id=str(referral_id),
         metadata={"from": old_status, "to": new_status},
     )
     dest = f"/referrals/{referral_id}"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 @router.post("/{referral_id}/clear/{field}", response_class=HTMLResponse)
@@ -748,16 +716,14 @@ async def referral_clear_field(
         action="referral.update",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="referral",
         entity_id=str(referral_id),
         metadata={"cleared": field},
     )
     dest = f"/referrals/{referral_id}"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 def _assignable_user_ids(storage: StorageBase, scope: Scope, current_user_id: int) -> set[int]:
@@ -821,9 +787,7 @@ async def referral_assign(
     # No-op? Return 303 without touching the row or emitting an event.
     if target == existing.assigned_to_user_id:
         dest = f"/referrals/{referral_id}"
-        if request.headers.get("HX-Request"):
-            return Response(status_code=200, headers={"HX-Redirect": dest})
-        return Response(status_code=303, headers={"Location": dest})
+        return redirect_htmx(request, dest)
 
     if target is not None:
         allowed = _assignable_user_ids(storage, scope, current_user["id"])
@@ -858,7 +822,7 @@ async def referral_assign(
         action=f"referral.{event_type}",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="referral",
         entity_id=str(referral_id),
@@ -866,9 +830,7 @@ async def referral_assign(
     )
 
     dest = f"/referrals/{referral_id}"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 @router.delete("/{referral_id}")
@@ -889,14 +851,12 @@ async def referral_delete(
         action="referral.delete",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="referral",
         entity_id=str(referral_id),
     )
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": "/referrals"})
-    return Response(status_code=303, headers={"Location": "/referrals"})
+    return redirect_htmx(request, "/referrals")
 
 
 # --- Closed-loop response capture (Phase 7.A) ---
@@ -1074,7 +1034,7 @@ async def referral_response_create(
         action="referral.response.create",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="referral_response",
         entity_id=str(created.id),
@@ -1086,9 +1046,7 @@ async def referral_response_create(
         },
     )
     dest = f"/referrals/{referral_id}"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 @router.post("/{referral_id}/response/{response_id}", response_class=HTMLResponse)
@@ -1150,7 +1108,7 @@ async def referral_response_update(
         action="referral.response.update",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="referral_response",
         entity_id=str(response_id),
@@ -1161,9 +1119,7 @@ async def referral_response_update(
         },
     )
     dest = f"/referrals/{referral_id}"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 @router.delete("/{referral_id}/response/{response_id}")
@@ -1185,16 +1141,14 @@ async def referral_response_delete(
         action="referral.response.delete",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="referral_response",
         entity_id=str(response_id),
         metadata={"referral_id": referral_id},
     )
     dest = f"/referrals/{referral_id}"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 # Fields the POST .../clear/{field} endpoint will set to NULL. Matches
@@ -1238,16 +1192,14 @@ async def referral_response_clear_field(
         action="referral.response.update",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="referral_response",
         entity_id=str(response_id),
         metadata={"referral_id": referral_id, "cleared": field},
     )
     dest = f"/referrals/{referral_id}"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
 
 
 # --- Inline comments (Phase 7.B) ---
@@ -1304,13 +1256,11 @@ async def referral_note_create(
         action="referral.note.create",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_user_id=scope.audit_user_id,
         scope_organization_id=scope.organization_id,
         entity_type="referral",
         entity_id=str(referral_id),
         metadata={"event_id": event.id, "length": len(body)},
     )
     dest = f"/referrals/{referral_id}#timeline"
-    if request.headers.get("HX-Request"):
-        return Response(status_code=200, headers={"HX-Redirect": dest})
-    return Response(status_code=303, headers={"Location": dest})
+    return redirect_htmx(request, dest)
