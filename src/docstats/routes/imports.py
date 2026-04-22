@@ -24,7 +24,7 @@ import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Request, UploadFile
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from docstats.domain.audit import record as audit_record
 from docstats.domain.imports import (

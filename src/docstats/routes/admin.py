@@ -27,7 +27,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Path, Query, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse
 
 from docstats.auth import require_user
 from docstats.domain.audit import record as audit_record
