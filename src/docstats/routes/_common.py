@@ -200,9 +200,7 @@ def saved_count(storage: StorageBase, user_id: int | None) -> int:
     return storage.count_providers(user_id)
 
 
-def assigned_open_count(
-    storage: StorageBase, scope: Scope, user_id: int | None
-) -> int:
+def assigned_open_count(storage: StorageBase, scope: Scope, user_id: int | None) -> int:
     """Count of non-terminal referrals assigned to ``user_id`` in ``scope``.
 
     Powers the Referrals nav badge (Phase 7.C). Anonymous scope / missing

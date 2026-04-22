@@ -61,7 +61,6 @@ REQUIRED_FIELD_CHECKS: dict[str, str] = {
 }
 
 
-
 @dataclass(frozen=True)
 class ResolvedRuleSet:
     """The effective specialty + payer rule pair for a referral.
