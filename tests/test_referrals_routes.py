@@ -15,7 +15,13 @@ from docstats.storage import Storage, _to_sqlite_utc_iso, get_storage
 from docstats.web import app
 
 
-def _fake_user(user_id: int, email: str = "a@example.com", *, consent: bool = True):
+def _fake_user(
+    user_id: int,
+    email: str = "a@example.com",
+    *,
+    consent: bool = True,
+    active_org_id: int | None = None,
+):
     return {
         "id": user_id,
         "email": email,
@@ -32,12 +38,33 @@ def _fake_user(user_id: int, email: str = "a@example.com", *, consent: bool = Tr
         "phi_consent_version": CURRENT_PHI_CONSENT_VERSION if consent else None,
         "phi_consent_ip": None,
         "phi_consent_user_agent": None,
-        "active_org_id": None,
+        "active_org_id": active_org_id,
     }
 
 
 def _seed_referral(storage: Storage, user_id: int, **overrides):
     scope = Scope(user_id=user_id)
+    patient = storage.create_patient(
+        scope,
+        first_name=overrides.pop("first_name", "Jane"),
+        last_name=overrides.pop("last_name", "Doe"),
+        date_of_birth="1980-05-15",
+        created_by_user_id=user_id,
+    )
+    return storage.create_referral(
+        scope,
+        patient_id=patient.id,
+        reason=overrides.pop("reason", "Chest pain eval"),
+        urgency=overrides.pop("urgency", "routine"),
+        specialty_desc=overrides.pop("specialty_desc", "Cardiology"),
+        receiving_organization_name=overrides.pop("receiving_organization_name", "Heart Clinic"),
+        created_by_user_id=user_id,
+        **overrides,
+    )
+
+
+def _seed_org_referral(storage: Storage, user_id: int, org_id: int, role: str, **overrides):
+    scope = Scope(user_id=user_id, organization_id=org_id, membership_role=role)
     patient = storage.create_patient(
         scope,
         first_name=overrides.pop("first_name", "Jane"),
@@ -79,6 +106,32 @@ def solo_client(tmp_path: Path):
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_current_user] = lambda: _fake_user(user_id)
     yield TestClient(app), storage, user_id
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def org_client_factory(tmp_path: Path):
+    def make(role: str):
+        storage = Storage(db_path=tmp_path / f"{role}.db")
+        user_id = storage.create_user(f"{role}@example.com", "hashed_pw")
+        storage.record_phi_consent(
+            user_id=user_id,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+        org = storage.create_organization(name="Clinic", slug=f"clinic-{role}")
+        storage.create_membership(organization_id=org.id, user_id=user_id, role=role)
+        storage.set_active_org(user_id, org.id)
+        app.dependency_overrides[get_storage] = lambda: storage
+        app.dependency_overrides[get_current_user] = lambda: _fake_user(
+            user_id,
+            f"{role}@example.com",
+            active_org_id=org.id,
+        )
+        return TestClient(app), storage, user_id, org.id
+
+    yield make
     app.dependency_overrides.clear()
 
 
@@ -451,6 +504,42 @@ def test_status_transition_allowed(solo_client):
         e.event_type == "status_changed" and e.from_value == "draft" and e.to_value == "ready"
         for e in events
     )
+
+
+def test_org_staff_status_transition_allowed(org_client_factory):
+    client, storage, user_id, org_id = org_client_factory("staff")
+    r = _seed_org_referral(storage, user_id, org_id, "staff")
+    scope = Scope(user_id=user_id, organization_id=org_id, membership_role="staff")
+
+    resp = client.post(
+        f"/referrals/{r.id}/status",
+        data={"new_status": "ready"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    updated = storage.get_referral(scope, r.id)
+    assert updated is not None
+    assert updated.status == "ready"
+
+
+def test_org_read_only_status_transition_forbidden(org_client_factory):
+    client, storage, user_id, org_id = org_client_factory("read_only")
+    r = _seed_org_referral(storage, user_id, org_id, "read_only")
+    scope = Scope(user_id=user_id, organization_id=org_id, membership_role="read_only")
+
+    resp = client.post(
+        f"/referrals/{r.id}/status",
+        data={"new_status": "ready"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 403
+    updated = storage.get_referral(scope, r.id)
+    assert updated is not None
+    assert updated.status == "draft"
+    events = storage.list_referral_events(scope, r.id)
+    assert not any(e.event_type == "status_changed" for e in events)
 
 
 def test_status_transition_disallowed(solo_client):

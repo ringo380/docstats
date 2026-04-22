@@ -17,8 +17,12 @@ from docstats.domain.referrals import (
     InvalidTransition,
     Referral,
     ReferralEvent,
+    TransitionRoleDenied,
     require_transition,
+    require_transition_for_role,
+    role_can_transition_status,
     transition_allowed,
+    transition_allowed_for_role,
 )
 from docstats.scope import Scope, ScopeRequired
 from docstats.storage import Storage, _to_sqlite_utc_iso
@@ -97,6 +101,26 @@ def test_require_transition_raises_on_invalid() -> None:
 
 def test_require_transition_silent_on_valid() -> None:
     require_transition("draft", "ready")  # should not raise
+
+
+@pytest.mark.parametrize("role", ["staff", "clinician", "coordinator", "admin", "owner"])
+def test_transition_allowed_for_write_roles(role: str) -> None:
+    assert role_can_transition_status(role, is_org=True) is True
+    assert transition_allowed_for_role("draft", "ready", role, is_org=True) is True
+
+
+@pytest.mark.parametrize("role", ["read_only", None, "bogus"])
+def test_transition_rejected_for_read_only_and_unknown_org_roles(role: str | None) -> None:
+    assert role_can_transition_status(role, is_org=True) is False
+    assert transition_allowed_for_role("draft", "ready", role, is_org=True) is False
+    with pytest.raises(TransitionRoleDenied):
+        require_transition_for_role("draft", "ready", role, is_org=True)
+
+
+def test_transition_role_gate_preserves_solo_behavior() -> None:
+    assert role_can_transition_status(None, is_org=False) is True
+    assert transition_allowed_for_role("draft", "ready", None, is_org=False) is True
+    require_transition_for_role("draft", "ready", None, is_org=False)
 
 
 def test_transition_graph_is_connected_from_draft() -> None:

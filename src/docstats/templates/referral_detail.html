@@ -50,7 +50,9 @@
 <div class="status-assign-row">
   <div class="status-transitions card">
     <h3>Status</h3>
-    {% if allowed_next %}
+    {% if status_transition_locked_reason %}
+      <p class="sub">{{ status_transition_locked_reason }}</p>
+    {% elif allowed_next %}
       <form method="post" action="/referrals/{{ referral.id }}/status" class="inline-form">
         <label>Move to:
           <select name="new_status">

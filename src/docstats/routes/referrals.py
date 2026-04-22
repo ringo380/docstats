@@ -27,8 +27,10 @@ from docstats.domain.referrals import (
     STATUS_VALUES,
     URGENCY_VALUES,
     InvalidTransition,
-    transition_allowed,
-    require_transition,
+    TransitionRoleDenied,
+    require_transition_for_role,
+    role_can_transition_status,
+    transition_allowed_for_role,
 )
 from docstats.domain.orgs import DEFAULT_STALE_THRESHOLD_DAYS
 from docstats.domain.rules import (
@@ -377,13 +379,28 @@ async def referral_create(
 # --- Detail + inline edit (Phase 2.D) ---
 
 
-def _allowed_next_statuses(current: str) -> list[str]:
+def _allowed_next_statuses(current: str, scope: Scope) -> list[str]:
     """Return status values reachable from ``current`` via the state machine.
 
     Sorted so the UI is deterministic. ``STATUS_TRANSITIONS`` is a frozenset
     mapping so we convert before sorting.
     """
-    return sorted(STATUS_TRANSITIONS.get(current, frozenset()))
+    return sorted(
+        status
+        for status in STATUS_TRANSITIONS.get(current, frozenset())
+        if transition_allowed_for_role(
+            current,
+            status,
+            scope.membership_role,
+            is_org=scope.is_org,
+        )
+    )
+
+
+def _status_transition_locked_reason(scope: Scope) -> str | None:
+    if role_can_transition_status(scope.membership_role, is_org=scope.is_org):
+        return None
+    return "Your role can view referrals but cannot change status."
 
 
 def _format_actor(user_row: dict | None) -> str:
@@ -476,7 +493,8 @@ def _render_detail(
             urgency_values=URGENCY_VALUES,
             auth_status_values=AUTH_STATUS_VALUES,
             received_via_values=RECEIVED_VIA_VALUES,
-            allowed_next=_allowed_next_statuses(referral.status),
+            allowed_next=_allowed_next_statuses(referral.status, scope),
+            status_transition_locked_reason=_status_transition_locked_reason(scope),
             assignable_users=assignable,
             assigned_display=assigned_display,
             errors=errors,
@@ -674,7 +692,14 @@ async def referral_set_status(
     if new_status not in STATUS_VALUES:
         raise HTTPException(status_code=422, detail="Unknown status value.")
     try:
-        require_transition(existing.status, new_status)
+        require_transition_for_role(
+            existing.status,
+            new_status,
+            scope.membership_role,
+            is_org=scope.is_org,
+        )
+    except TransitionRoleDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except InvalidTransition as e:
         return _render_detail(request, current_user, storage, scope, referral_id, errors=[str(e)])
     old_status = existing.status
@@ -975,7 +1000,12 @@ def _maybe_auto_complete(
     if fresh is None:
         return None
     from_status = fresh.status
-    if not transition_allowed(from_status, "completed"):
+    if not transition_allowed_for_role(
+        from_status,
+        "completed",
+        scope.membership_role,
+        is_org=scope.is_org,
+    ):
         return None
     updated = storage.set_referral_status(scope, referral_id, "completed")
     if updated is None:
