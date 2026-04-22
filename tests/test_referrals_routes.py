@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from fastapi.testclient import TestClient
 from docstats.auth import get_current_user
 from docstats.phi import CURRENT_PHI_CONSENT_VERSION
 from docstats.scope import Scope
-from docstats.storage import Storage, get_storage
+from docstats.storage import Storage, _to_sqlite_utc_iso, get_storage
 from docstats.web import app
 
 
@@ -54,6 +55,15 @@ def _seed_referral(storage: Storage, user_id: int, **overrides):
         created_by_user_id=user_id,
         **overrides,
     )
+
+
+def _age_referral(storage: Storage, referral_id: int, *, days: int) -> None:
+    old_updated = datetime.now(timezone.utc) - timedelta(days=days)
+    storage._conn.execute(
+        "UPDATE referrals SET updated_at = ? WHERE id = ?",
+        (_to_sqlite_utc_iso(old_updated), referral_id),
+    )
+    storage._conn.commit()
 
 
 @pytest.fixture
@@ -108,6 +118,36 @@ def test_workspace_renders_referral(solo_client):
     assert "Jane Doe" in resp.text
     assert "Cardiology" in resp.text
     assert "Heart Clinic" in resp.text
+
+
+def test_workspace_shows_stale_waiting_banner(solo_client):
+    client, storage, user_id = solo_client
+    stale = _seed_referral(storage, user_id, status="awaiting_records")
+    fresh = _seed_referral(storage, user_id, status="awaiting_auth")
+    wrong_status = _seed_referral(storage, user_id, status="sent")
+    _age_referral(storage, stale.id, days=4)
+    _age_referral(storage, wrong_status.id, days=4)
+
+    resp = client.get("/referrals")
+
+    assert resp.status_code == 200
+    assert "1 referral" in resp.text
+    assert "waiting on records or authorization" in resp.text
+    assert "more than 3" in resp.text
+    assert storage.get_referral(Scope(user_id=user_id), fresh.id) is not None
+
+
+def test_workspace_hides_stale_banner_when_no_waiting_rows(solo_client):
+    client, storage, user_id = solo_client
+    fresh = _seed_referral(storage, user_id, status="awaiting_auth")
+    old_sent = _seed_referral(storage, user_id, status="sent")
+    _age_referral(storage, old_sent.id, days=4)
+
+    resp = client.get("/referrals")
+
+    assert resp.status_code == 200
+    assert "waiting on records or authorization" not in resp.text
+    assert storage.get_referral(Scope(user_id=user_id), fresh.id) is not None
 
 
 def test_filter_by_status(solo_client):

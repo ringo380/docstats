@@ -13,6 +13,7 @@ medications, allergies, attachments) are still a follow-up slice.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Path, Query, Request
@@ -29,6 +30,7 @@ from docstats.domain.referrals import (
     transition_allowed,
     require_transition,
 )
+from docstats.domain.orgs import DEFAULT_STALE_THRESHOLD_DAYS
 from docstats.domain.rules import (
     detect_red_flags_in_text,
     resolve_specialty_rule,
@@ -50,6 +52,8 @@ from docstats.validators import validate_npi
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/referrals", tags=["referrals"])
+
+STALE_REFERRAL_STATUSES = ("awaiting_records", "awaiting_auth")
 
 
 def _ctx(
@@ -86,6 +90,14 @@ def _validate_optional_npi(value: str | None, field: str) -> str | None:
         return validate_npi(v)
     except Exception:
         raise HTTPException(status_code=422, detail=f"{field} must be 10 digits.")
+
+
+def _stale_threshold_days(storage: StorageBase, scope: Scope) -> int:
+    if scope.is_org and scope.organization_id is not None:
+        org = storage.get_organization(scope.organization_id)
+        if org is not None:
+            return org.stale_threshold_days
+    return DEFAULT_STALE_THRESHOLD_DAYS
 
 
 # --- Workspace list (Phase 2.B) ---
@@ -126,6 +138,13 @@ async def referrals_workspace(
         assigned_to_user_id=effective_assigned,
         limit=50,
     )
+    stale_threshold_days = _stale_threshold_days(storage, scope)
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(days=stale_threshold_days)
+    stale_referral_count = storage.count_referrals(
+        scope,
+        statuses=STALE_REFERRAL_STATUSES,
+        updated_before=stale_cutoff,
+    )
 
     patient_ids = {r.patient_id for r in referrals}
     patients_by_id = {
@@ -143,6 +162,8 @@ async def referrals_workspace(
             patients_by_id=patients_by_id,
             status_values=STATUS_VALUES,
             urgency_values=URGENCY_VALUES,
+            stale_referral_count=stale_referral_count,
+            stale_threshold_days=stale_threshold_days,
             filters={
                 "status": status_filter or "",
                 "urgency": urgency_filter or "",

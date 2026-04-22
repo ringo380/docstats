@@ -105,6 +105,7 @@ def test_create_and_fetch_organization(storage: Storage) -> None:
     assert org.id > 0
     assert isinstance(org, Organization)
     assert org.slug == "robs-clinic"
+    assert org.stale_threshold_days == 3
     assert org.deleted_at is None
 
     fetched = storage.get_organization(org.id)
@@ -115,6 +116,19 @@ def test_create_and_fetch_organization(storage: Storage) -> None:
     by_slug = storage.get_organization_by_slug("robs-clinic")
     assert by_slug is not None
     assert by_slug.id == org.id
+
+
+def test_create_organization_accepts_stale_threshold(storage: Storage) -> None:
+    org = storage.create_organization(name="Timed Clinic", slug="timed", stale_threshold_days=7)
+    assert org.stale_threshold_days == 7
+    assert storage.get_organization(org.id).stale_threshold_days == 7  # type: ignore[union-attr]
+
+
+def test_create_organization_rejects_invalid_stale_threshold(storage: Storage) -> None:
+    with pytest.raises(ValueError, match="stale_threshold_days"):
+        storage.create_organization(name="Too Fast", slug="fast", stale_threshold_days=0)
+    with pytest.raises(ValueError, match="stale_threshold_days"):
+        storage.create_organization(name="Too Slow", slug="slow", stale_threshold_days=366)
 
 
 def test_soft_delete_hides_organization(storage: Storage) -> None:
@@ -153,6 +167,22 @@ def test_update_organization_leaves_unchanged_by_default(storage: Storage) -> No
     assert updated.npi == "1111111111"  # preserved
     assert updated.address_city == "SF"
     assert updated.phone == "4155550001"
+    assert updated.stale_threshold_days == 3
+
+
+def test_update_organization_stale_threshold(storage: Storage) -> None:
+    org = storage.create_organization(name="Notify", slug="notify")
+    updated = storage.update_organization(org.id, stale_threshold_days=10)
+    assert updated is not None
+    assert updated.stale_threshold_days == 10
+
+
+def test_update_organization_rejects_invalid_stale_threshold(storage: Storage) -> None:
+    org = storage.create_organization(name="Notify", slug="notify-invalid")
+    with pytest.raises(ValueError, match="threshold"):
+        storage.update_organization(org.id, stale_threshold_days=0)
+    with pytest.raises(ValueError, match="threshold"):
+        storage.update_organization(org.id, stale_threshold_days=366)
 
 
 def test_update_organization_overwrite_clears_nulls(storage: Storage) -> None:

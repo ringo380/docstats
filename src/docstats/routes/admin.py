@@ -37,7 +37,14 @@ from docstats.domain.invitations import (
     generate_token,
     validate_role,
 )
-from docstats.domain.orgs import ROLES, Organization, has_role_at_least
+from docstats.domain.orgs import (
+    DEFAULT_STALE_THRESHOLD_DAYS,
+    MAX_STALE_THRESHOLD_DAYS,
+    MIN_STALE_THRESHOLD_DAYS,
+    ROLES,
+    Organization,
+    has_role_at_least,
+)
 from docstats.domain.reference import PayerRule, SpecialtyRule
 from docstats.domain.rules import REQUIRED_FIELD_CHECKS
 from docstats.routes._common import US_STATES, get_scope, render, saved_count
@@ -999,6 +1006,7 @@ def _org_settings_form_values(org: Organization) -> dict[str, str]:
         "address_zip": org.address_zip or "",
         "phone": org.phone or "",
         "fax": org.fax or "",
+        "stale_threshold_days": str(org.stale_threshold_days),
     }
 
 
@@ -1050,6 +1058,7 @@ async def org_settings_save(
     address_zip: str = Form("", max_length=10),
     phone: str = Form("", max_length=40),
     fax: str = Form("", max_length=40),
+    stale_threshold_days: str = Form(str(DEFAULT_STALE_THRESHOLD_DAYS), max_length=3),
     current_user: dict = Depends(require_user),
     scope: Scope = Depends(require_admin_scope),
     storage: StorageBase = Depends(get_storage),
@@ -1078,6 +1087,19 @@ async def org_settings_save(
     if zip_clean is not None and not _ZIP_PATTERN.match(zip_clean):
         errors.append("ZIP must be 5 digits or 5+4 (e.g. 94110 or 94110-1234).")
 
+    stale_threshold_clean = _clean(stale_threshold_days)
+    stale_threshold_value = DEFAULT_STALE_THRESHOLD_DAYS
+    if stale_threshold_clean is None:
+        errors.append("Stale referral threshold is required.")
+    else:
+        try:
+            stale_threshold_value = int(stale_threshold_clean)
+        except ValueError:
+            errors.append("Stale referral threshold must be a whole number of days.")
+        else:
+            if not (MIN_STALE_THRESHOLD_DAYS <= stale_threshold_value <= MAX_STALE_THRESHOLD_DAYS):
+                errors.append("Stale referral threshold must be between 1 and 365 days.")
+
     # Preserve the admin's typing across every error path below — both the
     # route-level validation branch and the storage ValueError branch
     # re-render from this dict so a rejected save doesn't cost them the
@@ -1092,6 +1114,7 @@ async def org_settings_save(
         "address_zip": address_zip,
         "phone": phone,
         "fax": fax,
+        "stale_threshold_days": stale_threshold_days,
     }
 
     if errors:
@@ -1122,6 +1145,7 @@ async def org_settings_save(
             address_zip=zip_clean,
             phone=_clean(phone),
             fax=_clean(fax),
+            stale_threshold_days=stale_threshold_value,
             overwrite=True,
         )
     except ValueError as e:

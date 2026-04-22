@@ -23,7 +23,14 @@ from docstats.domain.imports import (
     CsvImportRow,
 )
 from docstats.domain.invitations import Invitation
-from docstats.domain.orgs import ROLES, Membership, Organization
+from docstats.domain.orgs import (
+    DEFAULT_STALE_THRESHOLD_DAYS,
+    MAX_STALE_THRESHOLD_DAYS,
+    MIN_STALE_THRESHOLD_DAYS,
+    ROLES,
+    Membership,
+    Organization,
+)
 from docstats.domain.patients import Patient
 from docstats.domain.reference import (
     PLAN_TYPE_VALUES,
@@ -99,6 +106,7 @@ def _row_to_organization(row: dict) -> Organization:
         phone=row.get("phone"),
         fax=row.get("fax"),
         terms_bundle_version=row.get("terms_bundle_version"),
+        stale_threshold_days=int(row.get("stale_threshold_days") or DEFAULT_STALE_THRESHOLD_DAYS),
         created_at=created_at,
         deleted_at=_parse_ts(row.get("deleted_at")),
     )
@@ -978,7 +986,10 @@ class PostgresStorage(StorageBase):
         phone: str | None = None,
         fax: str | None = None,
         terms_bundle_version: str | None = None,
+        stale_threshold_days: int = DEFAULT_STALE_THRESHOLD_DAYS,
     ) -> Organization:
+        if not MIN_STALE_THRESHOLD_DAYS <= stale_threshold_days <= MAX_STALE_THRESHOLD_DAYS:
+            raise ValueError("stale_threshold_days must be between 1 and 365.")
         row = {
             "name": name,
             "slug": slug,
@@ -991,6 +1002,7 @@ class PostgresStorage(StorageBase):
             "phone": phone,
             "fax": fax,
             "terms_bundle_version": terms_bundle_version,
+            "stale_threshold_days": stale_threshold_days,
             "created_at": _now_iso(),
         }
         result = self._t("organizations").insert(row).execute()
@@ -1035,6 +1047,7 @@ class PostgresStorage(StorageBase):
         address_zip: str | None = None,
         phone: str | None = None,
         fax: str | None = None,
+        stale_threshold_days: int | None = None,
         overwrite: bool = False,
     ) -> Organization | None:
         kwargs: dict[str, str | None] = {
@@ -1050,12 +1063,18 @@ class PostgresStorage(StorageBase):
         }
         if overwrite and (name is None or not name.strip()):
             raise ValueError("Organization name must be non-empty when overwrite=True.")
-        fields: dict[str, str | None] = {}
+        if stale_threshold_days is not None and not (
+            MIN_STALE_THRESHOLD_DAYS <= stale_threshold_days <= MAX_STALE_THRESHOLD_DAYS
+        ):
+            raise ValueError("Stale referral threshold must be between 1 and 365 days.")
+        fields: dict[str, str | int | None] = {}
         for col, val in kwargs.items():
             if overwrite:
                 fields[col] = val
             elif val is not None:
                 fields[col] = val
+        if stale_threshold_days is not None:
+            fields["stale_threshold_days"] = stale_threshold_days
         if not fields:
             return self.get_organization(organization_id)
         result = (
@@ -1663,6 +1682,7 @@ class PostgresStorage(StorageBase):
         *,
         assigned_to_user_id: int | None = None,
         statuses: tuple[str, ...] | None = None,
+        updated_before: datetime | None = None,
         include_deleted: bool = False,
     ) -> int:
         if statuses is not None and not statuses:
@@ -1675,6 +1695,8 @@ class PostgresStorage(StorageBase):
             query = query.eq("assigned_to_user_id", assigned_to_user_id)
         if statuses is not None:
             query = query.in_("status", statuses)
+        if updated_before is not None:
+            query = query.lt("updated_at", _to_pg_iso(updated_before))
         result = query.execute()
         return int(result.count or 0)
 

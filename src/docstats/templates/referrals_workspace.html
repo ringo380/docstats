@@ -14,6 +14,14 @@
   </div>
 </div>
 
+{% if stale_referral_count %}
+  <div class="alert alert-warning">
+    {{ stale_referral_count }} referral{% if stale_referral_count != 1 %}s{% endif %}
+    have been waiting on records or authorization for more than {{ stale_threshold_days }}
+    day{% if stale_threshold_days != 1 %}s{% endif %}.
+  </div>
+{% endif %}
+
 <form method="get" action="/referrals" class="filter-bar">
   <label>Status
     <select name="status" onchange="this.form.submit()">

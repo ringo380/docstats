@@ -24,7 +24,14 @@ from docstats.domain.imports import (
     CsvImportRow,
 )
 from docstats.domain.invitations import Invitation
-from docstats.domain.orgs import ROLES, Membership, Organization
+from docstats.domain.orgs import (
+    DEFAULT_STALE_THRESHOLD_DAYS,
+    MAX_STALE_THRESHOLD_DAYS,
+    MIN_STALE_THRESHOLD_DAYS,
+    ROLES,
+    Membership,
+    Organization,
+)
 from docstats.domain.patients import Patient
 from docstats.domain.reference import (
     PLAN_TYPE_VALUES,
@@ -117,6 +124,7 @@ def _row_to_organization(row: sqlite3.Row) -> Organization:
         phone=row["phone"],
         fax=row["fax"],
         terms_bundle_version=row["terms_bundle_version"],
+        stale_threshold_days=int(row["stale_threshold_days"]),
         created_at=created,
         deleted_at=_parse_sqlite_utc(row["deleted_at"]),
     )
@@ -544,6 +552,7 @@ class Storage(StorageBase):
         self._migrate_appt_phone_fax()
         self._migrate_audit_events()
         self._migrate_orgs_and_memberships()
+        self._migrate_organization_stale_threshold()
         self._migrate_users_active_org_and_role_hint()
         self._migrate_sessions()
         self._migrate_patients()
@@ -708,6 +717,7 @@ class Storage(StorageBase):
                 phone                 TEXT,
                 fax                   TEXT,
                 terms_bundle_version  TEXT,
+                stale_threshold_days  INTEGER NOT NULL DEFAULT 3 CHECK (stale_threshold_days BETWEEN 1 AND 365),
                 created_at            TEXT NOT NULL DEFAULT (datetime('now')),
                 deleted_at            TEXT
             );
@@ -730,6 +740,17 @@ class Storage(StorageBase):
                 ON memberships(organization_id) WHERE deleted_at IS NULL;
         """)
         self._conn.commit()
+
+    def _migrate_organization_stale_threshold(self) -> None:
+        """Add org-level stale-referral threshold if absent."""
+        try:
+            self._conn.execute(
+                "ALTER TABLE organizations ADD COLUMN stale_threshold_days "
+                "INTEGER NOT NULL DEFAULT 3 CHECK (stale_threshold_days BETWEEN 1 AND 365)"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
     def _migrate_users_active_org_and_role_hint(self) -> None:
         """Add active_org_id, role_hint, and PHI-consent columns to users."""
@@ -1617,12 +1638,16 @@ class Storage(StorageBase):
         phone: str | None = None,
         fax: str | None = None,
         terms_bundle_version: str | None = None,
+        stale_threshold_days: int = DEFAULT_STALE_THRESHOLD_DAYS,
     ) -> Organization:
+        if not MIN_STALE_THRESHOLD_DAYS <= stale_threshold_days <= MAX_STALE_THRESHOLD_DAYS:
+            raise ValueError("stale_threshold_days must be between 1 and 365.")
         cursor = self._conn.execute(
             """INSERT INTO organizations
                (name, slug, npi, address_line1, address_line2, address_city,
-                address_state, address_zip, phone, fax, terms_bundle_version)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                address_state, address_zip, phone, fax, terms_bundle_version,
+                stale_threshold_days)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 name,
                 slug,
@@ -1635,6 +1660,7 @@ class Storage(StorageBase):
                 phone,
                 fax,
                 terms_bundle_version,
+                stale_threshold_days,
             ),
         )
         self._conn.commit()
@@ -1679,6 +1705,7 @@ class Storage(StorageBase):
         address_zip: str | None = None,
         phone: str | None = None,
         fax: str | None = None,
+        stale_threshold_days: int | None = None,
         overwrite: bool = False,
     ) -> Organization | None:
         # Gather (column, value) for each kwarg the caller supplied. In
@@ -1699,12 +1726,18 @@ class Storage(StorageBase):
         }
         if overwrite and (name is None or not name.strip()):
             raise ValueError("Organization name must be non-empty when overwrite=True.")
-        fields: dict[str, str | None] = {}
+        if stale_threshold_days is not None and not (
+            MIN_STALE_THRESHOLD_DAYS <= stale_threshold_days <= MAX_STALE_THRESHOLD_DAYS
+        ):
+            raise ValueError("Stale referral threshold must be between 1 and 365 days.")
+        fields: dict[str, str | int | None] = {}
         for col, val in kwargs.items():
             if overwrite:
                 fields[col] = val
             elif val is not None:
                 fields[col] = val
+        if stale_threshold_days is not None:
+            fields["stale_threshold_days"] = stale_threshold_days
         if not fields:
             # Nothing to write — return current row (may be None if missing).
             return self.get_organization(organization_id)
@@ -2318,6 +2351,7 @@ class Storage(StorageBase):
         *,
         assigned_to_user_id: int | None = None,
         statuses: tuple[str, ...] | None = None,
+        updated_before: datetime | None = None,
         include_deleted: bool = False,
     ) -> int:
         if statuses is not None and not statuses:
@@ -2333,6 +2367,9 @@ class Storage(StorageBase):
             placeholders = ", ".join("?" for _ in statuses)
             where_parts.append(f"status IN ({placeholders})")
             params.extend(statuses)
+        if updated_before is not None:
+            where_parts.append("updated_at < ?")
+            params.append(_to_sqlite_utc_iso(updated_before))
         row = self._conn.execute(
             f"SELECT COUNT(*) AS count FROM referrals WHERE {' AND '.join(where_parts)}",
             params,
