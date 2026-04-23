@@ -286,3 +286,31 @@ async def _fetch_open_payments(npi: str, cache: EnrichmentCache) -> dict | None:
     cache_value = json.dumps(result) if result else "null"
     cache.set("open_payments", npi, cache_value, TTL_OPEN_PAYMENTS)
     return result
+
+
+# ---------- Phase 8.A: Direct Trust endpoints from NPPES ----------
+
+
+async def fetch_receiving_direct_endpoints(npi: str | None, client: Any) -> list[Any]:
+    """Fetch Direct Trust endpoints for a receiving provider from NPPES.
+
+    Filters the NPPES ``endpoints[]`` list to those with
+    ``endpointType == "Direct"``. Returns ``[]`` on any failure (no NPI,
+    NPPES timeout / 5xx, unexpected shape) so callers — notably the FHIR
+    export route — never 503 on metadata. A warning is logged.
+
+    ``client`` is typed as ``Any`` to avoid circular imports;
+    ``NPPESClient`` is the only real caller.
+    """
+    if not npi:
+        return []
+    try:
+        result = await client.async_lookup(npi)
+    except Exception:
+        logger.warning("NPPES lookup failed for NPI %s; skipping Direct endpoints", npi)
+        return []
+    if result is None:
+        return []
+    endpoints = getattr(result, "endpoints", None) or []
+    direct_only = [e for e in endpoints if (getattr(e, "endpointType", "") or "") == "Direct"]
+    return direct_only

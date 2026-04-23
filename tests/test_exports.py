@@ -884,6 +884,210 @@ def test_build_referral_bundle_status_map():
         assert mapped in valid_fhir, f"{status} → {mapped} is not a FHIR ServiceRequest.status"
 
 
+# ---------- Phase 8.A: FHIR enhancements (Appointment / Communication / Endpoint) ----------
+
+
+def _fixture_response(referral_id: int, *, appointment_date=None, completed=False, text=None):
+    from datetime import datetime, timezone as tz
+
+    from docstats.domain.referrals import ReferralResponse
+
+    now = datetime(2026, 4, 22, 13, 0, tzinfo=tz.utc)
+    return ReferralResponse(
+        id=7,
+        referral_id=referral_id,
+        appointment_date=appointment_date,
+        consult_completed=completed,
+        recommendations_text=text,
+        received_via="fax",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def test_appointment_status_map():
+    """Only two values emitted — both must be valid FHIR Appointment.status."""
+    from docstats.exports.fhir import _APPOINTMENT_STATUS_BOOKED, _APPOINTMENT_STATUS_FULFILLED
+
+    valid_fhir = {
+        "proposed",
+        "pending",
+        "booked",
+        "arrived",
+        "fulfilled",
+        "cancelled",
+        "noshow",
+        "entered-in-error",
+        "checked-in",
+        "waitlist",
+    }
+    assert _APPOINTMENT_STATUS_BOOKED in valid_fhir
+    assert _APPOINTMENT_STATUS_FULFILLED in valid_fhir
+
+
+def test_communication_status_map():
+    """Only one value emitted — must be valid FHIR Communication.status."""
+    from docstats.exports.fhir import _COMMUNICATION_STATUS_COMPLETED
+
+    valid_fhir = {
+        "preparation",
+        "in-progress",
+        "not-done",
+        "on-hold",
+        "stopped",
+        "completed",
+        "entered-in-error",
+        "unknown",
+    }
+    assert _COMMUNICATION_STATUS_COMPLETED in valid_fhir
+
+
+def test_build_referral_bundle_includes_appointment_when_response_has_date():
+    from docstats.exports import build_referral_bundle
+
+    patient, referral, now = _fixture_patient_referral()
+    response = _fixture_response(referral.id, appointment_date="2026-05-10")
+    bundle = build_referral_bundle(
+        referral=referral, patient=patient, responses=[response], generated_at=now
+    )
+    appts = [
+        e["resource"] for e in bundle["entry"] if e["resource"]["resourceType"] == "Appointment"
+    ]
+    assert len(appts) == 1
+    appt = appts[0]
+    assert appt["status"] == "booked"  # consult_completed=False
+    assert appt["start"] == "2026-05-10T00:00:00Z"
+    # Received-via tag propagated via meta.tag.
+    tags = appt["meta"]["tag"]
+    assert tags[0]["code"] == "fax"
+    # Patient participant is required=required; practitioner (when
+    # referring side is known) is required=tentative.
+    actors = [p["actor"]["reference"] for p in appt["participant"]]
+    assert any(a.startswith("Patient/") for a in actors)
+
+
+def test_build_referral_bundle_appointment_fulfilled_when_consult_completed():
+    from docstats.exports import build_referral_bundle
+
+    patient, referral, now = _fixture_patient_referral()
+    response = _fixture_response(
+        referral.id, appointment_date="2026-05-10", completed=True, text="Normal echo."
+    )
+    bundle = build_referral_bundle(
+        referral=referral, patient=patient, responses=[response], generated_at=now
+    )
+    appt = next(
+        e["resource"] for e in bundle["entry"] if e["resource"]["resourceType"] == "Appointment"
+    )
+    assert appt["status"] == "fulfilled"
+
+
+def test_build_referral_bundle_includes_communication_when_consult_completed():
+    from docstats.exports import build_referral_bundle
+
+    patient, referral, now = _fixture_patient_referral()
+    response = _fixture_response(
+        referral.id,
+        appointment_date="2026-05-10",
+        completed=True,
+        text="Reviewed; no cardiac issue.",
+    )
+    bundle = build_referral_bundle(
+        referral=referral, patient=patient, responses=[response], generated_at=now
+    )
+    comms = [
+        e["resource"] for e in bundle["entry"] if e["resource"]["resourceType"] == "Communication"
+    ]
+    assert len(comms) == 1
+    comm = comms[0]
+    assert comm["status"] == "completed"
+    assert comm["payload"][0]["contentString"] == "Reviewed; no cardiac issue."
+    assert comm["about"][0]["reference"].startswith("ServiceRequest/")
+
+
+def test_build_referral_bundle_communication_skipped_when_recommendations_blank():
+    """consult_completed=True alone isn't enough — need recommendations_text too."""
+    from docstats.exports import build_referral_bundle
+
+    patient, referral, now = _fixture_patient_referral()
+    response = _fixture_response(referral.id, appointment_date=None, completed=True, text="")
+    bundle = build_referral_bundle(
+        referral=referral, patient=patient, responses=[response], generated_at=now
+    )
+    types = [e["resource"]["resourceType"] for e in bundle["entry"]]
+    assert "Communication" not in types
+    assert "Appointment" not in types  # no appointment_date either
+
+
+def test_build_referral_bundle_omits_response_resources_when_no_responses():
+    from docstats.exports import build_referral_bundle
+
+    patient, referral, now = _fixture_patient_referral()
+    bundle = build_referral_bundle(
+        referral=referral, patient=patient, responses=None, generated_at=now
+    )
+    types = [e["resource"]["resourceType"] for e in bundle["entry"]]
+    assert "Appointment" not in types
+    assert "Communication" not in types
+
+
+def test_build_referral_bundle_includes_endpoint_per_direct_address():
+    from docstats.exports import build_referral_bundle
+    from docstats.models import Endpoint
+
+    patient, referral, now = _fixture_patient_referral()
+    endpoints = [
+        Endpoint(
+            endpoint="provider@direct.hospital.com",
+            endpointType="Direct",
+            contentTypeDescription="Secure email",
+            affiliationName="Hospital HISP",
+        ),
+        Endpoint(
+            endpoint="dept@direct.hospital.com",
+            endpointType="Direct",
+            contentTypeDescription="Secure email",
+        ),
+    ]
+    bundle = build_referral_bundle(
+        referral=referral,
+        patient=patient,
+        receiving_endpoints=endpoints,
+        generated_at=now,
+    )
+    eps = [e["resource"] for e in bundle["entry"] if e["resource"]["resourceType"] == "Endpoint"]
+    assert len(eps) == 2
+    ep = eps[0]
+    assert ep["status"] == "active"
+    assert ep["connectionType"]["code"] == "direct-project"
+    assert ep["address"] == "provider@direct.hospital.com"
+    assert ep["name"] == "Hospital HISP"
+
+
+def test_build_referral_bundle_skips_endpoint_with_blank_address():
+    from docstats.exports import build_referral_bundle
+    from docstats.models import Endpoint
+
+    patient, referral, now = _fixture_patient_referral()
+    endpoints = [Endpoint(endpoint="", endpointType="Direct")]
+    bundle = build_referral_bundle(
+        referral=referral, patient=patient, receiving_endpoints=endpoints, generated_at=now
+    )
+    types = [e["resource"]["resourceType"] for e in bundle["entry"]]
+    assert "Endpoint" not in types
+
+
+def test_operation_outcome_shape():
+    """OperationOutcome helper must emit a minimal-valid FHIR error resource."""
+    from docstats.exports.fhir import operation_outcome
+
+    oo = operation_outcome("error", "not-found", "Referral 999 not visible to this scope.")
+    assert oo["resourceType"] == "OperationOutcome"
+    assert oo["issue"][0]["severity"] == "error"
+    assert oo["issue"][0]["code"] == "not-found"
+    assert "999" in oo["issue"][0]["diagnostics"]
+
+
 # ---------- Route: JSON export ----------
 
 
