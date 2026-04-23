@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
 
-from fastapi import APIRouter, Depends, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 
 from docstats.auth import require_user_api
@@ -100,6 +100,65 @@ def _error_response(
     return JSONResponse(
         content=body,
         status_code=status_code,
+        headers=_base_response_headers(content_type),
+    )
+
+
+# FastAPI OperationOutcome issue.code vocab (subset we emit). Mirrors FHIR
+# R4 ``issue-type`` value set — callers pass the closest match for the
+# HTTP status code.
+_STATUS_TO_FHIR_CODE: dict[int, str] = {
+    400: "invalid",
+    401: "security",
+    403: "forbidden",
+    404: "not-found",
+    409: "incomplete",
+    413: "too-costly",
+    422: "invalid",
+    500: "exception",
+    503: "transient",
+}
+
+
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Negotiated error handler for /api/v2/* HTTPExceptions.
+
+    When any dependency (``require_user_api`` / ``require_phi_consent_api``)
+    or handler raises ``HTTPException``, FastAPI's default handler returns
+    ``{"detail": ...}`` with ``Content-Type: application/json`` — which
+    breaks FHIR clients that asked for ``application/fhir+json``. This
+    handler rewraps the response through the same content negotiation as
+    the success paths.
+
+    Registered on the app via ``add_exception_handler(HTTPException,
+    http_exception_handler)`` scoped by path in ``web.py`` — anything
+    outside ``/api/v2/*`` routes falls through to the framework default.
+    """
+    fhir_mode = _wants_fhir(request)
+    content_type = FHIR_CONTENT_TYPE if fhir_mode else JSON_CONTENT_TYPE
+    detail = exc.detail
+
+    # require_user_api / require_phi_consent_api use dict details shaped
+    # like ``{"code": ..., "message": ...}``. Plain-JSON callers expect
+    # the same ``{"detail": {...}}`` shape FastAPI would have emitted, so
+    # preserve the dict there. FHIR callers get a flattened
+    # OperationOutcome with the dict's ``message`` as diagnostics.
+    if fhir_mode:
+        if isinstance(detail, dict):
+            message = str(detail.get("message") or detail.get("detail") or "Error")
+        else:
+            message = str(detail)
+        body: dict[str, Any] = operation_outcome(
+            severity="error",
+            code=_STATUS_TO_FHIR_CODE.get(exc.status_code, "processing"),
+            diagnostics=message,
+        )
+    else:
+        body = {"detail": detail}
+
+    return JSONResponse(
+        content=body,
+        status_code=exc.status_code,
         headers=_base_response_headers(content_type),
     )
 
@@ -364,9 +423,13 @@ async def webhooks_inbound(
 
     # HMAC-SHA-256 over "<timestamp>.<body>". Accept either the raw hex
     # or the "sha256=..." prefixed form that most vendor SDKs emit.
+    # Do NOT .strip() the presented value — that would silently trim
+    # whitespace differences into length-mismatched digests and confuse
+    # integrators debugging legitimate 401s. If a vendor SDK appends a
+    # trailing newline they need to fix their SDK, not rely on us.
     signed_payload = f"{timestamp}.".encode("utf-8") + raw_body
     expected = hmac.new(secret.encode("utf-8"), signed_payload, sha256).hexdigest()
-    presented = signature.removeprefix("sha256=").strip()
+    presented = signature.removeprefix("sha256=")
     if not hmac.compare_digest(expected, presented):
         return _webhook_error(
             status_code=401,
