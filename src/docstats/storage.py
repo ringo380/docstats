@@ -562,6 +562,7 @@ class Storage(StorageBase):
         self._migrate_reference_data()
         self._migrate_csv_imports()
         self._migrate_organization_invitations()
+        self._migrate_webhook_inbox()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -1148,6 +1149,26 @@ class Storage(StorageBase):
             CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_pending_unique
                 ON organization_invitations(organization_id, email)
                 WHERE accepted_at IS NULL AND revoked_at IS NULL;
+        """)
+        self._conn.commit()
+
+    def _migrate_webhook_inbox(self) -> None:
+        """Create webhook_inbox (Phase 8.C)."""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS webhook_inbox (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                received_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                source              TEXT,
+                payload_json        TEXT NOT NULL,
+                http_headers_json   TEXT NOT NULL DEFAULT '{}',
+                signature           TEXT,
+                status              TEXT NOT NULL DEFAULT 'received'
+                    CHECK (status IN ('received', 'processed', 'discarded', 'invalid_signature')),
+                notes               TEXT,
+                processed_at        TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_webhook_inbox_status_received_at
+                ON webhook_inbox(status, received_at);
         """)
         self._conn.commit()
 
@@ -3795,6 +3816,34 @@ class Storage(StorageBase):
         )
         self._conn.commit()
         return cursor.rowcount > 0
+
+    # --- Inbound webhook inbox (Phase 8.C) ---
+
+    def record_inbound_webhook(
+        self,
+        *,
+        source: str | None,
+        payload_json: dict[str, Any],
+        http_headers_json: dict[str, Any],
+        signature: str | None,
+        status: str = "received",
+        notes: str | None = None,
+    ) -> int:
+        cursor = self._conn.execute(
+            """INSERT INTO webhook_inbox
+               (source, payload_json, http_headers_json, signature, status, notes)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                source,
+                json.dumps(payload_json),
+                json.dumps(http_headers_json),
+                signature,
+                status,
+                notes,
+            ),
+        )
+        self._conn.commit()
+        return int(cursor.lastrowid or 0)
 
     def close(self) -> None:
         self._conn.close()

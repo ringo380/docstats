@@ -1,0 +1,20 @@
+{# Phase 8.C — Direct Trust endpoints from NPPES.
+   Renders only when the receiving provider has one or more Direct
+   endpoints on file. The coordinator uses their own Direct client to
+   send; in-app Direct sending lands in Phase 9. #}
+{% if direct_endpoints %}
+<div class="direct-endpoints card">
+  <h3>Direct Trust endpoints</h3>
+  <p class="sub">Available for the receiving provider (from NPPES). Send via your own Direct client — in-app sending arrives in a future update.</p>
+  <ul class="direct-endpoint-list">
+    {% for ep in direct_endpoints %}
+    <li>
+      <code class="direct-address">{{ ep.endpoint }}</code>
+      {% if ep.affiliationName %}<div class="sub">{{ ep.affiliationName }}</div>{% endif %}
+      {% if ep.contentTypeDescription %}<div class="sub">{{ ep.contentTypeDescription }}</div>{% endif %}
+      {% if ep.useDescription %}<div class="sub">{{ ep.useDescription }}</div>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}

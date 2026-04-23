@@ -326,3 +326,199 @@ def test_api_version_header_present_on_all_responses(solo_client):
         assert resp.headers.get("x-docstats-api-version") == "2", (
             f"missing X-Docstats-Api-Version on {path!r} with headers {headers!r}"
         )
+
+
+# ---------- Phase 8.C: inbound webhook stub ----------
+
+
+import hmac  # noqa: E402
+import json as _json  # noqa: E402
+import time  # noqa: E402
+from hashlib import sha256  # noqa: E402
+
+
+_WEBHOOK_SECRET = "s3cret-test-key"
+
+
+def _sign(body: bytes, timestamp: str, secret: str = _WEBHOOK_SECRET) -> str:
+    signed = f"{timestamp}.".encode("utf-8") + body
+    return "sha256=" + hmac.new(secret.encode("utf-8"), signed, sha256).hexdigest()
+
+
+@pytest.fixture
+def webhook_client(tmp_path: Path, monkeypatch):
+    """Client with WEBHOOK_INBOX_SECRET set. No auth required — the
+    webhook endpoint doesn't take session cookies."""
+    storage = Storage(db_path=tmp_path / "test.db")
+    app.dependency_overrides[get_storage] = lambda: storage
+    monkeypatch.setenv("WEBHOOK_INBOX_SECRET", _WEBHOOK_SECRET)
+    yield TestClient(app), storage
+    app.dependency_overrides.clear()
+
+
+def test_webhook_returns_503_when_secret_unset(tmp_path: Path, monkeypatch):
+    storage = Storage(db_path=tmp_path / "test.db")
+    app.dependency_overrides[get_storage] = lambda: storage
+    monkeypatch.delenv("WEBHOOK_INBOX_SECRET", raising=False)
+    try:
+        client = TestClient(app)
+        resp = client.post("/api/v2/webhooks/inbound", content=b"{}")
+        assert resp.status_code == 503
+        assert resp.json()["code"] == "endpoint_disabled"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_webhook_rejects_missing_signature(webhook_client):
+    client, _ = webhook_client
+    resp = client.post("/api/v2/webhooks/inbound", content=b'{"hello":"world"}')
+    assert resp.status_code == 401
+    assert resp.json()["code"] == "invalid_signature"
+
+
+def test_webhook_rejects_invalid_signature(webhook_client):
+    client, _ = webhook_client
+    body = b'{"hello":"world"}'
+    ts = str(int(time.time()))
+    resp = client.post(
+        "/api/v2/webhooks/inbound",
+        content=body,
+        headers={"X-Timestamp": ts, "X-Signature": "sha256=deadbeef"},
+    )
+    assert resp.status_code == 401
+
+
+def test_webhook_rejects_stale_timestamp(webhook_client):
+    client, _ = webhook_client
+    body = b'{"hello":"world"}'
+    # 10 minutes in the past — well outside the 5-minute window.
+    ts = str(int(time.time()) - 600)
+    sig = _sign(body, ts)
+    resp = client.post(
+        "/api/v2/webhooks/inbound",
+        content=body,
+        headers={"X-Timestamp": ts, "X-Signature": sig},
+    )
+    assert resp.status_code == 401
+    assert "skew" in resp.json()["detail"].lower()
+
+
+def test_webhook_rejects_oversized_body(webhook_client):
+    client, _ = webhook_client
+    oversized = b"x" * (256 * 1024 + 1)
+    ts = str(int(time.time()))
+    sig = _sign(oversized, ts)
+    resp = client.post(
+        "/api/v2/webhooks/inbound",
+        content=oversized,
+        headers={"X-Timestamp": ts, "X-Signature": sig, "Content-Type": "application/json"},
+    )
+    assert resp.status_code == 413
+    assert resp.json()["code"] == "payload_too_large"
+
+
+def test_webhook_persists_valid_payload(webhook_client):
+    client, storage = webhook_client
+    body = _json.dumps({"hello": "world", "run_id": 42}).encode("utf-8")
+    ts = str(int(time.time()))
+    sig = _sign(body, ts)
+    resp = client.post(
+        "/api/v2/webhooks/inbound",
+        content=body,
+        headers={
+            "X-Timestamp": ts,
+            "X-Signature": sig,
+            "Content-Type": "application/json",
+            "X-Source": "test-vendor",
+            "User-Agent": "curl/8.0",
+        },
+    )
+    assert resp.status_code == 202
+    body_json = resp.json()
+    assert body_json["status"] == "received"
+    assert isinstance(body_json["id"], int)
+
+    # Verify the row landed.
+    row = storage._conn.execute(
+        "SELECT source, payload_json, http_headers_json, status FROM webhook_inbox WHERE id = ?",
+        (body_json["id"],),
+    ).fetchone()
+    assert row is not None
+    assert row["source"] == "test-vendor"
+    assert _json.loads(row["payload_json"]) == {"hello": "world", "run_id": 42}
+    assert row["status"] == "received"
+
+
+def test_webhook_filters_headers_to_allowlist(webhook_client):
+    client, storage = webhook_client
+    body = b'{"hello":"world"}'
+    ts = str(int(time.time()))
+    sig = _sign(body, ts)
+    resp = client.post(
+        "/api/v2/webhooks/inbound",
+        content=body,
+        headers={
+            "X-Timestamp": ts,
+            "X-Signature": sig,
+            "Content-Type": "application/json",
+            # These must NOT be persisted.
+            "Cookie": "session=leaked",
+            "X-Forwarded-For": "1.2.3.4",
+            "X-Internal-Routing": "private",
+        },
+    )
+    assert resp.status_code == 202
+
+    row = storage._conn.execute(
+        "SELECT http_headers_json FROM webhook_inbox WHERE id = ?",
+        (resp.json()["id"],),
+    ).fetchone()
+    stored_headers = _json.loads(row["http_headers_json"])
+    assert "cookie" not in stored_headers
+    assert "x-forwarded-for" not in stored_headers
+    assert "x-internal-routing" not in stored_headers
+    # Allowlisted entries should be present.
+    assert "x-timestamp" in stored_headers
+    assert "x-signature" in stored_headers
+    assert stored_headers["content-type"] == "application/json"
+
+
+def test_webhook_rejects_non_json_body(webhook_client):
+    client, _ = webhook_client
+    body = b"<xml>nope</xml>"
+    ts = str(int(time.time()))
+    sig = _sign(body, ts)
+    resp = client.post(
+        "/api/v2/webhooks/inbound",
+        content=body,
+        headers={"X-Timestamp": ts, "X-Signature": sig},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "invalid_payload"
+
+
+def test_webhook_rejects_non_object_json(webhook_client):
+    client, _ = webhook_client
+    body = b'["just","a","list"]'
+    ts = str(int(time.time()))
+    sig = _sign(body, ts)
+    resp = client.post(
+        "/api/v2/webhooks/inbound",
+        content=body,
+        headers={"X-Timestamp": ts, "X-Signature": sig},
+    )
+    assert resp.status_code == 400
+
+
+def test_webhook_accepts_plain_hex_signature(webhook_client):
+    """Vendors sometimes omit the ``sha256=`` prefix — accept both."""
+    client, storage = webhook_client
+    body = b'{"hello":"world"}'
+    ts = str(int(time.time()))
+    sig = _sign(body, ts).removeprefix("sha256=")
+    resp = client.post(
+        "/api/v2/webhooks/inbound",
+        content=body,
+        headers={"X-Timestamp": ts, "X-Signature": sig},
+    )
+    assert resp.status_code == 202

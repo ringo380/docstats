@@ -25,8 +25,12 @@ which format).
 
 from __future__ import annotations
 
+import hmac
+import json
 import logging
+import os
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Any
 
 from fastapi import APIRouter, Depends, Path, Request
@@ -236,10 +240,180 @@ async def get_patient_v2(
     return JSONResponse(content=body, status_code=200, headers=_base_response_headers(content_type))
 
 
-# Both handlers chain: require_phi_consent_api → require_user_api →
+# Both read handlers chain: require_phi_consent_api → require_user_api →
 # get_current_user. Unauthenticated → 401 JSON; authenticated-but-not-
 # consented → 403 JSON. Neither path redirects, so curl-based consumers
 # get actionable errors. The equivalent browser flow (`require_user` /
 # `require_phi_consent`) still 303-redirects to /auth/login or the PHI
 # consent prompt, which is correct for web UI callers.
 _ = require_user_api  # imported for symmetry; not used as a direct dep here
+
+
+# ---------- /api/v2/webhooks/inbound (Phase 8.C — dead-lettered inbox) ----------
+
+# Maximum accepted webhook body. 256 KiB is comfortably above anything
+# current delivery vendors send and well below Railway's platform limit.
+WEBHOOK_MAX_BYTES = 256 * 1024
+
+# ±5-minute skew for the signed X-Timestamp to kill replays against the
+# inbox (denial-of-wallet would be trivial otherwise — row inserts are
+# cheap per request but accumulate).
+WEBHOOK_CLOCK_SKEW_SECONDS = 300
+
+# Only these header names are persisted with the row. Everything else is
+# dropped before write — raw proxy identifiers, cookies, etc. must not
+# leak into the DB.
+_HEADER_ALLOWLIST = frozenset(
+    {"content-type", "user-agent", "x-signature", "x-timestamp", "x-source"}
+)
+
+
+def _filter_headers(request: Request) -> dict[str, str]:
+    """Lowercase-keyed allowlisted subset of the request headers."""
+    return {
+        name.lower(): value
+        for name, value in request.headers.items()
+        if name.lower() in _HEADER_ALLOWLIST
+    }
+
+
+def _webhook_error(
+    *, status_code: int, code: str, detail: str, audit_note: str | None = None
+) -> JSONResponse:
+    """Error response shape — not negotiated (webhook callers aren't FHIR).
+
+    ``audit_note`` is ignored here but kept in the signature so the
+    handler can uniformly build both stored rows and error responses.
+    """
+    _ = audit_note
+    return JSONResponse(
+        content={"code": code, "detail": detail},
+        status_code=status_code,
+        headers={
+            "X-Docstats-Api-Version": API_VERSION,
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/webhooks/inbound")
+async def webhooks_inbound(
+    request: Request,
+    storage: StorageBase = Depends(get_storage),
+) -> JSONResponse:
+    """Dead-lettered inbound webhook endpoint.
+
+    Accepts HMAC-signed JSON posts and persists them to
+    ``webhook_inbox``. No handlers yet — Phase 9 (outbound delivery
+    vendor callbacks) and beyond consume these rows. Disabled by
+    default; set ``WEBHOOK_INBOX_SECRET`` to activate.
+    """
+    secret = os.environ.get("WEBHOOK_INBOX_SECRET")
+    if not secret:
+        return _webhook_error(
+            status_code=503,
+            code="endpoint_disabled",
+            detail="Webhook endpoint is administratively disabled (WEBHOOK_INBOX_SECRET unset).",
+        )
+
+    # Content-Length cap before reading the body — avoids buffering a
+    # 50 MB upload just to reject it. Starlette still parses into a
+    # SpooledTemporaryFile, but the cap keeps the memory / disk
+    # footprint bounded.
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > WEBHOOK_MAX_BYTES:
+        return _webhook_error(
+            status_code=413,
+            code="payload_too_large",
+            detail=f"Body exceeds {WEBHOOK_MAX_BYTES} bytes.",
+        )
+    raw_body = await request.body()
+    if len(raw_body) > WEBHOOK_MAX_BYTES:
+        return _webhook_error(
+            status_code=413,
+            code="payload_too_large",
+            detail=f"Body exceeds {WEBHOOK_MAX_BYTES} bytes.",
+        )
+
+    timestamp = request.headers.get("x-timestamp")
+    signature = request.headers.get("x-signature")
+    if not timestamp or not signature:
+        return _webhook_error(
+            status_code=401,
+            code="invalid_signature",
+            detail="Missing X-Timestamp or X-Signature header.",
+        )
+
+    # Timestamp replay guard. Must parse as int (Unix seconds).
+    try:
+        ts_int = int(timestamp)
+    except ValueError:
+        return _webhook_error(
+            status_code=401,
+            code="invalid_signature",
+            detail="X-Timestamp must be Unix seconds.",
+        )
+    now = int(datetime.now(tz=timezone.utc).timestamp())
+    if abs(now - ts_int) > WEBHOOK_CLOCK_SKEW_SECONDS:
+        return _webhook_error(
+            status_code=401,
+            code="invalid_signature",
+            detail="X-Timestamp outside acceptable clock skew.",
+        )
+
+    # HMAC-SHA-256 over "<timestamp>.<body>". Accept either the raw hex
+    # or the "sha256=..." prefixed form that most vendor SDKs emit.
+    signed_payload = f"{timestamp}.".encode("utf-8") + raw_body
+    expected = hmac.new(secret.encode("utf-8"), signed_payload, sha256).hexdigest()
+    presented = signature.removeprefix("sha256=").strip()
+    if not hmac.compare_digest(expected, presented):
+        return _webhook_error(
+            status_code=401,
+            code="invalid_signature",
+            detail="HMAC signature does not match.",
+        )
+
+    # Body must be valid JSON. Invalid JSON is dropped with 400 — but we
+    # do NOT record it to the inbox (nothing useful to triage without a
+    # parseable payload).
+    try:
+        payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return _webhook_error(
+            status_code=400,
+            code="invalid_payload",
+            detail="Request body must be UTF-8 JSON.",
+        )
+    if not isinstance(payload, dict):
+        return _webhook_error(
+            status_code=400,
+            code="invalid_payload",
+            detail="Top-level JSON value must be an object.",
+        )
+
+    try:
+        inbox_id = storage.record_inbound_webhook(
+            source=request.headers.get("x-source"),
+            payload_json=payload,
+            http_headers_json=_filter_headers(request),
+            signature=signature,
+            status="received",
+        )
+    except Exception:
+        logger.exception("Failed to persist inbound webhook")
+        return _webhook_error(
+            status_code=500,
+            code="storage_error",
+            detail="Failed to record inbound webhook.",
+        )
+
+    return JSONResponse(
+        content={"id": inbox_id, "status": "received"},
+        status_code=202,
+        headers={
+            "X-Docstats-Api-Version": API_VERSION,
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

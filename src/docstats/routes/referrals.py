@@ -33,6 +33,7 @@ from docstats.domain.referrals import (
     transition_allowed_for_role,
 )
 from docstats.domain.orgs import DEFAULT_STALE_THRESHOLD_DAYS
+from docstats.enrichment import fetch_receiving_direct_endpoints
 from docstats.domain.rules import (
     detect_red_flags_in_text,
     resolve_specialty_rule,
@@ -41,6 +42,7 @@ from docstats.domain.rules import (
 from docstats.phi import require_phi_consent
 from docstats.routes._common import (
     assigned_open_count,
+    get_client,
     get_scope,
     render,
     resolve_assignee_filter,
@@ -432,7 +434,7 @@ def _build_actor_map(storage: StorageBase, events: list) -> dict[int, str]:
     return {uid: _format_actor(storage.get_user_by_id(uid)) for uid in ids}
 
 
-def _render_detail(
+async def _render_detail(
     request: Request,
     current_user: dict,
     storage: StorageBase,
@@ -453,6 +455,12 @@ def _render_detail(
     responses = storage.list_referral_responses(scope, referral_id)
     completeness = rules_based_completeness(storage, scope, referral)
     actors_by_id = _build_actor_map(storage, events)
+    # Phase 8.C: surface Direct Trust endpoints from NPPES when a receiving
+    # NPI is set. Best-effort — NPPES failures degrade to an empty list so
+    # the detail page still renders.
+    direct_endpoints = await fetch_receiving_direct_endpoints(
+        referral.receiving_provider_npi, get_client()
+    )
     # Assignable users for the Assign dropdown (Phase 7.C). Solo scope → just
     # self; org scope → every live member. Include the currently-assigned
     # user even if they've since left the org so the dropdown still shows
@@ -497,6 +505,7 @@ def _render_detail(
             status_transition_locked_reason=_status_transition_locked_reason(scope),
             assignable_users=assignable,
             assigned_display=assigned_display,
+            direct_endpoints=direct_endpoints,
             errors=errors,
             response_errors=response_errors,
             response_values=response_values or {},
@@ -514,7 +523,7 @@ async def referral_detail(
     scope: Scope = Depends(get_scope),
     storage: StorageBase = Depends(get_storage),
 ):
-    return _render_detail(request, current_user, storage, scope, referral_id)
+    return await _render_detail(request, current_user, storage, scope, referral_id)
 
 
 @router.get("/{referral_id}/completeness", response_class=HTMLResponse)
@@ -622,12 +631,14 @@ async def referral_update(
             old_values[k] = current
 
     if not changed:
-        return _render_detail(request, current_user, storage, scope, referral_id, errors=None)
+        return await _render_detail(request, current_user, storage, scope, referral_id, errors=None)
 
     try:
         updated = storage.update_referral(scope, referral_id, **changed)
     except ValueError as e:
-        return _render_detail(request, current_user, storage, scope, referral_id, errors=[str(e)])
+        return await _render_detail(
+            request, current_user, storage, scope, referral_id, errors=[str(e)]
+        )
     if updated is None:
         # Row soft-deleted between the read and the write (TOCTOU). Treat as
         # 404 rather than emit events against a vanished referral.
@@ -701,7 +712,9 @@ async def referral_set_status(
     except TransitionRoleDenied as e:
         raise HTTPException(status_code=403, detail=str(e))
     except InvalidTransition as e:
-        return _render_detail(request, current_user, storage, scope, referral_id, errors=[str(e)])
+        return await _render_detail(
+            request, current_user, storage, scope, referral_id, errors=[str(e)]
+        )
     old_status = existing.status
     # TOCTOU guard: the referral could have been soft-deleted between our
     # read above and this write — set_referral_status returns None in that
@@ -1025,7 +1038,7 @@ def _maybe_auto_complete(
     return "completed"
 
 
-def _render_detail_with_response_error(
+async def _render_detail_with_response_error(
     request: Request,
     current_user: dict,
     storage: StorageBase,
@@ -1034,7 +1047,7 @@ def _render_detail_with_response_error(
     errors: list[str],
     values: dict,
 ) -> Response:
-    return _render_detail(
+    return await _render_detail(
         request,
         current_user,
         storage,
@@ -1068,7 +1081,7 @@ async def referral_response_create(
     recs = _clean(recommendations_text)
 
     if appt is None and not completed and recs is None:
-        return _render_detail_with_response_error(
+        return await _render_detail_with_response_error(
             request,
             current_user,
             storage,
@@ -1329,7 +1342,7 @@ async def referral_note_create(
         raise HTTPException(status_code=404, detail="Referral not found.")
     body = _clean(note)
     if body is None:
-        return _render_detail(
+        return await _render_detail(
             request,
             current_user,
             storage,

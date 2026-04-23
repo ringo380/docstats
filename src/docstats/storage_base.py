@@ -1183,5 +1183,28 @@ class StorageBase(ABC):
     @abstractmethod
     def delete_csv_import_row(self, scope: "Scope", import_id: int, row_id: int) -> bool: ...
 
+    # --- Inbound webhook inbox (Phase 8.C, dead-lettered) ---
+
+    @abstractmethod
+    def record_inbound_webhook(
+        self,
+        *,
+        source: str | None,
+        payload_json: dict[str, Any],
+        http_headers_json: dict[str, Any],
+        signature: str | None,
+        status: str = "received",
+        notes: str | None = None,
+    ) -> int:
+        """Persist an HMAC-verified inbound webhook payload.
+
+        No routing / handlers yet. Phase 9+ consumes these rows (delivery
+        status callbacks, EHR pushes, etc.). ``status`` must be one of
+        ``received | processed | discarded | invalid_signature`` — the
+        DB enforces the CHECK constraint. ``http_headers_json`` should
+        already be allowlist-filtered by the caller so raw proxy
+        identifiers never hit the DB.
+        """
+
     @abstractmethod
     def close(self) -> None: ...
