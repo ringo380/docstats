@@ -1376,3 +1376,42 @@ dl.kv dd { color: var(--text); margin: 0; }
   color: var(--blue, #6fb1ff);
   word-break: break-all;
 }
+
+/* ── Share gate (Phase 9.B) ─────────────────────────────────────────── */
+.share-gate-wrapper {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+.share-gate-card {
+  background: var(--surface, var(--bg-card));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 40px 36px;
+  max-width: 440px;
+  width: 100%;
+}
+.share-gate-logo {
+  margin-bottom: 24px;
+}
+.share-gate-heading {
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.share-gate-sub {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin-bottom: 24px;
+  line-height: 1.5;
+}
+.share-gate-form .form-label { margin-bottom: 6px; display: block; font-size: 0.88rem; }
+.share-gate-btn { width: 100%; margin-top: 20px; }
+.share-gate-footer {
+  margin-top: 28px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}

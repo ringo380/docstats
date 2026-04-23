@@ -41,6 +41,8 @@ from docstats.routes.patients import router as patients_router
 from docstats.routes.profile import router as profile_router
 from docstats.routes.referrals import router as referrals_router
 from docstats.routes.delivery import router as delivery_router
+from docstats.routes.share import router as share_router
+from docstats.routes.webhooks_vendor import router as webhooks_vendor_router
 from docstats.routes.providers import router as providers_router
 from docstats.routes.saved import router as saved_router
 from docstats.routes.search import router as search_router
@@ -238,6 +240,8 @@ app.include_router(patients_router)
 app.include_router(imports_router)
 app.include_router(exports_router)
 app.include_router(delivery_router)
+app.include_router(share_router)
+app.include_router(webhooks_vendor_router)
 app.include_router(referrals_router)
 app.include_router(saved_router)
 app.include_router(providers_router)

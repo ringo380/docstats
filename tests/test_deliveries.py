@@ -68,16 +68,25 @@ def storage(tmp_path: Path):
     s.close()
 
 
-# ---------- Registry (Phase 9.A ships with zero enabled channels) ----------
+# ---------- Registry ----------
 
 
-def test_enabled_channels_is_empty_in_9a():
-    """Every channel raises ChannelDisabledError until a vendor lands."""
+def test_enabled_channels_excludes_unconfigured(monkeypatch):
+    """Channels without credentials are absent from enabled_channels()."""
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    monkeypatch.delenv("DOCUMO_API_KEY", raising=False)
     assert enabled_channels() == []
 
 
-@pytest.mark.parametrize("channel", ["email", "fax", "direct"])
-def test_get_channel_raises_channel_disabled(channel):
+def test_email_channel_enabled_when_api_key_set(monkeypatch):
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+    result = enabled_channels()
+    assert "email" in result
+
+
+@pytest.mark.parametrize("channel", ["fax", "direct"])
+def test_get_channel_raises_channel_disabled(channel, monkeypatch):
+    monkeypatch.delenv("DOCUMO_API_KEY", raising=False)
     with pytest.raises(ChannelDisabledError):
         get_channel(channel)
 

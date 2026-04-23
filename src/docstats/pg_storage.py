@@ -17,6 +17,7 @@ from typing import Any, cast
 
 from docstats.domain.audit import AuditEvent
 from docstats.domain.deliveries import Delivery, DeliveryAttempt
+from docstats.domain.share_tokens import ShareToken
 from docstats.domain.imports import (
     IMPORT_ROW_STATUS_VALUES,
     IMPORT_STATUS_VALUES,
@@ -1340,13 +1341,16 @@ class PostgresStorage(StorageBase):
 
     # --- Patients (scope-enforced) ---
 
-    def _apply_scope(self, query, scope: Scope):
+    def _apply_scope(self, query, scope: "Scope | None"):
         """Apply scope filtering to a supabase-py query chain.
 
         Mirrors ``scope.scope_sql_clause`` semantics — raises on anonymous,
         adds ``scope_user_id`` / ``scope_organization_id`` filters for the
-        active mode (solo / org).
+        active mode (solo / org). Pass ``scope=None`` to skip scope filtering
+        entirely (dispatcher / public share-viewer paths).
         """
+        if scope is None:
+            return query
         self._require_scoped(scope)
         if scope.is_solo:
             return query.eq("scope_user_id", scope.user_id).is_("scope_organization_id", None)
@@ -1416,7 +1420,7 @@ class PostgresStorage(StorageBase):
         result = self._t("patients").insert(row).execute()
         return _row_to_patient(result.data[0])
 
-    def get_patient(self, scope: Scope, patient_id: int) -> Patient | None:
+    def get_patient(self, scope: Scope | None, patient_id: int) -> Patient | None:
         query = self._t("patients").select("*").eq("id", patient_id).is_("deleted_at", None)
         query = self._apply_scope(query, scope)
         result = query.execute()
@@ -1639,7 +1643,7 @@ class PostgresStorage(StorageBase):
             raise
         return referral
 
-    def get_referral(self, scope: Scope, referral_id: int) -> Referral | None:
+    def get_referral(self, scope: Scope | None, referral_id: int) -> Referral | None:
         query = self._t("referrals").select("*").eq("id", referral_id).is_("deleted_at", None)
         query = self._apply_scope(query, scope)
         result = query.execute()
@@ -1946,7 +1950,9 @@ class PostgresStorage(StorageBase):
             self._sync_referral_primary_diagnosis(referral_id)
         return _row_to_referral_diagnosis(result.data[0])
 
-    def list_referral_diagnoses(self, scope: Scope, referral_id: int) -> list[ReferralDiagnosis]:
+    def list_referral_diagnoses(
+        self, scope: Scope | None, referral_id: int
+    ) -> list[ReferralDiagnosis]:
         if self.get_referral(scope, referral_id) is None:
             return []
         result = (
@@ -2071,7 +2077,9 @@ class PostgresStorage(StorageBase):
         )
         return _row_to_referral_medication(result.data[0])
 
-    def list_referral_medications(self, scope: Scope, referral_id: int) -> list[ReferralMedication]:
+    def list_referral_medications(
+        self, scope: Scope | None, referral_id: int
+    ) -> list[ReferralMedication]:
         if self.get_referral(scope, referral_id) is None:
             return []
         result = (
@@ -2183,7 +2191,9 @@ class PostgresStorage(StorageBase):
         )
         return _row_to_referral_allergy(result.data[0])
 
-    def list_referral_allergies(self, scope: Scope, referral_id: int) -> list[ReferralAllergy]:
+    def list_referral_allergies(
+        self, scope: Scope | None, referral_id: int
+    ) -> list[ReferralAllergy]:
         if self.get_referral(scope, referral_id) is None:
             return []
         result = (
@@ -2297,7 +2307,9 @@ class PostgresStorage(StorageBase):
         )
         return _row_to_referral_attachment(result.data[0])
 
-    def list_referral_attachments(self, scope: Scope, referral_id: int) -> list[ReferralAttachment]:
+    def list_referral_attachments(
+        self, scope: Scope | None, referral_id: int
+    ) -> list[ReferralAttachment]:
         if self.get_referral(scope, referral_id) is None:
             return []
         result = (
@@ -3172,6 +3184,18 @@ class PostgresStorage(StorageBase):
             return None
         return self._row_to_delivery(result.data[0])
 
+    def get_delivery_by_vendor_message_id(self, vendor_message_id: str) -> "Delivery | None":
+        result = (
+            self._t("deliveries")
+            .select("*")
+            .eq("vendor_message_id", vendor_message_id)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return None
+        return self._row_to_delivery(result.data[0])
+
     def list_deliveries_for_referral(self, scope: Scope, referral_id: int) -> list["Delivery"]:
         query = self._t("deliveries").select("*").eq("referral_id", referral_id)
         query = self._apply_scope(query, scope)
@@ -3352,6 +3376,81 @@ class PostgresStorage(StorageBase):
                 )
             )
         return out
+
+    # --- Share tokens (Phase 9.B) ---
+
+    def create_share_token(
+        self,
+        *,
+        delivery_id: int,
+        token_hash: str,
+        expires_at: datetime,
+        second_factor_kind: str = "none",
+        second_factor_hash: str | None = None,
+    ) -> ShareToken:
+        row = {
+            "delivery_id": delivery_id,
+            "token_hash": token_hash,
+            "expires_at": expires_at.isoformat(),
+            "second_factor_kind": second_factor_kind,
+            "second_factor_hash": second_factor_hash,
+        }
+        result = self._t("share_tokens").insert(row).execute()
+        if not result.data:
+            raise RuntimeError("share_tokens insert returned no rows")
+        return self._row_to_share_token(result.data[0])
+
+    def get_share_token_by_hash(self, token_hash: str) -> ShareToken | None:
+        result = self._t("share_tokens").select("*").eq("token_hash", token_hash).execute()
+        if not result.data:
+            return None
+        return self._row_to_share_token(result.data[0])
+
+    def increment_share_token_views(self, token_id: int) -> None:
+        now_iso = datetime.now(tz=timezone.utc).isoformat()
+        row = self._t("share_tokens").select("view_count").eq("id", token_id).execute()
+        current = int(row.data[0]["view_count"]) if row.data else 0
+        self._t("share_tokens").update(
+            {"view_count": current + 1, "last_viewed_at": now_iso, "updated_at": now_iso}
+        ).eq("id", token_id).execute()
+
+    def increment_share_token_failures(self, token_id: int) -> None:
+        row = self._t("share_tokens").select("failed_attempts").eq("id", token_id).execute()
+        current = int(row.data[0]["failed_attempts"]) if row.data else 0
+        self._t("share_tokens").update(
+            {
+                "failed_attempts": current + 1,
+                "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+            }
+        ).eq("id", token_id).execute()
+
+    def revoke_share_token(self, token_id: int) -> bool:
+        now_iso = datetime.now(tz=timezone.utc).isoformat()
+        result = (
+            self._t("share_tokens")
+            .update({"revoked_at": now_iso, "updated_at": now_iso})
+            .eq("id", token_id)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        return bool(result.data)
+
+    @staticmethod
+    def _row_to_share_token(r: dict[str, Any]) -> ShareToken:
+        return ShareToken(
+            id=int(r["id"]),
+            delivery_id=int(r["delivery_id"]),
+            token_hash=r["token_hash"],
+            expires_at=_parse_ts(r["expires_at"]) or datetime.now(tz=timezone.utc),
+            revoked_at=_parse_ts(r.get("revoked_at")),
+            second_factor_kind=r.get("second_factor_kind", "none"),
+            second_factor_hash=r.get("second_factor_hash"),
+            view_count=int(r.get("view_count", 0)),
+            failed_attempts=int(r.get("failed_attempts", 0)),
+            last_viewed_at=_parse_ts(r.get("last_viewed_at")),
+            created_at=_parse_ts(r["created_at"]) or datetime.now(tz=timezone.utc),
+            updated_at=_parse_ts(r["updated_at"]) or datetime.now(tz=timezone.utc),
+        )
 
     # --- Inbound webhook inbox (Phase 8.C) ---
 

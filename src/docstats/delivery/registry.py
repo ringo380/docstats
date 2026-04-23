@@ -5,9 +5,7 @@ disabled → the Send-form dropdown hides it AND the route-level send call
 still defends in depth (raises ``ChannelDisabledError`` from the channel
 itself, not from the registry).
 
-Phase 9.A ships with the registry but NO channel impls (per product
-decision). Every channel raises ``ChannelDisabledError`` until a vendor
-lands. 9.B adds email; 9.C adds fax; 9.D (deferred) adds direct.
+9.B adds email via Resend; 9.C adds fax via Documo; 9.D (deferred) adds direct.
 """
 
 from __future__ import annotations
@@ -24,12 +22,15 @@ CHANNEL_NAMES: Final[tuple[str, ...]] = ("email", "fax", "direct")
 
 
 def _email_channel() -> Channel:
-    """Factory for the email channel. Ships in 9.B.
+    """Factory for the email channel (Resend — Phase 9.B).
 
-    Raises ``ChannelDisabledError`` until 9.B lands the Resend impl
-    AND ``RESEND_API_KEY`` is set in the environment.
+    Raises ``ChannelDisabledError`` unless ``RESEND_API_KEY`` is set.
+    ``ResendEmailChannel.__init__`` performs the env-var check so the
+    error message is authoritative.
     """
-    raise ChannelDisabledError("email", reason="Phase 9.B not yet shipped")
+    from docstats.delivery.channels.email import ResendEmailChannel
+
+    return ResendEmailChannel()
 
 
 def _fax_channel() -> Channel:
