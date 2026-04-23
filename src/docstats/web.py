@@ -8,7 +8,10 @@ import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.exception_handlers import (
+    http_exception_handler as fastapi_default_http_exception_handler,
+)
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
@@ -24,7 +27,10 @@ from docstats.domain.seed import seed_platform_defaults
 from docstats.routes._common import MAPBOX_TOKEN, US_STATES, get_client, render, saved_count  # noqa: F401 — get_client re-exported for test compatibility
 from docstats.routes.admin import router as admin_router
 from docstats.routes.api import router as api_router
-from docstats.routes.api_v2 import router as api_v2_router
+from docstats.routes.api_v2 import (
+    http_exception_handler as api_v2_http_exception_handler,
+    router as api_v2_router,
+)
 from docstats.routes.auth import router as auth_router
 from docstats.routes.exports import router as exports_router
 from docstats.routes.imports import router as imports_router
@@ -106,6 +112,21 @@ async def auth_exception_handler(request: Request, exc: AuthRequiredException):
     if request.headers.get("HX-Request"):
         return Response(status_code=200, headers={"HX-Redirect": "/auth/login"})
     return RedirectResponse("/auth/login", status_code=303)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Path-scoped HTTPException handler.
+
+    /api/v2/* routes run through the content-negotiated handler so FHIR
+    clients get OperationOutcome bodies with the right Content-Type on
+    401 / 403 / 404 / 409 etc. Every other path falls through to
+    FastAPI's default handler, which preserves the existing
+    ``{"detail": "..."}`` shape for web routes.
+    """
+    if request.url.path.startswith("/api/v2/"):
+        return await api_v2_http_exception_handler(request, exc)
+    return await fastapi_default_http_exception_handler(request, exc)
 
 
 @app.exception_handler(Exception)

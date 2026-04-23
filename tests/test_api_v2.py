@@ -122,6 +122,98 @@ def test_patient_unauthenticated_returns_401_json_not_redirect(tmp_path: Path):
         app.dependency_overrides.clear()
 
 
+# ---------- Error-path content negotiation (Phase 8 review followup) ----------
+
+
+def test_unauthenticated_fhir_accept_returns_operation_outcome(tmp_path: Path):
+    """Review followup: auth errors must honor Accept: application/fhir+json.
+
+    Before the fix, ``require_user_api`` raised ``HTTPException`` which fell
+    through FastAPI's default handler — returning ``{"detail": ...}`` with
+    ``Content-Type: application/json`` regardless of the Accept header. A
+    strict FHIR client branching on content-type would choke.
+    """
+    storage = Storage(db_path=tmp_path / "test.db")
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: None
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v2/referrals/1",
+            headers={"Accept": "application/fhir+json"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 401
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+        body = resp.json()
+        assert body["resourceType"] == "OperationOutcome"
+        assert body["issue"][0]["severity"] == "error"
+        assert body["issue"][0]["code"] == "security"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_phi_consent_missing_fhir_accept_returns_operation_outcome(tmp_path: Path):
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_id = storage.create_user("a@example.com", "hashed_pw")
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _fake_user(user_id, consent=False)
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v2/referrals/1",
+            headers={"Accept": "application/fhir+json"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 403
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+        body = resp.json()
+        assert body["resourceType"] == "OperationOutcome"
+        assert body["issue"][0]["code"] == "forbidden"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_plain_json_errors_preserve_dict_detail_shape(tmp_path: Path):
+    """Plain JSON callers keep the original {"detail": {"code": ...}} shape."""
+    storage = Storage(db_path=tmp_path / "test.db")
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: None
+    try:
+        client = TestClient(app)
+        resp = client.get("/api/v2/referrals/1", follow_redirects=False)
+        assert resp.status_code == 401
+        assert resp.headers["content-type"].startswith("application/json")
+        assert not resp.headers["content-type"].startswith("application/fhir+json")
+        body = resp.json()
+        assert body["detail"]["code"] == "authentication_required"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_non_api_v2_path_uses_default_http_handler(tmp_path: Path):
+    """Make sure the scoped handler doesn't leak into web routes.
+
+    A 404 on a non-/api/v2/ path should return the default FastAPI shape —
+    not OperationOutcome — regardless of Accept.
+    """
+    storage = Storage(db_path=tmp_path / "test.db")
+    app.dependency_overrides[get_storage] = lambda: storage
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/totally/bogus/path",
+            headers={"Accept": "application/fhir+json"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 404
+        body = resp.json()
+        assert "resourceType" not in body
+        assert "detail" in body
+    finally:
+        app.dependency_overrides.clear()
+
+
 # ---------- Content negotiation ----------
 
 
