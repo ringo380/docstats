@@ -76,6 +76,10 @@ EVENT_TYPE_VALUES: Final[tuple[str, ...]] = (
     "note_added",
     "assigned",
     "unassigned",
+    # Phase 9 delivery lifecycle:
+    "dispatched",  # delivery row moved from queued to sending
+    "delivered",  # vendor confirmed end-recipient receipt
+    "delivery_failed",  # retries exhausted or fatal error
 )
 
 # Provenance tag on every clinical sub-entity row (diagnoses, meds, allergies,

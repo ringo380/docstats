@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from docstats.domain.invitations import Invitation
     from docstats.domain.orgs import Membership, Organization
     from docstats.domain.patients import Patient
+    from docstats.domain.deliveries import Delivery, DeliveryAttempt
     from docstats.domain.imports import CsvImport, CsvImportRow
     from docstats.domain.reference import InsurancePlan, PayerRule, SpecialtyRule
     from docstats.domain.referrals import (
@@ -1182,6 +1183,120 @@ class StorageBase(ABC):
 
     @abstractmethod
     def delete_csv_import_row(self, scope: "Scope", import_id: int, row_id: int) -> bool: ...
+
+    # --- Deliveries (Phase 9.A, scope-transitive via referral) ---
+
+    @abstractmethod
+    def create_delivery(
+        self,
+        scope: "Scope",
+        *,
+        referral_id: int,
+        channel: str,
+        recipient: str,
+        packet_artifact: dict[str, Any] | None = None,
+        vendor_name: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> "Delivery":
+        """Create a new ``queued`` delivery row for a referral.
+
+        Scope is validated at the boundary — the referral must be
+        visible in ``scope`` or the call raises ``ValueError``. Scope
+        columns on the delivery row are denormalized from the parent
+        referral for fast admin list queries.
+        """
+
+    @abstractmethod
+    def get_delivery(self, scope: "Scope | None", delivery_id: int) -> "Delivery | None":
+        """Fetch a delivery.
+
+        ``scope=None`` is the dispatcher-only path (no user session).
+        User-facing callers MUST pass a non-None scope; the storage
+        filters out rows the caller can't see.
+        """
+
+    @abstractmethod
+    def list_deliveries_for_referral(self, scope: "Scope", referral_id: int) -> list["Delivery"]:
+        """List all deliveries for a referral, newest first."""
+
+    @abstractmethod
+    def cancel_delivery(
+        self, scope: "Scope", delivery_id: int, *, cancelled_by_user_id: int
+    ) -> bool:
+        """Flip a non-terminal delivery to ``cancelled``. Returns True iff
+        a row was actually transitioned. Terminal rows are idempotent no-ops
+        (return False)."""
+
+    @abstractmethod
+    def list_deliveries_ready_for_dispatch(
+        self, *, limit: int = 20, stuck_sending_seconds: int = 120
+    ) -> list["Delivery"]:
+        """Dispatcher-only: return ``queued`` rows + ``sending`` rows
+        whose ``updated_at`` is older than ``stuck_sending_seconds``
+        (those crashed/got-SIGTERM'd mid-send)."""
+
+    @abstractmethod
+    def mark_delivery_sending(self, delivery_id: int) -> None:
+        """Flip to ``sending`` + bump ``updated_at``. Dispatcher calls
+        this before invoking the channel."""
+
+    @abstractmethod
+    def mark_delivery_sent(
+        self,
+        delivery_id: int,
+        *,
+        vendor_name: str,
+        vendor_message_id: str,
+        status: str = "sent",
+    ) -> None:
+        """Record a successful vendor submission. ``status`` is
+        ``"sent"`` (awaiting webhook-driven delivery confirmation) or
+        ``"delivered"`` (vendor synchronously confirmed)."""
+
+    @abstractmethod
+    def mark_delivery_failed(
+        self,
+        delivery_id: int,
+        *,
+        error_code: str,
+        error_message: str | None,
+    ) -> None:
+        """Flip to terminal ``failed`` state. Retry cap exhausted or
+        fatal error."""
+
+    @abstractmethod
+    def requeue_delivery_for_retry(
+        self,
+        delivery_id: int,
+        *,
+        error_code: str,
+        error_message: str | None,
+    ) -> None:
+        """Retryable failure — bump ``retry_count``, record last_error_*,
+        keep status ``queued`` so the sweeper picks it up again."""
+
+    @abstractmethod
+    def record_delivery_attempt_start(self, *, delivery_id: int, attempt_number: int) -> int:
+        """Create a new ``delivery_attempts`` row in ``in_progress`` state.
+        Returns the attempt id so the completer can close it out."""
+
+    @abstractmethod
+    def record_delivery_attempt_complete(
+        self,
+        *,
+        attempt_id: int,
+        result: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        vendor_response_excerpt: str | None = None,
+    ) -> None:
+        """Close out an attempt row. ``result`` is one of
+        ``success | retryable | fatal`` (closed vocab)."""
+
+    @abstractmethod
+    def list_delivery_attempts(self, scope: "Scope", delivery_id: int) -> list["DeliveryAttempt"]:
+        """List all attempts for a delivery, oldest first. Scope-gated
+        via the parent delivery → referral chain."""
 
     # --- Inbound webhook inbox (Phase 8.C, dead-lettered) ---
 

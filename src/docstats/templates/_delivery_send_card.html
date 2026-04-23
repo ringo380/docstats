@@ -1,0 +1,37 @@
+{# Phase 9.A — Send card on the referral detail page.
+
+   Renders only the channels that are currently configured (i.e. the
+   registry's enabled_channels()). If the list is empty, shows a
+   "no channels configured" explanation instead of an empty form. #}
+<section class="card" id="delivery-send">
+  <h3>Send</h3>
+  {% if delivery_enabled_channels %}
+    <form method="post" action="/referrals/{{ referral.id }}/send" class="inline-form">
+      <label>Channel
+        <select name="channel" required>
+          {% for ch in delivery_enabled_channels %}
+            <option value="{{ ch }}">{{ ch | title }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Recipient
+        <input type="text" name="recipient" required maxlength="320" placeholder="fax or email or Direct address">
+      </label>
+      <label>Include (optional)
+        <input type="text" name="include" maxlength="256" placeholder="fax_cover,summary,attachments">
+      </label>
+      <div class="action-bar">
+        <button type="submit" class="btn btn-primary btn-sm">Queue send</button>
+      </div>
+    </form>
+    <p class="sub" style="margin-top:8px;">
+      Queued sends are dispatched by the background worker within seconds.
+      Delivery status updates via vendor webhook; see the log below.
+    </p>
+  {% else %}
+    <p class="sub">
+      No delivery channels are configured yet. Email (via Resend),
+      fax (via Documo), and Direct Trust are rolled out in subsequent phases.
+    </p>
+  {% endif %}
+</section>

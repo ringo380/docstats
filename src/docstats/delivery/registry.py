@@ -1,0 +1,105 @@
+"""Channel registry — the single place that says "which channels are live right now".
+
+Runtime state derives from env vars. Missing credentials → channel is
+disabled → the Send-form dropdown hides it AND the route-level send call
+still defends in depth (raises ``ChannelDisabledError`` from the channel
+itself, not from the registry).
+
+Phase 9.A ships with the registry but NO channel impls (per product
+decision). Every channel raises ``ChannelDisabledError`` until a vendor
+lands. 9.B adds email; 9.C adds fax; 9.D (deferred) adds direct.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Callable, Final
+
+from docstats.delivery.base import Channel, ChannelDisabledError
+
+# All channels the system knows about. Entries here define the UI's
+# channel dropdown vocabulary. Actual availability is determined at
+# call time by env vars — see ``_channel_factories``.
+CHANNEL_NAMES: Final[tuple[str, ...]] = ("email", "fax", "direct")
+
+
+def _email_channel() -> Channel:
+    """Factory for the email channel. Ships in 9.B.
+
+    Raises ``ChannelDisabledError`` until 9.B lands the Resend impl
+    AND ``RESEND_API_KEY`` is set in the environment.
+    """
+    raise ChannelDisabledError("email", reason="Phase 9.B not yet shipped")
+
+
+def _fax_channel() -> Channel:
+    """Factory for the fax channel. Ships in 9.C.
+
+    Requires Documo BAA + ``DOCUMO_API_KEY``.
+    """
+    raise ChannelDisabledError("fax", reason="Phase 9.C not yet shipped")
+
+
+def _direct_channel() -> Channel:
+    """Factory for the Direct Trust channel. Deferred past Phase 9.
+
+    Requires a HISP relationship (DataMotion et al.). HISP onboarding
+    takes weeks, so code stays stubbed until the user's HISP contract
+    activates and the real integration lands in a follow-up phase.
+    """
+    raise ChannelDisabledError("direct", reason="Direct Trust deferred — HISP onboarding required")
+
+
+_CHANNEL_FACTORIES: dict[str, Callable[[], Channel]] = {
+    "email": _email_channel,
+    "fax": _fax_channel,
+    "direct": _direct_channel,
+}
+
+
+def get_channel(name: str) -> Channel:
+    """Return the Channel impl for ``name`` or raise ChannelDisabledError.
+
+    ``ChannelDisabledError`` is the single contract between the registry
+    and the dispatcher: it tells the dispatcher to flip the row to
+    ``failed`` with ``error_code = "channel_disabled"`` without retrying.
+    """
+    factory = _CHANNEL_FACTORIES.get(name)
+    if factory is None:
+        raise ChannelDisabledError(name, reason=f"unknown channel {name!r}")
+    return factory()
+
+
+def enabled_channels() -> list[str]:
+    """Return the list of channel names whose factories succeed right now.
+
+    Used by the Send form template to only render channels the user
+    can actually pick. Does not short-circuit on missing env vars —
+    each factory is responsible for raising ``ChannelDisabledError``
+    on configuration gaps.
+    """
+    enabled: list[str] = []
+    for name in CHANNEL_NAMES:
+        try:
+            get_channel(name)
+        except ChannelDisabledError:
+            continue
+        enabled.append(name)
+    return enabled
+
+
+# Env-var conventions documented here for reference. Channel impls read
+# these at factory-call time, not at import time, so flipping a var
+# enables the channel on the next request without a process restart
+# (useful for Railway env-var changes that trigger a rolling deploy).
+_ENV_VARS_BY_CHANNEL: Final[dict[str, tuple[str, ...]]] = {
+    "email": ("RESEND_API_KEY",),
+    "fax": ("DOCUMO_API_KEY",),
+    "direct": ("DIRECT_HISP_USERNAME", "DIRECT_HISP_PASSWORD", "DIRECT_HISP_ENDPOINT"),
+}
+
+
+def channel_is_configured(name: str) -> bool:
+    """Cheap env-var presence check (no factory call / no HTTP)."""
+    required = _ENV_VARS_BY_CHANNEL.get(name, ())
+    return all(os.environ.get(var) for var in required)
