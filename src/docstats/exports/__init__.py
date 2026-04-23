@@ -18,7 +18,7 @@ the package directory are the only disk accesses. The route layer in
 from __future__ import annotations
 
 from docstats.exports.csv_export import CSV_FIELDNAMES, referral_to_csv_row
-from docstats.exports.fhir import build_referral_bundle
+from docstats.exports.fhir import build_patient_resource, build_referral_bundle, operation_outcome
 from docstats.exports.pdf import (
     ARTIFACT_ATTACHMENTS_CHECKLIST,
     ARTIFACT_FAX_COVER,
@@ -51,7 +51,9 @@ __all__ = [
     "render_patient_summary",
     "render_referral_summary",
     "render_scheduling_summary",
+    "build_patient_resource",
     "build_referral_bundle",
+    "operation_outcome",
     "CSV_FIELDNAMES",
     "referral_to_csv_row",
 ]

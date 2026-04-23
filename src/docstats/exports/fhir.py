@@ -522,6 +522,17 @@ def _build_endpoint(
     return resource
 
 
+def build_patient_resource(patient: "Patient") -> dict[str, Any]:
+    """Public wrapper around :func:`_build_patient`.
+
+    Used by ``/api/v2/patients/{id}`` to return a bare Patient resource
+    (not wrapped in a Bundle). A ``$everything``-style patient-centric
+    bundle is intentionally out of scope for Phase 8 — response size
+    would be unbounded. Defer to Phase 12 (SMART-on-FHIR) if needed.
+    """
+    return _build_patient(patient)
+
+
 def operation_outcome(
     severity: str,
     code: str,

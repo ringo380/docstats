@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from passlib.context import CryptContext
 
 from docstats.domain.orgs import has_role_at_least
@@ -112,9 +112,38 @@ def get_current_user(
 
 
 def require_user(user: dict | None = Depends(get_current_user)) -> dict:
-    """FastAPI dependency that raises AuthRequiredException if not logged in."""
+    """FastAPI dependency that raises AuthRequiredException if not logged in.
+
+    For API endpoints (e.g. ``/api/v2/...``) use :func:`require_user_api`
+    instead — AuthRequiredException is converted to a 303 redirect to
+    ``/auth/login`` by the global handler in ``web.py``, which is correct
+    for browser requests but breaks machine consumers.
+    """
     if user is None:
         raise AuthRequiredException()
+    return user
+
+
+def require_user_api(user: dict | None = Depends(get_current_user)) -> dict:
+    """FastAPI dependency for API endpoints that require authentication.
+
+    Returns 401 JSON (not a 303 redirect) when the caller isn't logged in.
+    Use this for ``/api/v2/...`` and any other machine-consumable route —
+    :func:`require_user` would redirect API clients to the login page,
+    which they can't follow.
+
+    Session cookies are still the accepted credential (Phase 8 ships this
+    dependency before tokens land); consumers authenticate by obtaining a
+    cookie via the normal web flow, then send it on API requests.
+    """
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "authentication_required",
+                "message": "Authentication required. Log in via the web UI to obtain a session cookie.",
+            },
+        )
     return user
 
 

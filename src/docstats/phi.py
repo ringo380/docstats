@@ -15,9 +15,9 @@ hit (not on login). Keep it a simple string like ``"1.0"``.
 
 from __future__ import annotations
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 
-from docstats.auth import AuthRequiredException, require_user
+from docstats.auth import AuthRequiredException, require_user, require_user_api
 
 CURRENT_PHI_CONSENT_VERSION = "1.0"
 
@@ -41,9 +41,31 @@ def _has_current_phi_consent(user: dict) -> bool:
 def require_phi_consent(user: dict = Depends(require_user)) -> dict:
     """FastAPI dependency: the user is logged in *and* has current PHI consent.
 
-    No route uses this yet. Phase 2 PHI-entry routes (patient create, referral
-    clinical fields, attachments) will depend on it.
+    Browser variant — re-raises ``PhiConsentRequiredException`` (a subclass
+    of ``AuthRequiredException``) which the global handler converts to a
+    303 redirect to ``/auth/login``. For API endpoints use
+    :func:`require_phi_consent_api` instead so consumers get JSON errors.
     """
     if not _has_current_phi_consent(user):
         raise PhiConsentRequiredException()
+    return user
+
+
+def require_phi_consent_api(user: dict = Depends(require_user_api)) -> dict:
+    """FastAPI dependency for API endpoints that need PHI consent.
+
+    Unauthenticated callers hit ``require_user_api`` and get a 401 JSON
+    response. Authenticated-but-not-consented callers get a 403 JSON
+    response — API consumers can't complete the consent flow over the
+    wire in Phase 8, so this is terminal (they must go through the web UI
+    to consent once, then their cookie works for subsequent API calls).
+    """
+    if not _has_current_phi_consent(user):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "phi_consent_required",
+                "message": "PHI consent is required for this endpoint. Complete consent via the web UI.",
+            },
+        )
     return user
