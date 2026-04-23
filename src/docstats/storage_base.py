@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from docstats.domain.orgs import Membership, Organization
     from docstats.domain.patients import Patient
     from docstats.domain.deliveries import Delivery, DeliveryAttempt
+    from docstats.domain.share_tokens import ShareToken
     from docstats.domain.imports import CsvImport, CsvImportRow
     from docstats.domain.reference import InsurancePlan, PayerRule, SpecialtyRule
     from docstats.domain.referrals import (
@@ -466,7 +467,7 @@ class StorageBase(ABC):
     ) -> "Patient": ...
 
     @abstractmethod
-    def get_patient(self, scope: "Scope", patient_id: int) -> "Patient | None": ...
+    def get_patient(self, scope: "Scope | None", patient_id: int) -> "Patient | None": ...
 
     @abstractmethod
     def list_patients(
@@ -541,7 +542,7 @@ class StorageBase(ABC):
     ) -> "Referral": ...
 
     @abstractmethod
-    def get_referral(self, scope: "Scope", referral_id: int) -> "Referral | None": ...
+    def get_referral(self, scope: "Scope | None", referral_id: int) -> "Referral | None": ...
 
     @abstractmethod
     def list_referrals(
@@ -670,7 +671,7 @@ class StorageBase(ABC):
     @abstractmethod
     def list_referral_diagnoses(
         self,
-        scope: "Scope",
+        scope: "Scope | None",
         referral_id: int,
     ) -> list["ReferralDiagnosis"]: ...
 
@@ -711,7 +712,7 @@ class StorageBase(ABC):
     @abstractmethod
     def list_referral_medications(
         self,
-        scope: "Scope",
+        scope: "Scope | None",
         referral_id: int,
     ) -> list["ReferralMedication"]: ...
 
@@ -752,7 +753,7 @@ class StorageBase(ABC):
     @abstractmethod
     def list_referral_allergies(
         self,
-        scope: "Scope",
+        scope: "Scope | None",
         referral_id: int,
     ) -> list["ReferralAllergy"]: ...
 
@@ -794,7 +795,7 @@ class StorageBase(ABC):
     @abstractmethod
     def list_referral_attachments(
         self,
-        scope: "Scope",
+        scope: "Scope | None",
         referral_id: int,
     ) -> list["ReferralAttachment"]: ...
 
@@ -1216,6 +1217,14 @@ class StorageBase(ABC):
         """
 
     @abstractmethod
+    def get_delivery_by_vendor_message_id(self, vendor_message_id: str) -> "Delivery | None":
+        """Look up a delivery by vendor-assigned message ID.
+
+        Used by vendor webhook receivers to correlate callbacks to rows.
+        No scope filter — webhook receivers are not user-session callers.
+        """
+
+    @abstractmethod
     def list_deliveries_for_referral(self, scope: "Scope", referral_id: int) -> list["Delivery"]:
         """List all deliveries for a referral, newest first."""
 
@@ -1297,6 +1306,40 @@ class StorageBase(ABC):
     def list_delivery_attempts(self, scope: "Scope", delivery_id: int) -> list["DeliveryAttempt"]:
         """List all attempts for a delivery, oldest first. Scope-gated
         via the parent delivery → referral chain."""
+
+    # --- Inbound webhook inbox (Phase 8.C, dead-lettered) ---
+
+    # --- Share tokens (Phase 9.B) ---
+
+    @abstractmethod
+    def create_share_token(
+        self,
+        *,
+        delivery_id: int,
+        token_hash: str,
+        expires_at: "datetime",
+        second_factor_kind: str = "none",
+        second_factor_hash: str | None = None,
+    ) -> "ShareToken":
+        """Persist a new share token.  ``token_hash`` must be the SHA-256
+        hex digest of the plaintext; the plaintext is never stored here."""
+
+    @abstractmethod
+    def get_share_token_by_hash(self, token_hash: str) -> "ShareToken | None":
+        """Look up a share token by its hash.  Returns ``None`` if not found."""
+
+    @abstractmethod
+    def increment_share_token_views(self, token_id: int) -> None:
+        """Bump ``view_count`` and update ``last_viewed_at``."""
+
+    @abstractmethod
+    def increment_share_token_failures(self, token_id: int) -> None:
+        """Bump ``failed_attempts``.  Callers revoke the token when the
+        count reaches ``MAX_FAILED_ATTEMPTS``."""
+
+    @abstractmethod
+    def revoke_share_token(self, token_id: int) -> bool:
+        """Set ``revoked_at``.  Idempotent — returns True iff state changed."""
 
     # --- Inbound webhook inbox (Phase 8.C, dead-lettered) ---
 

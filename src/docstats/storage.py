@@ -58,6 +58,7 @@ from docstats.domain.referrals import (
     ReferralResponse,
 )
 from docstats.domain.sessions import Session
+from docstats.domain.share_tokens import ShareToken
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.scope import Scope, scope_sql_clause
 from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
@@ -566,6 +567,7 @@ class Storage(StorageBase):
         self._migrate_webhook_inbox()
         self._migrate_referral_events_event_type()
         self._migrate_deliveries()
+        self._migrate_share_tokens()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -2210,7 +2212,13 @@ class Storage(StorageBase):
         ).fetchone()
         return _row_to_patient(row)
 
-    def get_patient(self, scope: Scope, patient_id: int) -> Patient | None:
+    def get_patient(self, scope: Scope | None, patient_id: int) -> Patient | None:
+        if scope is None:
+            row = self._conn.execute(
+                "SELECT * FROM patients WHERE id = ? AND deleted_at IS NULL",
+                (patient_id,),
+            ).fetchone()
+            return _row_to_patient(row) if row else None
         clause, params = scope_sql_clause(scope)
         row = self._conn.execute(
             f"SELECT * FROM patients WHERE id = ? AND {clause} AND deleted_at IS NULL",
@@ -2432,7 +2440,13 @@ class Storage(StorageBase):
         row = self._conn.execute("SELECT * FROM referrals WHERE id = ?", (referral_id,)).fetchone()
         return _row_to_referral(row)
 
-    def get_referral(self, scope: Scope, referral_id: int) -> Referral | None:
+    def get_referral(self, scope: Scope | None, referral_id: int) -> Referral | None:
+        if scope is None:
+            row = self._conn.execute(
+                "SELECT * FROM referrals WHERE id = ? AND deleted_at IS NULL",
+                (referral_id,),
+            ).fetchone()
+            return _row_to_referral(row) if row else None
         clause, params = scope_sql_clause(scope)
         row = self._conn.execute(
             f"SELECT * FROM referrals WHERE id = ? AND {clause} AND deleted_at IS NULL",
@@ -2753,7 +2767,9 @@ class Storage(StorageBase):
         ).fetchone()
         return _row_to_referral_diagnosis(row)
 
-    def list_referral_diagnoses(self, scope: Scope, referral_id: int) -> list[ReferralDiagnosis]:
+    def list_referral_diagnoses(
+        self, scope: Scope | None, referral_id: int
+    ) -> list[ReferralDiagnosis]:
         if self.get_referral(scope, referral_id) is None:
             return []
         rows = self._conn.execute(
@@ -2862,7 +2878,9 @@ class Storage(StorageBase):
         ).fetchone()
         return _row_to_referral_medication(row)
 
-    def list_referral_medications(self, scope: Scope, referral_id: int) -> list[ReferralMedication]:
+    def list_referral_medications(
+        self, scope: Scope | None, referral_id: int
+    ) -> list[ReferralMedication]:
         if self.get_referral(scope, referral_id) is None:
             return []
         rows = self._conn.execute(
@@ -2957,7 +2975,9 @@ class Storage(StorageBase):
         ).fetchone()
         return _row_to_referral_allergy(row)
 
-    def list_referral_allergies(self, scope: Scope, referral_id: int) -> list[ReferralAllergy]:
+    def list_referral_allergies(
+        self, scope: Scope | None, referral_id: int
+    ) -> list[ReferralAllergy]:
         if self.get_referral(scope, referral_id) is None:
             return []
         rows = self._conn.execute(
@@ -3060,7 +3080,9 @@ class Storage(StorageBase):
         ).fetchone()
         return _row_to_referral_attachment(row)
 
-    def list_referral_attachments(self, scope: Scope, referral_id: int) -> list[ReferralAttachment]:
+    def list_referral_attachments(
+        self, scope: Scope | None, referral_id: int
+    ) -> list[ReferralAttachment]:
         if self.get_referral(scope, referral_id) is None:
             return []
         rows = self._conn.execute(
@@ -4043,6 +4065,13 @@ class Storage(StorageBase):
         ).fetchone()
         return self._row_to_delivery(row) if row else None
 
+    def get_delivery_by_vendor_message_id(self, vendor_message_id: str) -> "Delivery | None":
+        row = self._conn.execute(
+            "SELECT * FROM deliveries WHERE vendor_message_id = ?",
+            (vendor_message_id,),
+        ).fetchone()
+        return self._row_to_delivery(row) if row else None
+
     def list_deliveries_for_referral(self, scope: Scope, referral_id: int) -> list["Delivery"]:
         fragment, params = scope_sql_clause(
             scope, user_col="scope_user_id", org_col="scope_organization_id"
@@ -4208,6 +4237,118 @@ class Storage(StorageBase):
                 )
             )
         return out
+
+    # --- Share tokens (Phase 9.B) ---
+
+    def _migrate_share_tokens(self) -> None:
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS share_tokens (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                delivery_id         INTEGER NOT NULL
+                                        REFERENCES deliveries(id) ON DELETE CASCADE,
+                token_hash          TEXT NOT NULL UNIQUE,
+                expires_at          TEXT NOT NULL,
+                revoked_at          TEXT,
+                second_factor_kind  TEXT NOT NULL DEFAULT 'none'
+                                        CHECK (second_factor_kind IN
+                                            ('patient_dob', 'patient_phone_last4', 'none')),
+                second_factor_hash  TEXT,
+                view_count          INTEGER NOT NULL DEFAULT 0,
+                failed_attempts     INTEGER NOT NULL DEFAULT 0,
+                last_viewed_at      TEXT,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_share_tokens_delivery_id ON share_tokens (delivery_id)"
+        )
+        self._conn.commit()
+
+    def create_share_token(
+        self,
+        *,
+        delivery_id: int,
+        token_hash: str,
+        expires_at: datetime,
+        second_factor_kind: str = "none",
+        second_factor_hash: str | None = None,
+    ) -> ShareToken:
+        now = datetime.now(timezone.utc)
+        cur = self._conn.execute(
+            """INSERT INTO share_tokens
+               (delivery_id, token_hash, expires_at, second_factor_kind,
+                second_factor_hash, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                delivery_id,
+                token_hash,
+                expires_at.isoformat(),
+                second_factor_kind,
+                second_factor_hash,
+                now.isoformat(),
+                now.isoformat(),
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM share_tokens WHERE id = ?", (cur.lastrowid,)
+        ).fetchone()
+        return self._row_to_share_token(row)
+
+    def get_share_token_by_hash(self, token_hash: str) -> ShareToken | None:
+        row = self._conn.execute(
+            "SELECT * FROM share_tokens WHERE token_hash = ?", (token_hash,)
+        ).fetchone()
+        return self._row_to_share_token(row) if row else None
+
+    def increment_share_token_views(self, token_id: int) -> None:
+        self._conn.execute(
+            """UPDATE share_tokens
+               SET view_count = view_count + 1,
+                   last_viewed_at = datetime('now'),
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (token_id,),
+        )
+        self._conn.commit()
+
+    def increment_share_token_failures(self, token_id: int) -> None:
+        self._conn.execute(
+            """UPDATE share_tokens
+               SET failed_attempts = failed_attempts + 1,
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (token_id,),
+        )
+        self._conn.commit()
+
+    def revoke_share_token(self, token_id: int) -> bool:
+        cur = self._conn.execute(
+            """UPDATE share_tokens
+               SET revoked_at = datetime('now'), updated_at = datetime('now')
+               WHERE id = ? AND revoked_at IS NULL""",
+            (token_id,),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    @staticmethod
+    def _row_to_share_token(row: sqlite3.Row) -> ShareToken:
+        return ShareToken(
+            id=row["id"],
+            delivery_id=row["delivery_id"],
+            token_hash=row["token_hash"],
+            expires_at=_parse_sqlite_utc(row["expires_at"]) or datetime.now(timezone.utc),
+            revoked_at=_parse_sqlite_utc(row["revoked_at"]),
+            second_factor_kind=row["second_factor_kind"],
+            second_factor_hash=row["second_factor_hash"],
+            view_count=row["view_count"],
+            failed_attempts=row["failed_attempts"],
+            last_viewed_at=_parse_sqlite_utc(row["last_viewed_at"]),
+            created_at=_parse_sqlite_utc(row["created_at"]) or datetime.now(timezone.utc),
+            updated_at=_parse_sqlite_utc(row["updated_at"]) or datetime.now(timezone.utc),
+        )
 
     def close(self) -> None:
         self._conn.close()

@@ -163,7 +163,8 @@ def test_cancel_happy_path(client):
     assert refreshed.status == "cancelled"
 
 
-def test_detail_page_shows_no_channels_configured(client):
+def test_detail_page_shows_no_channels_configured(client, monkeypatch):
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
     tc, storage, user_id = client
     _, referral = _seed(storage, user_id)
     resp = tc.get(f"/referrals/{referral.id}")
