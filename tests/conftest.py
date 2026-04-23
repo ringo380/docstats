@@ -16,6 +16,11 @@ from docstats.cache import ResponseCache
 # that enters the client. Specific tests that exercise the lifespan itself
 # (see tests/test_rules_engine.py) unset this themselves.
 os.environ.setdefault("DOCSTATS_SKIP_BOOT_SEED", "1")
+# Same rationale: the Phase 9.A delivery dispatcher is a long-running
+# background task. TestClient tests don't need it and, worse, would
+# leave it alive across test boundaries — skip it by default. Tests
+# that exercise the dispatcher itself drive `_run_iteration` directly.
+os.environ.setdefault("DOCSTATS_SKIP_DELIVERY_DISPATCHER", "1")
 
 
 SAMPLE_NPI1_RESULT = {

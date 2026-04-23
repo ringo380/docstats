@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
@@ -39,6 +40,7 @@ from docstats.routes.onboarding import router as onboarding_router
 from docstats.routes.patients import router as patients_router
 from docstats.routes.profile import router as profile_router
 from docstats.routes.referrals import router as referrals_router
+from docstats.routes.delivery import router as delivery_router
 from docstats.routes.providers import router as providers_router
 from docstats.routes.saved import router as saved_router
 from docstats.routes.search import router as search_router
@@ -72,7 +74,45 @@ async def _lifespan(_app: FastAPI):
             logger.info("seeded platform defaults: %s", counts)
         except Exception:
             logger.exception("seed_platform_defaults failed at boot (continuing)")
-    yield
+
+    # Phase 9.A: delivery dispatcher. Disabled under tests
+    # (DOCSTATS_SKIP_DELIVERY_DISPATCHER=1) so TestClient doesn't start
+    # a long-running background task that survives the test. Prod /
+    # Railway leaves the variable unset so the dispatcher runs.
+    dispatcher_task: "asyncio.Task | None" = None
+    dispatcher_stop = asyncio.Event()
+    if os.environ.get("DOCSTATS_SKIP_DELIVERY_DISPATCHER") != "1":
+        from docstats.delivery.dispatcher import run as _dispatcher_run
+
+        async def _render_packet_wire(_delivery):  # type: ignore[no-untyped-def]
+            # Dispatcher-side packet render is stubbed in 9.A — no
+            # channels are live, so the dispatcher never reaches a
+            # successful ``Channel.send()`` call where render output
+            # matters. 9.B wires this to ``exports.render_packet``.
+            return b""
+
+        try:
+            dispatcher_task = asyncio.create_task(
+                _dispatcher_run(
+                    get_storage(),
+                    render_packet=_render_packet_wire,
+                    stop_event=dispatcher_stop,
+                ),
+                name="delivery-dispatcher",
+            )
+            logger.info("Delivery dispatcher task scheduled")
+        except Exception:
+            logger.exception("Failed to start delivery dispatcher (continuing)")
+
+    try:
+        yield
+    finally:
+        if dispatcher_task is not None:
+            dispatcher_stop.set()
+            try:
+                await asyncio.wait_for(dispatcher_task, timeout=15)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                logger.warning("Delivery dispatcher did not shut down cleanly")
 
 
 app = FastAPI(
@@ -197,6 +237,7 @@ app.include_router(invite_router)
 app.include_router(patients_router)
 app.include_router(imports_router)
 app.include_router(exports_router)
+app.include_router(delivery_router)
 app.include_router(referrals_router)
 app.include_router(saved_router)
 app.include_router(providers_router)

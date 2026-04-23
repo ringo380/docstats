@@ -461,6 +461,11 @@ async def _render_detail(
     direct_endpoints = await fetch_receiving_direct_endpoints(
         referral.receiving_provider_npi, get_client()
     )
+    # Phase 9.A: delivery log + Send-card channel options.
+    from docstats.delivery.registry import enabled_channels as _enabled_channels
+
+    deliveries = storage.list_deliveries_for_referral(scope, referral_id)
+    delivery_enabled_channels = _enabled_channels()
     # Assignable users for the Assign dropdown (Phase 7.C). Solo scope → just
     # self; org scope → every live member. Include the currently-assigned
     # user even if they've since left the org so the dropdown still shows
@@ -506,6 +511,8 @@ async def _render_detail(
             assignable_users=assignable,
             assigned_display=assigned_display,
             direct_endpoints=direct_endpoints,
+            deliveries=deliveries,
+            delivery_enabled_channels=delivery_enabled_channels,
             errors=errors,
             response_errors=response_errors,
             response_values=response_values or {},

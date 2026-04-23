@@ -64,6 +64,7 @@ from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
 from docstats.validators import IP_MAX_LENGTH, USER_AGENT_MAX_LENGTH
 
 if TYPE_CHECKING:
+    from docstats.domain.deliveries import Delivery, DeliveryAttempt
     from docstats.pg_storage import PostgresStorage
 
 logger = logging.getLogger(__name__)
@@ -563,6 +564,8 @@ class Storage(StorageBase):
         self._migrate_csv_imports()
         self._migrate_organization_invitations()
         self._migrate_webhook_inbox()
+        self._migrate_referral_events_event_type()
+        self._migrate_deliveries()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -1149,6 +1152,113 @@ class Storage(StorageBase):
             CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_pending_unique
                 ON organization_invitations(organization_id, email)
                 WHERE accepted_at IS NULL AND revoked_at IS NULL;
+        """)
+        self._conn.commit()
+
+    def _migrate_referral_events_event_type(self) -> None:
+        """Phase 9.A — extend event_type CHECK constraint to include the three
+        delivery event types (dispatched / delivered / delivery_failed).
+
+        SQLite can't ``ALTER TABLE ... DROP CONSTRAINT`` — we rebuild the
+        table when the existing definition lacks the new values. The
+        rebuild is a create-new + INSERT-SELECT + drop-old + rename cycle
+        inside a single ``with self._conn:`` transaction so a crash
+        mid-rebuild doesn't leave half-migrated state.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='referral_events'"
+        ).fetchone()
+        if row is None:
+            return  # parent migration handles creation
+        existing_sql = row[0] or ""
+        # Cheap sentinel — the new event types land together, so checking
+        # for any one of them is sufficient.
+        if "dispatched" in existing_sql:
+            return
+        with self._conn:
+            self._conn.execute("ALTER TABLE referral_events RENAME TO _referral_events_old")
+            self._conn.execute("""
+                CREATE TABLE referral_events (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    referral_id      INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+                    event_type       TEXT NOT NULL
+                        CHECK (event_type IN
+                               ('created','status_changed','field_edited','exported','sent',
+                                'response_received','note_added','assigned','unassigned',
+                                'dispatched','delivered','delivery_failed')),
+                    from_value       TEXT,
+                    to_value         TEXT,
+                    actor_user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    note             TEXT,
+                    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+            """)
+            self._conn.execute("""
+                INSERT INTO referral_events
+                    (id, referral_id, event_type, from_value, to_value, actor_user_id, note, created_at)
+                SELECT
+                    id, referral_id, event_type, from_value, to_value, actor_user_id, note, created_at
+                FROM _referral_events_old;
+            """)
+            self._conn.execute("DROP TABLE _referral_events_old")
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_referral_events_referral
+                    ON referral_events(referral_id, created_at DESC, id DESC);
+            """)
+
+    def _migrate_deliveries(self) -> None:
+        """Create deliveries + delivery_attempts tables (Phase 9.A)."""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS deliveries (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                referral_id             INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+                scope_user_id           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                scope_organization_id   INTEGER REFERENCES organizations(id) ON DELETE SET NULL,
+                channel                 TEXT NOT NULL
+                    CHECK (channel IN ('fax','email','direct')),
+                recipient               TEXT NOT NULL,
+                status                  TEXT NOT NULL DEFAULT 'queued'
+                    CHECK (status IN ('queued','sending','sent','delivered','failed','cancelled')),
+                vendor_name             TEXT,
+                vendor_message_id       TEXT,
+                idempotency_key         TEXT,
+                packet_artifact         TEXT NOT NULL DEFAULT '{}',
+                retry_count             INTEGER NOT NULL DEFAULT 0,
+                last_error_code         TEXT,
+                last_error_message      TEXT,
+                cancelled_at            TEXT,
+                cancelled_by_user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+                sent_at                 TEXT,
+                delivered_at            TEXT,
+                CHECK (
+                    (scope_user_id IS NOT NULL AND scope_organization_id IS NULL)
+                 OR (scope_user_id IS NULL AND scope_organization_id IS NOT NULL)
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_deliveries_referral
+                ON deliveries(referral_id);
+            CREATE INDEX IF NOT EXISTS idx_deliveries_status_created
+                ON deliveries(status, created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_deliveries_idempotency
+                ON deliveries(idempotency_key)
+                WHERE idempotency_key IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS delivery_attempts (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                delivery_id             INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+                attempt_number          INTEGER NOT NULL,
+                started_at              TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at            TEXT,
+                result                  TEXT NOT NULL DEFAULT 'in_progress'
+                    CHECK (result IN ('in_progress','success','retryable','fatal')),
+                error_code              TEXT,
+                error_message           TEXT,
+                vendor_response_excerpt TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_delivery_attempts_delivery
+                ON delivery_attempts(delivery_id, attempt_number);
         """)
         self._conn.commit()
 
@@ -3844,6 +3954,260 @@ class Storage(StorageBase):
         )
         self._conn.commit()
         return int(cursor.lastrowid or 0)
+
+    # --- Deliveries (Phase 9.A) ---
+
+    def create_delivery(
+        self,
+        scope: Scope,
+        *,
+        referral_id: int,
+        channel: str,
+        recipient: str,
+        packet_artifact: dict[str, Any] | None = None,
+        vendor_name: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> "Delivery":
+
+        # Scope-gate via the parent referral. If the caller can't see the
+        # referral, they can't create a delivery against it.
+        parent = self.get_referral(scope, referral_id)
+        if parent is None:
+            raise ValueError("Referral not found in scope.")
+        scope_user_id = parent.scope_user_id
+        scope_org_id = parent.scope_organization_id
+        cursor = self._conn.execute(
+            """INSERT INTO deliveries
+               (referral_id, scope_user_id, scope_organization_id, channel, recipient,
+                vendor_name, idempotency_key, packet_artifact)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                referral_id,
+                scope_user_id,
+                scope_org_id,
+                channel,
+                recipient,
+                vendor_name,
+                idempotency_key,
+                json.dumps(packet_artifact or {}),
+            ),
+        )
+        self._conn.commit()
+        delivery_id = int(cursor.lastrowid or 0)
+        fetched = self.get_delivery(scope, delivery_id)
+        assert fetched is not None  # we just inserted it
+        return fetched
+
+    def _row_to_delivery(self, row: sqlite3.Row) -> "Delivery":
+        from docstats.domain.deliveries import Delivery
+
+        return Delivery(
+            id=row["id"],
+            referral_id=row["referral_id"],
+            scope_user_id=row["scope_user_id"],
+            scope_organization_id=row["scope_organization_id"],
+            channel=row["channel"],
+            recipient=row["recipient"],
+            status=row["status"],
+            vendor_name=row["vendor_name"],
+            vendor_message_id=row["vendor_message_id"],
+            idempotency_key=row["idempotency_key"],
+            packet_artifact=json.loads(row["packet_artifact"]) if row["packet_artifact"] else {},
+            retry_count=row["retry_count"],
+            last_error_code=row["last_error_code"],
+            last_error_message=row["last_error_message"],
+            cancelled_at=_parse_sqlite_utc(row["cancelled_at"]),
+            cancelled_by_user_id=row["cancelled_by_user_id"],
+            # created_at / updated_at are NOT NULL in the schema — the
+            # parser returns None only when the input column is NULL,
+            # which never happens for these columns. Cast for mypy.
+            created_at=_parse_sqlite_utc(row["created_at"]) or datetime.now(timezone.utc),
+            updated_at=_parse_sqlite_utc(row["updated_at"]) or datetime.now(timezone.utc),
+            sent_at=_parse_sqlite_utc(row["sent_at"]),
+            delivered_at=_parse_sqlite_utc(row["delivered_at"]),
+        )
+
+    def get_delivery(self, scope: Scope | None, delivery_id: int) -> "Delivery | None":
+        if scope is None:
+            # Dispatcher path — no scope filter.
+            row = self._conn.execute(
+                "SELECT * FROM deliveries WHERE id = ?", (delivery_id,)
+            ).fetchone()
+            return self._row_to_delivery(row) if row else None
+        fragment, params = scope_sql_clause(
+            scope, user_col="scope_user_id", org_col="scope_organization_id"
+        )
+        row = self._conn.execute(
+            f"SELECT * FROM deliveries WHERE id = ? AND {fragment}",
+            (delivery_id, *params),
+        ).fetchone()
+        return self._row_to_delivery(row) if row else None
+
+    def list_deliveries_for_referral(self, scope: Scope, referral_id: int) -> list["Delivery"]:
+        fragment, params = scope_sql_clause(
+            scope, user_col="scope_user_id", org_col="scope_organization_id"
+        )
+        rows = self._conn.execute(
+            f"""SELECT * FROM deliveries
+                WHERE referral_id = ? AND {fragment}
+                ORDER BY created_at DESC, id DESC""",
+            (referral_id, *params),
+        ).fetchall()
+        return [self._row_to_delivery(r) for r in rows]
+
+    def cancel_delivery(self, scope: Scope, delivery_id: int, *, cancelled_by_user_id: int) -> bool:
+        delivery = self.get_delivery(scope, delivery_id)
+        if delivery is None or delivery.is_terminal:
+            return False
+        self._conn.execute(
+            """UPDATE deliveries
+               SET status = 'cancelled',
+                   cancelled_at = datetime('now'),
+                   cancelled_by_user_id = ?,
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (cancelled_by_user_id, delivery_id),
+        )
+        self._conn.commit()
+        return True
+
+    def list_deliveries_ready_for_dispatch(
+        self, *, limit: int = 20, stuck_sending_seconds: int = 120
+    ) -> list["Delivery"]:
+        # queued rows: pick up immediately.
+        # sending rows: pick up only when stale (prior dispatcher
+        # crashed). Using datetime('now', '-N seconds') for the
+        # staleness window.
+        rows = self._conn.execute(
+            """SELECT * FROM deliveries
+               WHERE status = 'queued'
+                  OR (status = 'sending' AND updated_at < datetime('now', ?))
+               ORDER BY created_at ASC
+               LIMIT ?""",
+            (f"-{stuck_sending_seconds} seconds", limit),
+        ).fetchall()
+        return [self._row_to_delivery(r) for r in rows]
+
+    def mark_delivery_sending(self, delivery_id: int) -> None:
+        self._conn.execute(
+            """UPDATE deliveries
+               SET status = 'sending', updated_at = datetime('now')
+               WHERE id = ?""",
+            (delivery_id,),
+        )
+        self._conn.commit()
+
+    def mark_delivery_sent(
+        self,
+        delivery_id: int,
+        *,
+        vendor_name: str,
+        vendor_message_id: str,
+        status: str = "sent",
+    ) -> None:
+        delivered_clause = "delivered_at = datetime('now')," if status == "delivered" else ""
+        self._conn.execute(
+            f"""UPDATE deliveries
+                SET status = ?,
+                    vendor_name = ?,
+                    vendor_message_id = ?,
+                    sent_at = datetime('now'),
+                    {delivered_clause}
+                    updated_at = datetime('now'),
+                    last_error_code = NULL,
+                    last_error_message = NULL
+                WHERE id = ?""",
+            (status, vendor_name, vendor_message_id, delivery_id),
+        )
+        self._conn.commit()
+
+    def mark_delivery_failed(
+        self, delivery_id: int, *, error_code: str, error_message: str | None
+    ) -> None:
+        self._conn.execute(
+            """UPDATE deliveries
+               SET status = 'failed',
+                   last_error_code = ?,
+                   last_error_message = ?,
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (error_code, error_message, delivery_id),
+        )
+        self._conn.commit()
+
+    def requeue_delivery_for_retry(
+        self, delivery_id: int, *, error_code: str, error_message: str | None
+    ) -> None:
+        self._conn.execute(
+            """UPDATE deliveries
+               SET status = 'queued',
+                   retry_count = retry_count + 1,
+                   last_error_code = ?,
+                   last_error_message = ?,
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (error_code, error_message, delivery_id),
+        )
+        self._conn.commit()
+
+    def record_delivery_attempt_start(self, *, delivery_id: int, attempt_number: int) -> int:
+        cursor = self._conn.execute(
+            """INSERT INTO delivery_attempts (delivery_id, attempt_number, result)
+               VALUES (?, ?, 'in_progress')""",
+            (delivery_id, attempt_number),
+        )
+        self._conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    def record_delivery_attempt_complete(
+        self,
+        *,
+        attempt_id: int,
+        result: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        vendor_response_excerpt: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            """UPDATE delivery_attempts
+               SET result = ?,
+                   completed_at = datetime('now'),
+                   error_code = ?,
+                   error_message = ?,
+                   vendor_response_excerpt = ?
+               WHERE id = ?""",
+            (result, error_code, error_message, vendor_response_excerpt, attempt_id),
+        )
+        self._conn.commit()
+
+    def list_delivery_attempts(self, scope: Scope, delivery_id: int) -> list["DeliveryAttempt"]:
+        from docstats.domain.deliveries import DeliveryAttempt
+
+        # Scope-gate via the parent delivery.
+        if self.get_delivery(scope, delivery_id) is None:
+            return []
+        rows = self._conn.execute(
+            """SELECT * FROM delivery_attempts
+               WHERE delivery_id = ?
+               ORDER BY attempt_number ASC, id ASC""",
+            (delivery_id,),
+        ).fetchall()
+        out: list[DeliveryAttempt] = []
+        for r in rows:
+            out.append(
+                DeliveryAttempt(
+                    id=r["id"],
+                    delivery_id=r["delivery_id"],
+                    attempt_number=r["attempt_number"],
+                    started_at=_parse_sqlite_utc(r["started_at"]) or datetime.now(timezone.utc),
+                    completed_at=_parse_sqlite_utc(r["completed_at"]),
+                    result=r["result"],
+                    error_code=r["error_code"],
+                    error_message=r["error_message"],
+                    vendor_response_excerpt=r["vendor_response_excerpt"],
+                )
+            )
+        return out
 
     def close(self) -> None:
         self._conn.close()

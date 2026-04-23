@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from docstats.domain.audit import AuditEvent
+from docstats.domain.deliveries import Delivery, DeliveryAttempt
 from docstats.domain.imports import (
     IMPORT_ROW_STATUS_VALUES,
     IMPORT_STATUS_VALUES,
@@ -3104,6 +3105,253 @@ class PostgresStorage(StorageBase):
             return False
         (self._t("csv_import_rows").delete().eq("id", row_id).eq("import_id", import_id).execute())
         return True
+
+    # --- Deliveries (Phase 9.A) ---
+
+    def _row_to_delivery(self, row: dict) -> "Delivery":
+        from docstats.domain.deliveries import Delivery
+
+        return Delivery(
+            id=int(row["id"]),
+            referral_id=int(row["referral_id"]),
+            scope_user_id=row.get("scope_user_id"),
+            scope_organization_id=row.get("scope_organization_id"),
+            channel=row["channel"],
+            recipient=row["recipient"],
+            status=row["status"],
+            vendor_name=row.get("vendor_name"),
+            vendor_message_id=row.get("vendor_message_id"),
+            idempotency_key=row.get("idempotency_key"),
+            packet_artifact=row.get("packet_artifact") or {},
+            retry_count=int(row.get("retry_count") or 0),
+            last_error_code=row.get("last_error_code"),
+            last_error_message=row.get("last_error_message"),
+            cancelled_at=_parse_ts(row.get("cancelled_at")),
+            cancelled_by_user_id=row.get("cancelled_by_user_id"),
+            created_at=_parse_ts(row["created_at"]) or datetime.now(tz=timezone.utc),
+            updated_at=_parse_ts(row["updated_at"]) or datetime.now(tz=timezone.utc),
+            sent_at=_parse_ts(row.get("sent_at")),
+            delivered_at=_parse_ts(row.get("delivered_at")),
+        )
+
+    def create_delivery(
+        self,
+        scope: Scope,
+        *,
+        referral_id: int,
+        channel: str,
+        recipient: str,
+        packet_artifact: dict[str, Any] | None = None,
+        vendor_name: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> "Delivery":
+        parent = self.get_referral(scope, referral_id)
+        if parent is None:
+            raise ValueError("Referral not found in scope.")
+        row = {
+            "referral_id": referral_id,
+            "scope_user_id": parent.scope_user_id,
+            "scope_organization_id": parent.scope_organization_id,
+            "channel": channel,
+            "recipient": recipient,
+            "vendor_name": vendor_name,
+            "idempotency_key": idempotency_key,
+            "packet_artifact": packet_artifact or {},
+        }
+        result = self._t("deliveries").insert(row).execute()
+        if not result.data:
+            raise RuntimeError("deliveries insert returned no rows")
+        return self._row_to_delivery(result.data[0])
+
+    def get_delivery(self, scope: Scope | None, delivery_id: int) -> "Delivery | None":
+        query = self._t("deliveries").select("*").eq("id", delivery_id)
+        if scope is not None:
+            query = self._apply_scope(query, scope)
+        result = query.limit(1).execute()
+        if not result.data:
+            return None
+        return self._row_to_delivery(result.data[0])
+
+    def list_deliveries_for_referral(self, scope: Scope, referral_id: int) -> list["Delivery"]:
+        query = self._t("deliveries").select("*").eq("referral_id", referral_id)
+        query = self._apply_scope(query, scope)
+        result = query.order("created_at", desc=True).order("id", desc=True).execute()
+        return [self._row_to_delivery(r) for r in (result.data or [])]
+
+    def cancel_delivery(self, scope: Scope, delivery_id: int, *, cancelled_by_user_id: int) -> bool:
+        delivery = self.get_delivery(scope, delivery_id)
+        if delivery is None or delivery.is_terminal:
+            return False
+        now = _now_iso()
+        (
+            self._t("deliveries")
+            .update(
+                {
+                    "status": "cancelled",
+                    "cancelled_at": now,
+                    "cancelled_by_user_id": cancelled_by_user_id,
+                    "updated_at": now,
+                }
+            )
+            .eq("id", delivery_id)
+            .execute()
+        )
+        return True
+
+    def list_deliveries_ready_for_dispatch(
+        self, *, limit: int = 20, stuck_sending_seconds: int = 120
+    ) -> list["Delivery"]:
+        # supabase-py OR filter via `.or_()`. Build the stuck-sending
+        # cutoff in Python to keep the filter string simple.
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(seconds=stuck_sending_seconds)
+        cutoff_iso = _to_pg_iso(cutoff)
+        result = (
+            self._t("deliveries")
+            .select("*")
+            .or_(f"status.eq.queued,and(status.eq.sending,updated_at.lt.{cutoff_iso})")
+            .order("created_at", desc=False)
+            .limit(limit)
+            .execute()
+        )
+        return [self._row_to_delivery(r) for r in (result.data or [])]
+
+    def mark_delivery_sending(self, delivery_id: int) -> None:
+        now = _now_iso()
+        (
+            self._t("deliveries")
+            .update({"status": "sending", "updated_at": now})
+            .eq("id", delivery_id)
+            .execute()
+        )
+
+    def mark_delivery_sent(
+        self,
+        delivery_id: int,
+        *,
+        vendor_name: str,
+        vendor_message_id: str,
+        status: str = "sent",
+    ) -> None:
+        now = _now_iso()
+        update: dict[str, Any] = {
+            "status": status,
+            "vendor_name": vendor_name,
+            "vendor_message_id": vendor_message_id,
+            "sent_at": now,
+            "updated_at": now,
+            "last_error_code": None,
+            "last_error_message": None,
+        }
+        if status == "delivered":
+            update["delivered_at"] = now
+        self._t("deliveries").update(update).eq("id", delivery_id).execute()
+
+    def mark_delivery_failed(
+        self, delivery_id: int, *, error_code: str, error_message: str | None
+    ) -> None:
+        now = _now_iso()
+        (
+            self._t("deliveries")
+            .update(
+                {
+                    "status": "failed",
+                    "last_error_code": error_code,
+                    "last_error_message": error_message,
+                    "updated_at": now,
+                }
+            )
+            .eq("id", delivery_id)
+            .execute()
+        )
+
+    def requeue_delivery_for_retry(
+        self, delivery_id: int, *, error_code: str, error_message: str | None
+    ) -> None:
+        # supabase-py has no ``increment`` op — read-then-write. Race
+        # with the dispatcher would be rare (the dispatcher owns the
+        # row's lifecycle while it's in flight) but if multiple
+        # dispatchers ever run concurrently this becomes a problem.
+        # That's a Phase 9.E hardening task; for Phase 9.A we assume
+        # a single dispatcher per process and one process per Railway
+        # service.
+        existing = (
+            self._t("deliveries").select("retry_count").eq("id", delivery_id).limit(1).execute()
+        )
+        current = int(existing.data[0]["retry_count"] or 0) if existing.data else 0
+        now = _now_iso()
+        (
+            self._t("deliveries")
+            .update(
+                {
+                    "status": "queued",
+                    "retry_count": current + 1,
+                    "last_error_code": error_code,
+                    "last_error_message": error_message,
+                    "updated_at": now,
+                }
+            )
+            .eq("id", delivery_id)
+            .execute()
+        )
+
+    def record_delivery_attempt_start(self, *, delivery_id: int, attempt_number: int) -> int:
+        row = {
+            "delivery_id": delivery_id,
+            "attempt_number": attempt_number,
+            "result": "in_progress",
+        }
+        result = self._t("delivery_attempts").insert(row).execute()
+        if not result.data:
+            raise RuntimeError("delivery_attempts insert returned no rows")
+        return int(result.data[0]["id"])
+
+    def record_delivery_attempt_complete(
+        self,
+        *,
+        attempt_id: int,
+        result: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        vendor_response_excerpt: str | None = None,
+    ) -> None:
+        update = {
+            "result": result,
+            "completed_at": _now_iso(),
+            "error_code": error_code,
+            "error_message": error_message,
+            "vendor_response_excerpt": vendor_response_excerpt,
+        }
+        (self._t("delivery_attempts").update(update).eq("id", attempt_id).execute())
+
+    def list_delivery_attempts(self, scope: Scope, delivery_id: int) -> list["DeliveryAttempt"]:
+        from docstats.domain.deliveries import DeliveryAttempt
+
+        if self.get_delivery(scope, delivery_id) is None:
+            return []
+        result = (
+            self._t("delivery_attempts")
+            .select("*")
+            .eq("delivery_id", delivery_id)
+            .order("attempt_number", desc=False)
+            .order("id", desc=False)
+            .execute()
+        )
+        out: list[DeliveryAttempt] = []
+        for r in result.data or []:
+            out.append(
+                DeliveryAttempt(
+                    id=int(r["id"]),
+                    delivery_id=int(r["delivery_id"]),
+                    attempt_number=int(r["attempt_number"]),
+                    started_at=_parse_ts(r["started_at"]) or datetime.now(tz=timezone.utc),
+                    completed_at=_parse_ts(r.get("completed_at")),
+                    result=r["result"],
+                    error_code=r.get("error_code"),
+                    error_message=r.get("error_message"),
+                    vendor_response_excerpt=r.get("vendor_response_excerpt"),
+                )
+            )
+        return out
 
     # --- Inbound webhook inbox (Phase 8.C) ---
 

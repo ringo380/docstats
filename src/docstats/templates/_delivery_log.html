@@ -1,0 +1,42 @@
+{# Phase 9.A — delivery history for a referral.
+
+   Rendered on the detail page under the Send card. Terminal rows
+   (delivered / failed / cancelled) are visually dimmed. Cancel
+   button shows only for non-terminal rows. #}
+<section class="card" id="delivery-log">
+  <h3>Deliveries</h3>
+  {% if deliveries %}
+    <ol class="delivery-list">
+      {% for d in deliveries %}
+        <li class="delivery-row delivery-status-{{ d.status }}">
+          <div class="delivery-row-header">
+            <span class="delivery-channel">{{ d.channel | title }}</span>
+            <span class="status-chip status-{{ d.status }}">{{ d.status | replace('_', ' ') | title }}</span>
+          </div>
+          <div class="sub">
+            To <code>{{ d.recipient }}</code>
+            {% if d.vendor_name %} · via {{ d.vendor_name }}{% endif %}
+            {% if d.retry_count %} · retry {{ d.retry_count }}{% endif %}
+          </div>
+          {% if d.last_error_code %}
+            <div class="sub delivery-error">
+              <strong>{{ d.last_error_code }}</strong>{% if d.last_error_message %}: {{ d.last_error_message }}{% endif %}
+            </div>
+          {% endif %}
+          <div class="sub delivery-meta">
+            Created {{ d.created_at.strftime('%Y-%m-%d %H:%M') }}
+            {% if d.sent_at %} · Sent {{ d.sent_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+            {% if d.delivered_at %} · Delivered {{ d.delivered_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+          </div>
+          {% if d.status in ('queued', 'sending', 'sent') %}
+            <form method="post" action="/referrals/{{ referral.id }}/deliveries/{{ d.id }}/cancel" class="inline-form">
+              <button type="submit" class="btn btn-danger btn-sm">Cancel</button>
+            </form>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ol>
+  {% else %}
+    <p class="sub">No deliveries yet.</p>
+  {% endif %}
+</section>
