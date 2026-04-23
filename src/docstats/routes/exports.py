@@ -34,6 +34,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from docstats.domain.audit import record as audit_record
 from docstats.domain.referrals import STATUS_VALUES, URGENCY_VALUES
 from docstats.domain.rules import rules_based_completeness
+from docstats.enrichment import fetch_receiving_direct_endpoints
 from docstats.exports import (
     ARTIFACT_ATTACHMENTS_CHECKLIST,
     ARTIFACT_FAX_COVER,
@@ -54,7 +55,7 @@ from docstats.exports import (
     render_scheduling_summary,
 )
 from docstats.phi import require_phi_consent
-from docstats.routes._common import get_scope, render, resolve_assignee_filter
+from docstats.routes._common import get_client, get_scope, render, resolve_assignee_filter
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
@@ -553,6 +554,14 @@ async def referral_export_json(
     medications = storage.list_referral_medications(scope, referral_id)
     allergies = storage.list_referral_allergies(scope, referral_id)
     attachments = storage.list_referral_attachments(scope, referral_id)
+    responses = storage.list_referral_responses(scope, referral_id)
+
+    # Direct Trust endpoints (Phase 8.A): best-effort NPPES lookup via the
+    # shared singleton client. Failures log-and-skip rather than 5xx —
+    # export availability trumps metadata.
+    receiving_endpoints = await fetch_receiving_direct_endpoints(
+        referral.receiving_provider_npi, get_client()
+    )
 
     # TOCTOU re-check — same pattern as the PDF route.
     if storage.get_referral(scope, referral_id) is None:
@@ -566,6 +575,8 @@ async def referral_export_json(
         medications=medications,
         allergies=allergies,
         attachments=attachments,
+        responses=responses,
+        receiving_endpoints=receiving_endpoints,
         generated_at=generated_at,
     )
 

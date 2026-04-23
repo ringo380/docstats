@@ -408,3 +408,73 @@ async def test_enrich_provider_with_open_payments(tmp_path):
     assert len(data.top_payers) == 1
     assert "open_payments" in data.sources_checked
     cache.close()
+
+
+# ---------- Phase 8.A: Direct Trust endpoint helper ----------
+
+
+class _FakeNppesClient:
+    """Minimal stand-in for NPPESClient.async_lookup."""
+
+    def __init__(self, result):
+        self._result = result
+
+    async def async_lookup(self, npi: str):
+        return self._result
+
+
+class _FakeEndpoint:
+    def __init__(self, endpoint: str, endpointType: str):
+        self.endpoint = endpoint
+        self.endpointType = endpointType
+
+
+class _FakeNpiResult:
+    def __init__(self, endpoints):
+        self.endpoints = endpoints
+
+
+@pytest.mark.asyncio
+async def test_fetch_direct_endpoints_filters_to_direct_type():
+    from docstats.enrichment import fetch_receiving_direct_endpoints
+
+    result = _FakeNpiResult(
+        [
+            _FakeEndpoint("direct@hospital.com", "Direct"),
+            _FakeEndpoint("http://fhir.hospital.com", "FHIR"),
+            _FakeEndpoint("other@hospital.com", "Direct"),
+        ]
+    )
+    client = _FakeNppesClient(result)
+    out = await fetch_receiving_direct_endpoints("1234567890", client)
+    assert len(out) == 2
+    assert all(e.endpointType == "Direct" for e in out)
+
+
+@pytest.mark.asyncio
+async def test_fetch_direct_endpoints_returns_empty_on_none_npi():
+    from docstats.enrichment import fetch_receiving_direct_endpoints
+
+    out = await fetch_receiving_direct_endpoints(None, _FakeNppesClient(None))
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_direct_endpoints_swallows_nppes_errors():
+    from docstats.enrichment import fetch_receiving_direct_endpoints
+
+    class _BoomClient:
+        async def async_lookup(self, npi: str):
+            raise RuntimeError("NPPES exploded")
+
+    out = await fetch_receiving_direct_endpoints("1234567890", _BoomClient())
+    assert out == []  # never 503 — export availability trumps metadata
+
+
+@pytest.mark.asyncio
+async def test_fetch_direct_endpoints_handles_missing_npi_result():
+    from docstats.enrichment import fetch_receiving_direct_endpoints
+
+    client = _FakeNppesClient(None)
+    out = await fetch_receiving_direct_endpoints("9999999999", client)
+    assert out == []

@@ -37,7 +37,9 @@ if TYPE_CHECKING:
         ReferralAttachment,
         ReferralDiagnosis,
         ReferralMedication,
+        ReferralResponse,
     )
+    from docstats.models import Endpoint
 
 
 # ---------- Status + priority translation ----------
@@ -69,6 +71,26 @@ _PRIORITY_MAP: dict[str, str] = {
     "urgent": "urgent",
     "stat": "stat",
 }
+
+# FHIR Appointment.status is a closed vocabulary:
+# proposed | pending | booked | arrived | fulfilled | cancelled | noshow
+# | entered-in-error | checked-in | waitlist. We only emit two values.
+# Regression-pinned by tests/test_exports.py::test_appointment_status_map.
+_APPOINTMENT_STATUS_BOOKED = "booked"
+_APPOINTMENT_STATUS_FULFILLED = "fulfilled"
+
+# FHIR Communication.status is a closed vocabulary:
+# preparation | in-progress | not-done | on-hold | stopped | completed
+# | entered-in-error | unknown. We only emit ``completed`` — Communication
+# only fires when a response represents a completed consult.
+# Regression-pinned by tests/test_exports.py::test_communication_status_map.
+_COMMUNICATION_STATUS_COMPLETED = "completed"
+
+# meta.tag system for propagating the channel the response arrived through
+# (fax|portal|email|phone|manual|api). Non-standard FHIR — a real profile
+# would use an extension URL, but meta.tag is honest enough for the
+# "FHIR-ish" bar. Phases 12+ will formalize this into a profile.
+_RECEIVED_VIA_TAG_SYSTEM = "https://docstats.app/fhir/received-via"
 
 
 # ---------- Identifier + reference helpers ----------
@@ -104,6 +126,18 @@ def _allergy_id(referral_id: int, allergy_id: int) -> str:
 
 def _attachment_id(referral_id: int, attachment_id: int) -> str:
     return f"documentreference-{referral_id}-{attachment_id}"
+
+
+def _appointment_id(referral_id: int, response_id: int) -> str:
+    return f"appointment-{referral_id}-{response_id}"
+
+
+def _communication_id(referral_id: int, response_id: int) -> str:
+    return f"communication-{referral_id}-{response_id}"
+
+
+def _endpoint_id(referral_id: int, idx: int) -> str:
+    return f"endpoint-{referral_id}-{idx}"
 
 
 def _ref(resource_type: str, resource_id: str) -> dict[str, str]:
@@ -370,6 +404,148 @@ def _build_document_reference(
     return resource
 
 
+def _received_via_tag(received_via: str | None) -> list[dict[str, Any]]:
+    """Build a ``meta.tag`` list for the response channel.
+
+    Empty list when ``received_via`` is blank — mapping tests assert this
+    so bundles can be diffed deterministically.
+    """
+    if not received_via:
+        return []
+    return [{"system": _RECEIVED_VIA_TAG_SYSTEM, "code": received_via}]
+
+
+def _build_appointment(
+    response: "ReferralResponse",
+    patient: "Patient",
+    referral: "Referral",
+) -> dict[str, Any] | None:
+    """Emit an Appointment for a response with ``appointment_date`` set.
+
+    Status is ``fulfilled`` when the response records a completed consult,
+    else ``booked``. Both are valid closed-vocab Appointment.status values.
+    The ``start`` field is an ISO-8601 datetime — FHIR Appointment.start
+    doesn't accept date-only, so we pin to midnight UTC.
+    """
+    if not response.appointment_date:
+        return None
+    status = (
+        _APPOINTMENT_STATUS_FULFILLED if response.consult_completed else _APPOINTMENT_STATUS_BOOKED
+    )
+    start_iso = f"{response.appointment_date}T00:00:00Z"
+    participants: list[dict[str, Any]] = [
+        {
+            "actor": _ref("Patient", _patient_id(patient)),
+            "required": "required",
+            "status": "accepted",
+        }
+    ]
+    if referral.referring_provider_npi or referral.referring_provider_name:
+        participants.append(
+            {
+                "actor": _ref("Practitioner", _practitioner_id(referral)),
+                "required": "required",
+                "status": "tentative",
+            }
+        )
+    resource: dict[str, Any] = {
+        "resourceType": "Appointment",
+        "id": _appointment_id(response.referral_id, response.id),
+        "status": status,
+        "start": start_iso,
+        "participant": participants,
+    }
+    tag = _received_via_tag(response.received_via)
+    if tag:
+        resource["meta"] = {"tag": tag}
+    return resource
+
+
+def _build_communication(
+    response: "ReferralResponse",
+    patient: "Patient",
+    referral: "Referral",
+) -> dict[str, Any] | None:
+    """Emit a Communication for a completed consult with recommendations.
+
+    Only fires when ``consult_completed`` is True AND
+    ``recommendations_text`` is non-blank — the Communication represents the
+    received consult note. ``CommunicationRequest`` is NOT used here: that
+    resource means "please send a communication"; this is "we received one".
+    """
+    if not (response.consult_completed and (response.recommendations_text or "").strip()):
+        return None
+    resource: dict[str, Any] = {
+        "resourceType": "Communication",
+        "id": _communication_id(response.referral_id, response.id),
+        "status": _COMMUNICATION_STATUS_COMPLETED,
+        "sent": response.created_at.isoformat(),
+        "subject": _ref("Patient", _patient_id(patient)),
+        "about": [_ref("ServiceRequest", _referral_id(referral))],
+        "payload": [{"contentString": response.recommendations_text}],
+    }
+    tag = _received_via_tag(response.received_via)
+    if tag:
+        resource["meta"] = {"tag": tag}
+    return resource
+
+
+def _build_endpoint(
+    referral: "Referral",
+    endpoint: "Endpoint",
+    idx: int,
+) -> dict[str, Any] | None:
+    """Emit a FHIR Endpoint for a Direct Trust address.
+
+    Caller is responsible for filtering NPPES results to Direct endpoints
+    only — this builder trusts that ``endpoint.endpoint`` is a Direct
+    address. NPPES-reported lifecycle state is not available, so we emit
+    ``status=active`` as a constant.
+    """
+    if not endpoint.endpoint:
+        return None
+    name = endpoint.affiliationName or endpoint.useDescription or None
+    resource: dict[str, Any] = {
+        "resourceType": "Endpoint",
+        "id": _endpoint_id(referral.id, idx),
+        "status": "active",
+        "connectionType": {
+            "system": "http://terminology.hl7.org/CodeSystem/endpoint-connection-type",
+            "code": "direct-project",
+        },
+        "address": endpoint.endpoint,
+    }
+    if endpoint.contentTypeDescription:
+        resource["payloadType"] = [{"text": endpoint.contentTypeDescription}]
+    if name:
+        resource["name"] = name
+    return resource
+
+
+def operation_outcome(
+    severity: str,
+    code: str,
+    diagnostics: str,
+) -> dict[str, Any]:
+    """Build a FHIR OperationOutcome for fhir+json error responses.
+
+    FHIR OperationOutcome.issue.severity closed vocab:
+    ``fatal | error | warning | information``. Code vocab is rich
+    (``security`` / ``not-found`` / ``forbidden`` / ``invalid`` / …) —
+    callers pass the closest match.
+    """
+    return {
+        "resourceType": "OperationOutcome",
+        "issue": [
+            {
+                "severity": severity,
+                "code": code,
+                "diagnostics": diagnostics,
+            }
+        ],
+    }
+
+
 # ---------- Top-level entry point ----------
 
 
@@ -381,13 +557,29 @@ def build_referral_bundle(
     medications: list["ReferralMedication"] | None = None,
     allergies: list["ReferralAllergy"] | None = None,
     attachments: list["ReferralAttachment"] | None = None,
+    responses: list["ReferralResponse"] | None = None,
+    receiving_endpoints: list["Endpoint"] | None = None,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build a FHIR-ish Bundle dict for the referral.
 
+    Bundle ``type`` is ``document`` — this is a READ-endpoint export. Write
+    endpoints (none yet; planned for Phase 12 SMART-on-FHIR) will emit
+    ``type=transaction`` where each entry carries ``request.method`` +
+    ``request.url``. An earlier master-plan draft said ``transaction``
+    here; that was wrong for a read.
+
     ``diagnoses`` is used to check whether a primary-diagnosis Condition
     should be emitted (taking the first ``is_primary=True`` row when
     present, else falling back to the headline fields on the Referral).
+
+    ``responses`` emits one Appointment per response with an
+    ``appointment_date`` and one Communication per response where
+    ``consult_completed=True`` and ``recommendations_text`` is non-blank.
+
+    ``receiving_endpoints`` emits one Endpoint resource per Direct Trust
+    address from NPPES. Callers should pre-filter to
+    ``endpointType == "Direct"`` — this builder trusts the input.
     """
     now = generated_at or datetime.now(tz=timezone.utc)
 
@@ -422,12 +614,17 @@ def build_referral_bundle(
     _push(practitioner_resource)
     _push(organization_resource)
     _push(condition_resource)
+    for response in responses or []:
+        _push(_build_appointment(response, patient, referral))
+        _push(_build_communication(response, patient, referral))
     for med in medications or []:
         _push(_build_medication_statement(med, patient))
     for allergy in allergies or []:
         _push(_build_allergy_intolerance(allergy, patient))
     for attachment in attachments or []:
         _push(_build_document_reference(attachment, patient))
+    for idx, endpoint in enumerate(receiving_endpoints or []):
+        _push(_build_endpoint(referral, endpoint, idx))
 
     # Keep ``diagnoses`` available for future expansion (e.g. emitting
     # secondary Conditions). For now the headline Condition on the
