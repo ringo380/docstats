@@ -1358,3 +1358,21 @@ dl.kv dd { color: var(--text); margin: 0; }
   gap: 10px;
   margin-top: 8px;
 }
+
+/* ── Direct Trust endpoints (Phase 8.C) ────────────────────────────────── */
+.direct-endpoints ul.direct-endpoint-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+}
+.direct-endpoints li {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.direct-endpoints li:last-child { border-bottom: none; }
+.direct-address {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.85rem;
+  color: var(--blue, #6fb1ff);
+  word-break: break-all;
+}

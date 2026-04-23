@@ -3105,5 +3105,31 @@ class PostgresStorage(StorageBase):
         (self._t("csv_import_rows").delete().eq("id", row_id).eq("import_id", import_id).execute())
         return True
 
+    # --- Inbound webhook inbox (Phase 8.C) ---
+
+    def record_inbound_webhook(
+        self,
+        *,
+        source: str | None,
+        payload_json: dict[str, Any],
+        http_headers_json: dict[str, Any],
+        signature: str | None,
+        status: str = "received",
+        notes: str | None = None,
+    ) -> int:
+        # JSONB columns accept python dicts directly via supabase-py.
+        row = {
+            "source": source,
+            "payload_json": payload_json,
+            "http_headers_json": http_headers_json,
+            "signature": signature,
+            "status": status,
+            "notes": notes,
+        }
+        result = self._t("webhook_inbox").insert(row).execute()
+        if not result.data:
+            raise RuntimeError("webhook_inbox insert returned no rows")
+        return int(result.data[0]["id"])
+
     def close(self) -> None:
         pass  # supabase-py client has no close method
