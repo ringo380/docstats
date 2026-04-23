@@ -126,6 +126,7 @@ def test_form_pre_populates_from_existing_row(storage: Storage, org_admin) -> No
         assert 'value="San Francisco"' in body
         assert 'value="94110"' in body
         assert 'value="4155550001"' in body
+        assert 'name="stale_threshold_days" value="3"' in body
     finally:
         _cleanup()
 
@@ -148,6 +149,7 @@ def test_save_updates_all_fields(storage: Storage, org_admin) -> None:
                 "address_zip": "94612-1234",
                 "phone": "5105550001",
                 "fax": "5105550002",
+                "stale_threshold_days": "9",
             },
             follow_redirects=False,
         )
@@ -165,6 +167,7 @@ def test_save_updates_all_fields(storage: Storage, org_admin) -> None:
         assert updated.address_zip == "94612-1234"
         assert updated.phone == "5105550001"
         assert updated.fax == "5105550002"
+        assert updated.stale_threshold_days == 9
         # Slug is immutable via the settings form.
         assert updated.slug == "acme"
 
@@ -190,6 +193,7 @@ def test_save_clears_optional_fields_when_submitted_blank(storage: Storage, org_
                 "address_zip": "",
                 "phone": "",
                 "fax": "",
+                "stale_threshold_days": "3",
             },
             follow_redirects=False,
         )
@@ -300,6 +304,22 @@ def test_save_rejects_invalid_zip(storage: Storage, org_admin) -> None:
         )
         assert resp.status_code == 200
         assert "ZIP" in resp.text
+    finally:
+        _cleanup()
+
+
+def test_save_rejects_invalid_stale_threshold(storage: Storage, org_admin) -> None:
+    _, org, user = org_admin
+    try:
+        resp = _client_with(storage, user).post(
+            "/admin/org-settings",
+            data={"name": "Acme Clinic", "stale_threshold_days": "0"},
+        )
+        assert resp.status_code == 200
+        assert "Stale referral threshold" in resp.text
+        unchanged = storage.get_organization(org.id)
+        assert unchanged is not None
+        assert unchanged.stale_threshold_days == 3
     finally:
         _cleanup()
 

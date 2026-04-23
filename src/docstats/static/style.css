@@ -782,6 +782,11 @@
   color: var(--green);
   border: 1px solid var(--green-dark);
 }
+.alert-warning {
+  background: #352a10;
+  color: #fbd38d;
+  border: 1px solid #8a6515;
+}
 .alert ul { margin: 0; padding-left: 1.2rem; }
 
 /* ── Referrals workspace (Phase 2.B) ──────────────────────────────────── */

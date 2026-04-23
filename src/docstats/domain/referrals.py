@@ -38,6 +38,8 @@ from typing import Final
 
 from pydantic import BaseModel
 
+from docstats.domain.orgs import ROLES
+
 # --- Enumerations ---
 
 URGENCY_VALUES: Final[tuple[str, ...]] = ("routine", "priority", "urgent", "stat")
@@ -131,10 +133,17 @@ STATUS_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
 }
 
 TERMINAL_STATUSES: Final[frozenset[str]] = frozenset({"completed", "cancelled"})
+STATUS_TRANSITION_ROLES: Final[frozenset[str]] = frozenset(
+    role for role in ROLES if role != "read_only"
+)
 
 
 class InvalidTransition(ValueError):
     """Raised when a caller attempts a disallowed status transition."""
+
+
+class TransitionRoleDenied(PermissionError):
+    """Raised when an org membership role cannot change referral status."""
 
 
 def transition_allowed(from_status: str, to_status: str) -> bool:
@@ -149,6 +158,31 @@ def transition_allowed(from_status: str, to_status: str) -> bool:
     return to_status in allowed
 
 
+def role_can_transition_status(membership_role: str | None, *, is_org: bool) -> bool:
+    """Return whether this scope can apply referral status transitions.
+
+    Solo scopes have no membership role and retain the existing transition
+    behavior. Org scopes fail closed: only documented non-read-only roles can
+    change status, and unknown / missing roles cannot.
+    """
+    if not is_org:
+        return True
+    return membership_role in STATUS_TRANSITION_ROLES
+
+
+def transition_allowed_for_role(
+    from_status: str,
+    to_status: str,
+    membership_role: str | None,
+    *,
+    is_org: bool,
+) -> bool:
+    """Return True if both role policy and state-machine edge allow a move."""
+    return role_can_transition_status(membership_role, is_org=is_org) and transition_allowed(
+        from_status, to_status
+    )
+
+
 def require_transition(from_status: str, to_status: str) -> None:
     """Raise :class:`InvalidTransition` unless the edge is allowed.
 
@@ -159,6 +193,19 @@ def require_transition(from_status: str, to_status: str) -> None:
         raise InvalidTransition(
             f"Invalid referral status transition: {from_status!r} → {to_status!r}"
         )
+
+
+def require_transition_for_role(
+    from_status: str,
+    to_status: str,
+    membership_role: str | None,
+    *,
+    is_org: bool,
+) -> None:
+    """Raise unless both the membership role and transition edge allow a move."""
+    if not role_can_transition_status(membership_role, is_org=is_org):
+        raise TransitionRoleDenied("This membership role cannot change referral status.")
+    require_transition(from_status, to_status)
 
 
 # --- Pydantic models ---

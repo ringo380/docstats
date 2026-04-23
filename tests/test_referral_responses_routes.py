@@ -14,7 +14,12 @@ from docstats.storage import Storage, get_storage
 from docstats.web import app
 
 
-def _fake_user(user_id: int, email: str = "a@example.com"):
+def _fake_user(
+    user_id: int,
+    email: str = "a@example.com",
+    *,
+    active_org_id: int | None = None,
+):
     return {
         "id": user_id,
         "email": email,
@@ -31,7 +36,7 @@ def _fake_user(user_id: int, email: str = "a@example.com"):
         "phi_consent_version": CURRENT_PHI_CONSENT_VERSION,
         "phi_consent_ip": None,
         "phi_consent_user_agent": None,
-        "active_org_id": None,
+        "active_org_id": active_org_id,
     }
 
 
@@ -65,6 +70,42 @@ def _seed_referral(storage: Storage, user_id: int, *, status: str = "draft"):
     return referral
 
 
+def _seed_org_referral(
+    storage: Storage,
+    user_id: int,
+    org_id: int,
+    role: str,
+    *,
+    status: str = "draft",
+):
+    scope = Scope(user_id=user_id, organization_id=org_id, membership_role=role)
+    patient = storage.create_patient(
+        scope,
+        first_name="Jane",
+        last_name="Doe",
+        date_of_birth="1980-01-01",
+        created_by_user_id=user_id,
+    )
+    referral = storage.create_referral(
+        scope,
+        patient_id=patient.id,
+        reason="Eval",
+        specialty_desc="Cardiology",
+        receiving_organization_name="Heart Clinic",
+        created_by_user_id=user_id,
+    )
+    if status != "draft":
+        path = {
+            "ready": ["ready"],
+            "sent": ["ready", "sent"],
+            "scheduled": ["ready", "sent", "scheduled"],
+            "awaiting_records": ["ready", "sent", "awaiting_records"],
+        }[status]
+        for s in path:
+            storage.set_referral_status(scope, referral.id, s)
+    return referral
+
+
 @pytest.fixture
 def solo_client(tmp_path: Path):
     storage = Storage(db_path=tmp_path / "test.db")
@@ -78,6 +119,32 @@ def solo_client(tmp_path: Path):
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_current_user] = lambda: _fake_user(user_id)
     yield TestClient(app), storage, user_id
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def org_client_factory(tmp_path: Path):
+    def make(role: str):
+        storage = Storage(db_path=tmp_path / f"{role}.db")
+        user_id = storage.create_user(f"{role}@example.com", "hashed_pw")
+        storage.record_phi_consent(
+            user_id=user_id,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+        org = storage.create_organization(name="Clinic", slug=f"clinic-{role}")
+        storage.create_membership(organization_id=org.id, user_id=user_id, role=role)
+        storage.set_active_org(user_id, org.id)
+        app.dependency_overrides[get_storage] = lambda: storage
+        app.dependency_overrides[get_current_user] = lambda: _fake_user(
+            user_id,
+            f"{role}@example.com",
+            active_org_id=org.id,
+        )
+        return TestClient(app), storage, user_id, org.id
+
+    yield make
     app.dependency_overrides.clear()
 
 
@@ -141,6 +208,30 @@ def test_create_response_consult_completed_from_scheduled_auto_transitions(solo_
     auto = [e for e in events if e.event_type == "status_changed" and e.to_value == "completed"]
     assert len(auto) == 1
     assert "auto" in (auto[0].note or "")
+
+
+def test_read_only_response_does_not_auto_transition(org_client_factory):
+    client, storage, user_id, org_id = org_client_factory("read_only")
+    referral = _seed_org_referral(storage, user_id, org_id, "read_only", status="scheduled")
+    resp = client.post(
+        f"/referrals/{referral.id}/response",
+        data={
+            "appointment_date": "2026-05-01",
+            "received_via": "fax",
+            "consult_completed": "on",
+            "recommendations_text": "Reviewed.",
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    scope = Scope(user_id=user_id, organization_id=org_id, membership_role="read_only")
+    fresh = storage.get_referral(scope, referral.id)
+    assert fresh is not None
+    assert fresh.status == "scheduled"
+    responses = storage.list_referral_responses(scope, referral.id)
+    assert len(responses) == 1
+    assert responses[0].consult_completed is True
 
 
 def test_create_response_consult_completed_out_of_machine_skips_transition(solo_client):

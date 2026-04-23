@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -16,11 +17,15 @@ from docstats.domain.referrals import (
     InvalidTransition,
     Referral,
     ReferralEvent,
+    TransitionRoleDenied,
     require_transition,
+    require_transition_for_role,
+    role_can_transition_status,
     transition_allowed,
+    transition_allowed_for_role,
 )
 from docstats.scope import Scope, ScopeRequired
-from docstats.storage import Storage
+from docstats.storage import Storage, _to_sqlite_utc_iso
 
 
 # --- Fixtures ---
@@ -96,6 +101,26 @@ def test_require_transition_raises_on_invalid() -> None:
 
 def test_require_transition_silent_on_valid() -> None:
     require_transition("draft", "ready")  # should not raise
+
+
+@pytest.mark.parametrize("role", ["staff", "clinician", "coordinator", "admin", "owner"])
+def test_transition_allowed_for_write_roles(role: str) -> None:
+    assert role_can_transition_status(role, is_org=True) is True
+    assert transition_allowed_for_role("draft", "ready", role, is_org=True) is True
+
+
+@pytest.mark.parametrize("role", ["read_only", None, "bogus"])
+def test_transition_rejected_for_read_only_and_unknown_org_roles(role: str | None) -> None:
+    assert role_can_transition_status(role, is_org=True) is False
+    assert transition_allowed_for_role("draft", "ready", role, is_org=True) is False
+    with pytest.raises(TransitionRoleDenied):
+        require_transition_for_role("draft", "ready", role, is_org=True)
+
+
+def test_transition_role_gate_preserves_solo_behavior() -> None:
+    assert role_can_transition_status(None, is_org=False) is True
+    assert transition_allowed_for_role("draft", "ready", None, is_org=False) is True
+    require_transition_for_role("draft", "ready", None, is_org=False)
 
 
 def test_transition_graph_is_connected_from_draft() -> None:
@@ -279,6 +304,29 @@ def test_list_referrals_excludes_deleted_by_default(
     storage.soft_delete_referral(scope_a, r.id)
     assert storage.list_referrals(scope_a) == []
     assert len(storage.list_referrals(scope_a, include_deleted=True)) == 1
+
+
+def test_count_referrals_filters_by_updated_before(
+    storage: Storage, scope_a: Scope, patient_a: int
+) -> None:
+    old = storage.create_referral(scope_a, patient_id=patient_a, status="awaiting_records")
+    fresh = storage.create_referral(scope_a, patient_id=patient_a, status="awaiting_auth")
+    other_status = storage.create_referral(scope_a, patient_id=patient_a, status="sent")
+    old_cutoff = datetime.now(timezone.utc) - timedelta(days=4)
+    storage._conn.execute(
+        "UPDATE referrals SET updated_at = ? WHERE id IN (?, ?)",
+        (_to_sqlite_utc_iso(old_cutoff), old.id, other_status.id),
+    )
+    storage._conn.commit()
+
+    count = storage.count_referrals(
+        scope_a,
+        statuses=("awaiting_records", "awaiting_auth"),
+        updated_before=datetime.now(timezone.utc) - timedelta(days=3),
+    )
+
+    assert count == 1
+    assert storage.get_referral(scope_a, fresh.id) is not None
 
 
 # --- update_referral ---

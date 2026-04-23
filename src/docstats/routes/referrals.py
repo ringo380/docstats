@@ -13,6 +13,7 @@ medications, allergies, attachments) are still a follow-up slice.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Path, Query, Request
@@ -26,9 +27,12 @@ from docstats.domain.referrals import (
     STATUS_VALUES,
     URGENCY_VALUES,
     InvalidTransition,
-    transition_allowed,
-    require_transition,
+    TransitionRoleDenied,
+    require_transition_for_role,
+    role_can_transition_status,
+    transition_allowed_for_role,
 )
+from docstats.domain.orgs import DEFAULT_STALE_THRESHOLD_DAYS
 from docstats.domain.rules import (
     detect_red_flags_in_text,
     resolve_specialty_rule,
@@ -50,6 +54,8 @@ from docstats.validators import validate_npi
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/referrals", tags=["referrals"])
+
+STALE_REFERRAL_STATUSES = ("awaiting_records", "awaiting_auth")
 
 
 def _ctx(
@@ -86,6 +92,14 @@ def _validate_optional_npi(value: str | None, field: str) -> str | None:
         return validate_npi(v)
     except Exception:
         raise HTTPException(status_code=422, detail=f"{field} must be 10 digits.")
+
+
+def _stale_threshold_days(storage: StorageBase, scope: Scope) -> int:
+    if scope.is_org and scope.organization_id is not None:
+        org = storage.get_organization(scope.organization_id)
+        if org is not None:
+            return org.stale_threshold_days
+    return DEFAULT_STALE_THRESHOLD_DAYS
 
 
 # --- Workspace list (Phase 2.B) ---
@@ -126,6 +140,13 @@ async def referrals_workspace(
         assigned_to_user_id=effective_assigned,
         limit=50,
     )
+    stale_threshold_days = _stale_threshold_days(storage, scope)
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(days=stale_threshold_days)
+    stale_referral_count = storage.count_referrals(
+        scope,
+        statuses=STALE_REFERRAL_STATUSES,
+        updated_before=stale_cutoff,
+    )
 
     patient_ids = {r.patient_id for r in referrals}
     patients_by_id = {
@@ -143,6 +164,8 @@ async def referrals_workspace(
             patients_by_id=patients_by_id,
             status_values=STATUS_VALUES,
             urgency_values=URGENCY_VALUES,
+            stale_referral_count=stale_referral_count,
+            stale_threshold_days=stale_threshold_days,
             filters={
                 "status": status_filter or "",
                 "urgency": urgency_filter or "",
@@ -356,13 +379,28 @@ async def referral_create(
 # --- Detail + inline edit (Phase 2.D) ---
 
 
-def _allowed_next_statuses(current: str) -> list[str]:
+def _allowed_next_statuses(current: str, scope: Scope) -> list[str]:
     """Return status values reachable from ``current`` via the state machine.
 
     Sorted so the UI is deterministic. ``STATUS_TRANSITIONS`` is a frozenset
     mapping so we convert before sorting.
     """
-    return sorted(STATUS_TRANSITIONS.get(current, frozenset()))
+    return sorted(
+        status
+        for status in STATUS_TRANSITIONS.get(current, frozenset())
+        if transition_allowed_for_role(
+            current,
+            status,
+            scope.membership_role,
+            is_org=scope.is_org,
+        )
+    )
+
+
+def _status_transition_locked_reason(scope: Scope) -> str | None:
+    if role_can_transition_status(scope.membership_role, is_org=scope.is_org):
+        return None
+    return "Your role can view referrals but cannot change status."
 
 
 def _format_actor(user_row: dict | None) -> str:
@@ -455,7 +493,8 @@ def _render_detail(
             urgency_values=URGENCY_VALUES,
             auth_status_values=AUTH_STATUS_VALUES,
             received_via_values=RECEIVED_VIA_VALUES,
-            allowed_next=_allowed_next_statuses(referral.status),
+            allowed_next=_allowed_next_statuses(referral.status, scope),
+            status_transition_locked_reason=_status_transition_locked_reason(scope),
             assignable_users=assignable,
             assigned_display=assigned_display,
             errors=errors,
@@ -653,7 +692,14 @@ async def referral_set_status(
     if new_status not in STATUS_VALUES:
         raise HTTPException(status_code=422, detail="Unknown status value.")
     try:
-        require_transition(existing.status, new_status)
+        require_transition_for_role(
+            existing.status,
+            new_status,
+            scope.membership_role,
+            is_org=scope.is_org,
+        )
+    except TransitionRoleDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except InvalidTransition as e:
         return _render_detail(request, current_user, storage, scope, referral_id, errors=[str(e)])
     old_status = existing.status
@@ -954,7 +1000,12 @@ def _maybe_auto_complete(
     if fresh is None:
         return None
     from_status = fresh.status
-    if not transition_allowed(from_status, "completed"):
+    if not transition_allowed_for_role(
+        from_status,
+        "completed",
+        scope.membership_role,
+        is_org=scope.is_org,
+    ):
         return None
     updated = storage.set_referral_status(scope, referral_id, "completed")
     if updated is None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -10,11 +11,17 @@ from fastapi.testclient import TestClient
 from docstats.auth import get_current_user
 from docstats.phi import CURRENT_PHI_CONSENT_VERSION
 from docstats.scope import Scope
-from docstats.storage import Storage, get_storage
+from docstats.storage import Storage, _to_sqlite_utc_iso, get_storage
 from docstats.web import app
 
 
-def _fake_user(user_id: int, email: str = "a@example.com", *, consent: bool = True):
+def _fake_user(
+    user_id: int,
+    email: str = "a@example.com",
+    *,
+    consent: bool = True,
+    active_org_id: int | None = None,
+):
     return {
         "id": user_id,
         "email": email,
@@ -31,7 +38,7 @@ def _fake_user(user_id: int, email: str = "a@example.com", *, consent: bool = Tr
         "phi_consent_version": CURRENT_PHI_CONSENT_VERSION if consent else None,
         "phi_consent_ip": None,
         "phi_consent_user_agent": None,
-        "active_org_id": None,
+        "active_org_id": active_org_id,
     }
 
 
@@ -56,6 +63,36 @@ def _seed_referral(storage: Storage, user_id: int, **overrides):
     )
 
 
+def _seed_org_referral(storage: Storage, user_id: int, org_id: int, role: str, **overrides):
+    scope = Scope(user_id=user_id, organization_id=org_id, membership_role=role)
+    patient = storage.create_patient(
+        scope,
+        first_name=overrides.pop("first_name", "Jane"),
+        last_name=overrides.pop("last_name", "Doe"),
+        date_of_birth="1980-05-15",
+        created_by_user_id=user_id,
+    )
+    return storage.create_referral(
+        scope,
+        patient_id=patient.id,
+        reason=overrides.pop("reason", "Chest pain eval"),
+        urgency=overrides.pop("urgency", "routine"),
+        specialty_desc=overrides.pop("specialty_desc", "Cardiology"),
+        receiving_organization_name=overrides.pop("receiving_organization_name", "Heart Clinic"),
+        created_by_user_id=user_id,
+        **overrides,
+    )
+
+
+def _age_referral(storage: Storage, referral_id: int, *, days: int) -> None:
+    old_updated = datetime.now(timezone.utc) - timedelta(days=days)
+    storage._conn.execute(
+        "UPDATE referrals SET updated_at = ? WHERE id = ?",
+        (_to_sqlite_utc_iso(old_updated), referral_id),
+    )
+    storage._conn.commit()
+
+
 @pytest.fixture
 def solo_client(tmp_path: Path):
     storage = Storage(db_path=tmp_path / "test.db")
@@ -69,6 +106,32 @@ def solo_client(tmp_path: Path):
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_current_user] = lambda: _fake_user(user_id)
     yield TestClient(app), storage, user_id
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def org_client_factory(tmp_path: Path):
+    def make(role: str):
+        storage = Storage(db_path=tmp_path / f"{role}.db")
+        user_id = storage.create_user(f"{role}@example.com", "hashed_pw")
+        storage.record_phi_consent(
+            user_id=user_id,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+        org = storage.create_organization(name="Clinic", slug=f"clinic-{role}")
+        storage.create_membership(organization_id=org.id, user_id=user_id, role=role)
+        storage.set_active_org(user_id, org.id)
+        app.dependency_overrides[get_storage] = lambda: storage
+        app.dependency_overrides[get_current_user] = lambda: _fake_user(
+            user_id,
+            f"{role}@example.com",
+            active_org_id=org.id,
+        )
+        return TestClient(app), storage, user_id, org.id
+
+    yield make
     app.dependency_overrides.clear()
 
 
@@ -108,6 +171,36 @@ def test_workspace_renders_referral(solo_client):
     assert "Jane Doe" in resp.text
     assert "Cardiology" in resp.text
     assert "Heart Clinic" in resp.text
+
+
+def test_workspace_shows_stale_waiting_banner(solo_client):
+    client, storage, user_id = solo_client
+    stale = _seed_referral(storage, user_id, status="awaiting_records")
+    fresh = _seed_referral(storage, user_id, status="awaiting_auth")
+    wrong_status = _seed_referral(storage, user_id, status="sent")
+    _age_referral(storage, stale.id, days=4)
+    _age_referral(storage, wrong_status.id, days=4)
+
+    resp = client.get("/referrals")
+
+    assert resp.status_code == 200
+    assert "1 referral" in resp.text
+    assert "waiting on records or authorization" in resp.text
+    assert "more than 3" in resp.text
+    assert storage.get_referral(Scope(user_id=user_id), fresh.id) is not None
+
+
+def test_workspace_hides_stale_banner_when_no_waiting_rows(solo_client):
+    client, storage, user_id = solo_client
+    fresh = _seed_referral(storage, user_id, status="awaiting_auth")
+    old_sent = _seed_referral(storage, user_id, status="sent")
+    _age_referral(storage, old_sent.id, days=4)
+
+    resp = client.get("/referrals")
+
+    assert resp.status_code == 200
+    assert "waiting on records or authorization" not in resp.text
+    assert storage.get_referral(Scope(user_id=user_id), fresh.id) is not None
 
 
 def test_filter_by_status(solo_client):
@@ -411,6 +504,42 @@ def test_status_transition_allowed(solo_client):
         e.event_type == "status_changed" and e.from_value == "draft" and e.to_value == "ready"
         for e in events
     )
+
+
+def test_org_staff_status_transition_allowed(org_client_factory):
+    client, storage, user_id, org_id = org_client_factory("staff")
+    r = _seed_org_referral(storage, user_id, org_id, "staff")
+    scope = Scope(user_id=user_id, organization_id=org_id, membership_role="staff")
+
+    resp = client.post(
+        f"/referrals/{r.id}/status",
+        data={"new_status": "ready"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    updated = storage.get_referral(scope, r.id)
+    assert updated is not None
+    assert updated.status == "ready"
+
+
+def test_org_read_only_status_transition_forbidden(org_client_factory):
+    client, storage, user_id, org_id = org_client_factory("read_only")
+    r = _seed_org_referral(storage, user_id, org_id, "read_only")
+    scope = Scope(user_id=user_id, organization_id=org_id, membership_role="read_only")
+
+    resp = client.post(
+        f"/referrals/{r.id}/status",
+        data={"new_status": "ready"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 403
+    updated = storage.get_referral(scope, r.id)
+    assert updated is not None
+    assert updated.status == "draft"
+    events = storage.list_referral_events(scope, r.id)
+    assert not any(e.event_type == "status_changed" for e in events)
 
 
 def test_status_transition_disallowed(solo_client):

@@ -25,6 +25,10 @@ ROLES: Final[tuple[str, ...]] = (
     "owner",
 )
 
+DEFAULT_STALE_THRESHOLD_DAYS: Final[int] = 3
+MIN_STALE_THRESHOLD_DAYS: Final[int] = 1
+MAX_STALE_THRESHOLD_DAYS: Final[int] = 365
+
 
 def has_role_at_least(role: str | None, required: str) -> bool:
     """Return True if ``role`` is at or above ``required`` in the ladder.
@@ -54,6 +58,7 @@ class Organization(BaseModel):
     phone: str | None = None
     fax: str | None = None
     terms_bundle_version: str | None = None
+    stale_threshold_days: int = DEFAULT_STALE_THRESHOLD_DAYS
     created_at: datetime
     deleted_at: datetime | None = None
 

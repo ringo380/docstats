@@ -140,6 +140,7 @@ class StorageBase(ABC):
         phone: str | None = None,
         fax: str | None = None,
         terms_bundle_version: str | None = None,
+        stale_threshold_days: int = 3,
     ) -> "Organization": ...
 
     @abstractmethod
@@ -165,6 +166,7 @@ class StorageBase(ABC):
         address_zip: str | None = None,
         phone: str | None = None,
         fax: str | None = None,
+        stale_threshold_days: int | None = None,
         overwrite: bool = False,
     ) -> "Organization | None":
         """Update an org's mutable columns.
@@ -561,6 +563,7 @@ class StorageBase(ABC):
         *,
         assigned_to_user_id: int | None = None,
         statuses: tuple[str, ...] | None = None,
+        updated_before: datetime | None = None,
         include_deleted: bool = False,
     ) -> int: ...
 
