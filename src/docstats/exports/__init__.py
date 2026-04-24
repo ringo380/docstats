@@ -20,6 +20,7 @@ from __future__ import annotations
 from docstats.exports.csv_export import CSV_FIELDNAMES, referral_to_csv_row
 from docstats.exports.fhir import build_patient_resource, build_referral_bundle, operation_outcome
 from docstats.exports.pdf import (
+    ARTIFACT_ATTACHMENT_PDFS,
     ARTIFACT_ATTACHMENTS_CHECKLIST,
     ARTIFACT_FAX_COVER,
     ARTIFACT_MISSING_INFO,
@@ -27,6 +28,7 @@ from docstats.exports.pdf import (
     ARTIFACT_PATIENT_SUMMARY,
     ARTIFACT_REFERRAL_SUMMARY,
     ARTIFACT_SCHEDULING_SUMMARY,
+    fetch_attachment_pdfs,
     render_attachments_checklist,
     render_fax_cover,
     render_missing_info,
@@ -37,6 +39,7 @@ from docstats.exports.pdf import (
 )
 
 __all__ = [
+    "ARTIFACT_ATTACHMENT_PDFS",
     "ARTIFACT_ATTACHMENTS_CHECKLIST",
     "ARTIFACT_FAX_COVER",
     "ARTIFACT_MISSING_INFO",
@@ -44,6 +47,7 @@ __all__ = [
     "ARTIFACT_PATIENT_SUMMARY",
     "ARTIFACT_REFERRAL_SUMMARY",
     "ARTIFACT_SCHEDULING_SUMMARY",
+    "fetch_attachment_pdfs",
     "render_attachments_checklist",
     "render_fax_cover",
     "render_missing_info",

@@ -87,18 +87,26 @@ async def _lifespan(_app: FastAPI):
     dispatcher_stop = asyncio.Event()
     if os.environ.get("DOCSTATS_SKIP_DELIVERY_DISPATCHER") != "1":
         from docstats.delivery.dispatcher import run as _dispatcher_run
+        from docstats.delivery.packet_builder import build_delivery_packet
+        from docstats.storage_files.factory import get_file_backend as _get_file_backend
 
-        async def _render_packet_wire(_delivery):  # type: ignore[no-untyped-def]
-            # Dispatcher-side packet render is stubbed in 9.A — no
-            # channels are live, so the dispatcher never reaches a
-            # successful ``Channel.send()`` call where render output
-            # matters. 9.B wires this to ``exports.render_packet``.
-            return b""
+        _dispatcher_storage = get_storage()
+        _dispatcher_file_backend = _get_file_backend()
+
+        async def _render_packet_wire(delivery):  # type: ignore[no-untyped-def]
+            # Phase 10.D — real packet render.  build_delivery_packet
+            # consults delivery.packet_artifact["include"], fetches any
+            # attachment PDFs via the file backend, and concatenates via
+            # pypdf.  Missing referral/patient rows raise ValueError
+            # which bubbles as a fatal DeliveryError in _process_one.
+            return await build_delivery_packet(
+                _dispatcher_storage, _dispatcher_file_backend, delivery
+            )
 
         try:
             dispatcher_task = asyncio.create_task(
                 _dispatcher_run(
-                    get_storage(),
+                    _dispatcher_storage,
                     render_packet=_render_packet_wire,
                     stop_event=dispatcher_stop,
                 ),

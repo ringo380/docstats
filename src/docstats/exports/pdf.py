@@ -16,11 +16,14 @@ checklist, and missing-info checklist (rules-engine driven).
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from docstats.domain.patients import Patient
@@ -54,6 +57,13 @@ ARTIFACT_ATTACHMENTS_CHECKLIST = "attachments"
 ARTIFACT_MISSING_INFO = "missing_info"
 ARTIFACT_FAX_COVER = "fax_cover"
 ARTIFACT_PACKET = "packet"
+# Phase 10.D — splices real PDF attachment bytes into a packet.  This is a
+# "pseudo-artifact": it can only appear inside ``?include=`` for a packet
+# render; it's not renderable on its own via ``?artifact=``.  Non-PDF
+# attachments (images, DOCX) are skipped at the render layer because
+# pypdf can't concatenate non-PDFs without conversion — they stay in
+# the ``attachments`` checklist.
+ARTIFACT_ATTACHMENT_PDFS = "attachment_pdfs"
 
 
 def _fmt_phone(raw: str | None) -> str | None:
@@ -321,6 +331,57 @@ def _pick_fax(referral: "Referral", side: str) -> str | None:
 
 
 # ---------- Packet bundle (5.C) ----------
+
+
+async def fetch_attachment_pdfs(
+    *,
+    storage: Any,
+    scope: Any,
+    referral: "Referral",
+    file_backend: Any,
+) -> list[tuple[int, bytes]]:
+    """Phase 10.D — pull real PDF attachment bytes for packet embedding.
+
+    Returns ``[(attachment_id, pdf_bytes), ...]`` for every attachment on
+    ``referral`` whose ``storage_ref`` is set AND whose file extension
+    indicates a PDF (others are skipped — pypdf can't concatenate non-PDF
+    formats without conversion, so the checklist entry remains their
+    only representation in the packet).
+
+    The storage + file_backend dependencies are passed in positionally
+    rather than imported at module scope so this module stays
+    framework-free (the existing contract — see ``exports.__init__``).
+    Callers: the packet export route + the delivery dispatcher's
+    ``render_delivery_packet``.  Failures on individual attachments are
+    logged and skipped so one missing blob doesn't fail the whole packet.
+    """
+    out: list[tuple[int, bytes]] = []
+    attachments = storage.list_referral_attachments(scope, referral.id)
+    for a in attachments:
+        ref = a.storage_ref
+        if not ref:
+            continue
+        # Only PDFs survive the concat — the path suffix is derived from
+        # the MIME type at upload time so this is authoritative without
+        # a second MIME sniff.
+        if not ref.lower().endswith(".pdf"):
+            logger.debug(
+                "skipping non-PDF attachment %s (storage_ref=%s) in packet embed",
+                a.id,
+                ref,
+            )
+            continue
+        try:
+            data = await file_backend.get_bytes(ref)
+        except Exception:
+            logger.warning(
+                "attachment %s (%s) unavailable during packet render",
+                a.id,
+                ref,
+            )
+            continue
+        out.append((a.id, data))
+    return out
 
 
 def render_packet(
