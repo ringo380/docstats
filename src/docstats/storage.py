@@ -3091,6 +3091,21 @@ class Storage(StorageBase):
         ).fetchall()
         return [_row_to_referral_attachment(r) for r in rows]
 
+    def get_referral_attachment(
+        self, scope: Scope, attachment_id: int
+    ) -> ReferralAttachment | None:
+        row = self._conn.execute(
+            "SELECT * FROM referral_attachments WHERE id = ?",
+            (attachment_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        # Gate through the parent referral — no direct scope column on
+        # attachments (scope flows transitively).
+        if self.get_referral(scope, row["referral_id"]) is None:
+            return None
+        return _row_to_referral_attachment(row)
+
     def update_referral_attachment(
         self,
         scope: Scope,

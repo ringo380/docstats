@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from docstats.domain.audit import record as audit_record
 from docstats.domain.referrals import (
+    ATTACHMENT_KIND_VALUES,
     AUTH_STATUS_VALUES,
     RECEIVED_VIA_VALUES,
     STATUS_TRANSITIONS,
@@ -466,6 +467,14 @@ async def _render_detail(
 
     deliveries = storage.list_deliveries_for_referral(scope, referral_id)
     delivery_enabled_channels = _enabled_channels()
+
+    # Phase 10.A: attachments list + upload feature flag.
+    import os as _os
+
+    attachments = storage.list_referral_attachments(scope, referral_id)
+    attachment_uploads_enabled = _os.environ.get(
+        "ATTACHMENT_UPLOAD_ENABLED", ""
+    ).strip().lower() in ("1", "true", "yes")
     # Assignable users for the Assign dropdown (Phase 7.C). Solo scope → just
     # self; org scope → every live member. Include the currently-assigned
     # user even if they've since left the org so the dropdown still shows
@@ -513,6 +522,9 @@ async def _render_detail(
             direct_endpoints=direct_endpoints,
             deliveries=deliveries,
             delivery_enabled_channels=delivery_enabled_channels,
+            attachments=attachments,
+            attachment_uploads_enabled=attachment_uploads_enabled,
+            attachment_kinds=ATTACHMENT_KIND_VALUES,
             errors=errors,
             response_errors=response_errors,
             response_values=response_values or {},
