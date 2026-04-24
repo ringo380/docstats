@@ -1428,3 +1428,68 @@ dl.kv dd { color: var(--text); margin: 0; }
   border-radius: 6px;
   padding: 10px 12px;
 }
+
+/* ── Eligibility checks (Phase 11.B) ── */
+.eligibility-section {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+.eligibility-section h2 { font-size: 1.1rem; margin-bottom: 16px; color: var(--text); }
+
+.eligibility-badge {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1px solid transparent;
+  margin-bottom: 10px;
+}
+.elig-active   { background: var(--green-bg); color: var(--green); border-color: var(--green-dark); }
+.elig-inactive { background: var(--red-bg);   color: var(--red);   border-color: #742a2a; }
+.elig-pending  { background: var(--blue-bg);  color: var(--blue);  border-color: var(--blue-dark); }
+.elig-error    { background: var(--orange-bg);color: var(--orange);border-color: #744210; }
+.elig-unavailable { background: var(--bg-card); color: var(--text-muted); border-color: var(--border); }
+
+.eligibility-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+}
+.eligibility-table th {
+  text-align: left;
+  width: 180px;
+  color: var(--text-muted);
+  padding: 4px 8px 4px 0;
+  font-weight: 400;
+  vertical-align: top;
+}
+.eligibility-table td { padding: 4px 0; color: var(--text); }
+
+.elig-req-yes { color: var(--orange); font-weight: 600; }
+.elig-req-no  { color: var(--green);  font-weight: 600; }
+
+.eligibility-error-msg {
+  font-size: 0.82rem;
+  color: var(--orange);
+  margin-bottom: 8px;
+}
+
+.eligibility-meta {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.elig-source-badge {
+  font-size: 0.7rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  color: var(--text-dim);
+}

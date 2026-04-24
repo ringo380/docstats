@@ -1,0 +1,90 @@
+{# Eligibility check result partial — rendered by both POST (trigger) and GET (latest). #}
+{# Swap target: div#eligibility-result on patient_detail.html                          #}
+
+{% if error %}
+  <div class="alert alert-error" style="margin: 0;">{{ error }}</div>
+{% elif check is none %}
+  <p class="text-muted" style="margin: 0; font-size: 0.85rem;">No eligibility check on file.</p>
+{% else %}
+  {% set r = check.result %}
+
+  {# Status badge #}
+  {% if check.status == 'complete' and r %}
+    {% if r.coverage_active %}
+      <div class="eligibility-badge elig-active">✓ Coverage Active</div>
+    {% else %}
+      <div class="eligibility-badge elig-inactive">✗ Coverage Inactive</div>
+    {% endif %}
+  {% elif check.status == 'pending' %}
+    <div class="eligibility-badge elig-pending">⏳ Checking…</div>
+  {% elif check.status == 'error' %}
+    <div class="eligibility-badge elig-error">⚠ Check Failed</div>
+  {% else %}
+    <div class="eligibility-badge elig-unavailable">— Unavailable</div>
+  {% endif %}
+
+  {# Error detail #}
+  {% if check.status == 'error' and check.error_message %}
+    <p class="eligibility-error-msg">{{ check.error_message }}</p>
+  {% endif %}
+
+  {# Parsed result details #}
+  {% if check.status == 'complete' and r %}
+    <table class="eligibility-table">
+      {% if r.plan_name %}
+      <tr><th>Plan</th><td>{{ r.plan_name }}{% if r.group_number %} (Group {{ r.group_number }}){% endif %}</td></tr>
+      {% endif %}
+      {% if r.member_id %}
+      <tr><th>Member ID</th><td>{{ r.member_id }}</td></tr>
+      {% endif %}
+      {% if r.plan_begin_date or r.plan_end_date %}
+      <tr><th>Coverage dates</th><td>{{ r.plan_begin_date or '?' }} – {{ r.plan_end_date or 'ongoing' }}</td></tr>
+      {% endif %}
+      {% if r.copay_amount is not none %}
+      <tr><th>Copay</th><td>${{ "%.2f"|format(r.copay_amount) }}</td></tr>
+      {% endif %}
+      {% if r.deductible_amount is not none %}
+      <tr><th>Deductible</th>
+          <td>${{ "%.2f"|format(r.deductible_amount) }}
+          {% if r.deductible_remaining is not none %}
+            ({{ "$%.2f"|format(r.deductible_remaining) }} remaining)
+          {% endif %}
+          </td>
+      </tr>
+      {% endif %}
+      {% if r.out_of_pocket_max is not none %}
+      <tr><th>OOP max</th>
+          <td>${{ "%.2f"|format(r.out_of_pocket_max) }}
+          {% if r.out_of_pocket_remaining is not none %}
+            ({{ "$%.2f"|format(r.out_of_pocket_remaining) }} remaining)
+          {% endif %}
+          </td>
+      </tr>
+      {% endif %}
+      {% if r.referral_required is not none %}
+      <tr><th>Referral required</th>
+          <td>{% if r.referral_required %}<span class="elig-req-yes">Yes</span>{% else %}<span class="elig-req-no">No</span>{% endif %}</td>
+      </tr>
+      {% endif %}
+      {% if r.prior_auth_required is not none %}
+      <tr><th>Prior auth required</th>
+          <td>{% if r.prior_auth_required %}<span class="elig-req-yes">Yes</span>{% else %}<span class="elig-req-no">No</span>{% endif %}
+          {% if r.prior_auth_service_types %}
+            <span class="text-muted"> ({{ r.prior_auth_service_types | join(', ') }})</span>
+          {% endif %}
+          </td>
+      </tr>
+      {% endif %}
+    </table>
+  {% endif %}
+
+  {# Timestamp + source badge #}
+  <div class="eligibility-meta">
+    {% if check.checked_at %}
+      Checked {{ check.checked_at.strftime('%b %-d, %Y %-I:%M %p') }} UTC
+    {% elif check.created_at %}
+      Initiated {{ check.created_at.strftime('%b %-d, %Y %-I:%M %p') }} UTC
+    {% endif %}
+    <span class="elig-source-badge">Live · Availity</span>
+  </div>
+{% endif %}

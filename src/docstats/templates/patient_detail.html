@@ -123,4 +123,60 @@
     <button type="submit" class="btn btn-primary">Save changes</button>
   </div>
 </form>
+
+{# --- Eligibility Check section --- #}
+<section class="eligibility-section" id="eligibility-section">
+  <h2>Insurance Eligibility</h2>
+
+  <form id="eligibility-form"
+        hx-post="/patients/{{ patient.id }}/eligibility"
+        hx-target="#eligibility-result"
+        hx-swap="innerHTML"
+        hx-indicator="#eligibility-spinner">
+    <div class="grid-2" style="margin-bottom: 12px;">
+      <label>Payer ID *
+        <input type="text" name="payer_id" required maxlength="64"
+               placeholder="e.g. BCBSM"
+               value="{{ (latest_check.availity_payer_id if latest_check else '') }}">
+      </label>
+      <label>Payer name
+        <input type="text" name="payer_name" maxlength="200"
+               placeholder="Blue Cross Blue Shield of Michigan"
+               value="{{ (latest_check.payer_name if latest_check and latest_check.payer_name else '') }}">
+      </label>
+      <label>Member ID *
+        <input type="text" name="member_id" required maxlength="64"
+               placeholder="Patient's insurance member ID">
+      </label>
+      <label>Service type
+        <select name="service_type">
+          <option value="30" {% if not latest_check or latest_check.service_type == '30' %}selected{% endif %}>30 — Health Benefit Plan Coverage</option>
+          <option value="1"  {% if latest_check and latest_check.service_type == '1' %}selected{% endif %}>1 — Medical Care</option>
+          <option value="2"  {% if latest_check and latest_check.service_type == '2' %}selected{% endif %}>2 — Surgical</option>
+          <option value="33" {% if latest_check and latest_check.service_type == '33' %}selected{% endif %}>33 — Chiropractic</option>
+          <option value="35" {% if latest_check and latest_check.service_type == '35' %}selected{% endif %}>35 — Dental Care</option>
+          <option value="47" {% if latest_check and latest_check.service_type == '47' %}selected{% endif %}>47 — Hospital</option>
+          <option value="48" {% if latest_check and latest_check.service_type == '48' %}selected{% endif %}>48 — Hospital — Inpatient</option>
+          <option value="50" {% if latest_check and latest_check.service_type == '50' %}selected{% endif %}>50 — Hospital — Outpatient</option>
+          <option value="98" {% if latest_check and latest_check.service_type == '98' %}selected{% endif %}>98 — Professional (Physician)</option>
+          <option value="A6" {% if latest_check and latest_check.service_type == 'A6' %}selected{% endif %}>A6 — Vision</option>
+          <option value="MH" {% if latest_check and latest_check.service_type == 'MH' %}selected{% endif %}>MH — Mental Health</option>
+          <option value="UC" {% if latest_check and latest_check.service_type == 'UC' %}selected{% endif %}>UC — Urgent Care</option>
+        </select>
+      </label>
+    </div>
+    <div class="action-bar" style="justify-content: flex-start; gap: 10px;">
+      <button type="submit" class="btn btn-primary">Check Eligibility</button>
+      <span id="eligibility-spinner" class="htmx-indicator text-muted" style="font-size: 0.85rem;">Checking…</span>
+    </div>
+  </form>
+
+  <div id="eligibility-result" style="margin-top: 16px;">
+    {% if latest_check %}
+      {% include "_eligibility_result.html" %}
+    {% else %}
+      <p class="text-muted" style="font-size: 0.85rem;">No eligibility check on file.</p>
+    {% endif %}
+  </div>
+</section>
 {% endblock %}
