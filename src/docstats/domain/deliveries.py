@@ -108,6 +108,22 @@ class DeliveryAttempt(BaseModel):
     vendor_response_excerpt: str | None = None  # truncated to 2000 chars
 
 
+class DeliveryQueueStats(BaseModel):
+    """Queue-depth snapshot for the admin health endpoint — Phase 9.E.
+
+    Counts are always scoped.  ``oldest_queued_age_seconds`` is None when
+    no rows are in ``queued`` status.
+    """
+
+    queued: int = 0
+    sending: int = 0
+    sent: int = 0
+    delivered: int = 0
+    failed: int = 0
+    cancelled: int = 0
+    oldest_queued_age_seconds: int | None = None
+
+
 # ---- Column caps (enforced at the storage layer) ----
 
 ERROR_MESSAGE_MAX_LENGTH: Final[int] = 500

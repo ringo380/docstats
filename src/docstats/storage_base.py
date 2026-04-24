@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from docstats.domain.invitations import Invitation
     from docstats.domain.orgs import Membership, Organization
     from docstats.domain.patients import Patient
-    from docstats.domain.deliveries import Delivery, DeliveryAttempt
+    from docstats.domain.deliveries import Delivery, DeliveryAttempt, DeliveryQueueStats
     from docstats.domain.share_tokens import ShareToken
     from docstats.domain.imports import CsvImport, CsvImportRow
     from docstats.domain.reference import InsurancePlan, PayerRule, SpecialtyRule
@@ -1306,6 +1306,38 @@ class StorageBase(ABC):
     def list_delivery_attempts(self, scope: "Scope", delivery_id: int) -> list["DeliveryAttempt"]:
         """List all attempts for a delivery, oldest first. Scope-gated
         via the parent delivery → referral chain."""
+
+    @abstractmethod
+    def list_deliveries_for_admin(
+        self,
+        *,
+        scope_organization_id: int | None = None,
+        scope_user_id: int | None = None,
+        channel: str | None = None,
+        status: str | None = None,
+        referral_id: int | None = None,
+        since: "datetime | None" = None,
+        until: "datetime | None" = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list["Delivery"]:
+        """Admin-facing list of deliveries.  Returns rows newest-first.
+
+        Must be called with ``scope_organization_id`` set for org admins
+        (solo mode uses ``scope_user_id``).  ``since``/``until`` filter on
+        ``created_at`` (inclusive lower, exclusive upper) mirroring
+        ``list_audit_events``.  Empty filters mean "no filter on that column".
+        """
+
+    @abstractmethod
+    def get_delivery_queue_stats(
+        self,
+        *,
+        scope_organization_id: int | None = None,
+        scope_user_id: int | None = None,
+    ) -> "DeliveryQueueStats":
+        """Return a snapshot of the live delivery queue — counts by status +
+        oldest queued age.  Used by the health endpoint."""
 
     # --- Inbound webhook inbox (Phase 8.C, dead-lettered) ---
 

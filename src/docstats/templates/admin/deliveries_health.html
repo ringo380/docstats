@@ -1,0 +1,90 @@
+{% extends "admin/_admin_layout.html" %}
+
+{% block admin_content %}
+<div class="saved-header">
+  <div>
+    <h1>Delivery queue health</h1>
+    <div class="sub">Background worker + queue snapshot.</div>
+  </div>
+  <div>
+    <a href="/admin/deliveries" class="btn btn-secondary btn-sm">← All deliveries</a>
+    <a href="/admin/deliveries/health.json" class="btn btn-secondary btn-sm">JSON</a>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3>Queue depth (this organization)</h3>
+  <dl class="admin-stat-grid">
+    <div><dt>Queued</dt><dd>{{ queue_stats.queued }}</dd></div>
+    <div><dt>Sending</dt><dd>{{ queue_stats.sending }}</dd></div>
+    <div><dt>Sent</dt><dd>{{ queue_stats.sent }}</dd></div>
+    <div><dt>Delivered</dt><dd>{{ queue_stats.delivered }}</dd></div>
+    <div><dt>Failed</dt><dd>{{ queue_stats.failed }}</dd></div>
+    <div><dt>Cancelled</dt><dd>{{ queue_stats.cancelled }}</dd></div>
+    <div>
+      <dt>Oldest queued age</dt>
+      <dd class="muted">
+        {% if queue_stats.oldest_queued_age_seconds is not none %}
+          {{ queue_stats.oldest_queued_age_seconds }}s
+        {% else %}
+          —
+        {% endif %}
+      </dd>
+    </div>
+  </dl>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3>Dispatcher (this worker)</h3>
+  <p class="sub muted">
+    On multi-worker deploys this reflects only the worker that served the request.
+    Queue counts above are DB-backed and authoritative across all workers.
+  </p>
+  <dl class="admin-stat-grid">
+    <div><dt>Running</dt><dd>{{ 'yes' if sweep_stats.running else 'no' }}</dd></div>
+    <div><dt>Interval</dt><dd>{{ sweep_stats.interval_seconds }}s</dd></div>
+    <div><dt>Total iterations</dt><dd>{{ sweep_stats.total_iterations }}</dd></div>
+    <div>
+      <dt>Last sweep</dt>
+      <dd class="muted">
+        {% if sweep_stats.last_sweep_at %}
+          {{ sweep_stats.last_sweep_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}
+        {% else %}
+          —
+        {% endif %}
+      </dd>
+    </div>
+    <div>
+      <dt>Last sweep duration</dt>
+      <dd class="muted">
+        {% if sweep_stats.last_sweep_duration_seconds is not none %}
+          {{ '%.3f' | format(sweep_stats.last_sweep_duration_seconds) }}s
+        {% else %}
+          —
+        {% endif %}
+      </dd>
+    </div>
+    <div><dt>Last sweep processed</dt><dd>{{ sweep_stats.last_sweep_processed }}</dd></div>
+    <div>
+      <dt>Started at</dt>
+      <dd class="muted">
+        {% if sweep_stats.started_at %}
+          {{ sweep_stats.started_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}
+        {% else %}
+          —
+        {% endif %}
+      </dd>
+    </div>
+  </dl>
+
+  {% if sweep_stats.last_error %}
+    <div class="alert-card" style="margin-top:12px;">
+      <strong>Last error:</strong>
+      {% if sweep_stats.last_error_at %}
+        <span class="muted">({{ sweep_stats.last_error_at.strftime('%Y-%m-%d %H:%M:%S UTC') }})</span>
+      {% endif %}
+      <div><code>{{ sweep_stats.last_error }}</code></div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

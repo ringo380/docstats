@@ -65,7 +65,7 @@ from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
 from docstats.validators import IP_MAX_LENGTH, USER_AGENT_MAX_LENGTH
 
 if TYPE_CHECKING:
-    from docstats.domain.deliveries import Delivery, DeliveryAttempt
+    from docstats.domain.deliveries import Delivery, DeliveryAttempt, DeliveryQueueStats
     from docstats.pg_storage import PostgresStorage
 
 logger = logging.getLogger(__name__)
@@ -4237,6 +4237,99 @@ class Storage(StorageBase):
                 )
             )
         return out
+
+    def list_deliveries_for_admin(
+        self,
+        *,
+        scope_organization_id: int | None = None,
+        scope_user_id: int | None = None,
+        channel: str | None = None,
+        status: str | None = None,
+        referral_id: int | None = None,
+        since: "datetime | None" = None,
+        until: "datetime | None" = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list["Delivery"]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scope_organization_id is not None:
+            clauses.append("scope_organization_id = ? AND scope_user_id IS NULL")
+            params.append(scope_organization_id)
+        elif scope_user_id is not None:
+            clauses.append("scope_user_id = ? AND scope_organization_id IS NULL")
+            params.append(scope_user_id)
+        if channel is not None:
+            clauses.append("channel = ?")
+            params.append(channel)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if referral_id is not None:
+            clauses.append("referral_id = ?")
+            params.append(referral_id)
+        if since is not None:
+            clauses.append("created_at >= ?")
+            params.append(_to_sqlite_utc_iso(since))
+        if until is not None:
+            clauses.append("created_at < ?")
+            params.append(_to_sqlite_utc_iso(until))
+        where = " AND ".join(clauses) if clauses else "1 = 1"
+        sql = (
+            f"SELECT * FROM deliveries WHERE {where} "
+            "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_delivery(r) for r in rows]
+
+    def get_delivery_queue_stats(
+        self,
+        *,
+        scope_organization_id: int | None = None,
+        scope_user_id: int | None = None,
+    ) -> "DeliveryQueueStats":
+        from docstats.domain.deliveries import DELIVERY_STATUS_VALUES, DeliveryQueueStats
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scope_organization_id is not None:
+            clauses.append("scope_organization_id = ? AND scope_user_id IS NULL")
+            params.append(scope_organization_id)
+        elif scope_user_id is not None:
+            clauses.append("scope_user_id = ? AND scope_organization_id IS NULL")
+            params.append(scope_user_id)
+        where = " AND ".join(clauses) if clauses else "1 = 1"
+
+        counts: dict[str, int] = {s: 0 for s in DELIVERY_STATUS_VALUES}
+        rows = self._conn.execute(
+            f"SELECT status, COUNT(*) AS n FROM deliveries WHERE {where} GROUP BY status",
+            params,
+        ).fetchall()
+        for r in rows:
+            if r["status"] in counts:
+                counts[r["status"]] = int(r["n"])
+
+        # Oldest queued age — None when nothing is queued.
+        row = self._conn.execute(
+            f"""SELECT CAST(
+                    (julianday('now') - julianday(MIN(created_at))) * 86400 AS INTEGER
+                ) AS age_seconds
+                FROM deliveries
+                WHERE status = 'queued' AND {where}""",
+            params,
+        ).fetchone()
+        oldest_age = int(row["age_seconds"]) if row and row["age_seconds"] is not None else None
+
+        return DeliveryQueueStats(
+            queued=counts["queued"],
+            sending=counts["sending"],
+            sent=counts["sent"],
+            delivered=counts["delivered"],
+            failed=counts["failed"],
+            cancelled=counts["cancelled"],
+            oldest_queued_age_seconds=oldest_age,
+        )
 
     # --- Share tokens (Phase 9.B) ---
 

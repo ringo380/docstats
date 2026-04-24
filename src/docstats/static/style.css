@@ -1415,3 +1415,16 @@ dl.kv dd { color: var(--text); margin: 0; }
   color: var(--text-muted);
   line-height: 1.5;
 }
+
+/* ── Admin deliveries (Phase 9.E) ── */
+.status-queued     { background: var(--bg-card);  color: var(--text-muted); }
+.status-sending    { background: var(--blue-bg);  color: var(--blue);       border-color: var(--blue-dark); }
+.status-delivered  { background: var(--green-bg); color: var(--green);      border-color: var(--green-dark); }
+.status-failed     { background: var(--red-bg);   color: var(--red);        border-color: #742a2a; }
+.alert-card {
+  border: 1px solid #742a2a;
+  background: var(--red-bg);
+  color: var(--red);
+  border-radius: 6px;
+  padding: 10px 12px;
+}

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from docstats.domain.audit import AuditEvent
-from docstats.domain.deliveries import Delivery, DeliveryAttempt
+from docstats.domain.deliveries import Delivery, DeliveryAttempt, DeliveryQueueStats
 from docstats.domain.share_tokens import ShareToken
 from docstats.domain.imports import (
     IMPORT_ROW_STATUS_VALUES,
@@ -3376,6 +3376,91 @@ class PostgresStorage(StorageBase):
                 )
             )
         return out
+
+    def list_deliveries_for_admin(
+        self,
+        *,
+        scope_organization_id: int | None = None,
+        scope_user_id: int | None = None,
+        channel: str | None = None,
+        status: str | None = None,
+        referral_id: int | None = None,
+        since: "datetime | None" = None,
+        until: "datetime | None" = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list["Delivery"]:
+        query = self._t("deliveries").select("*")
+        if scope_organization_id is not None:
+            query = query.eq("scope_organization_id", scope_organization_id).is_(
+                "scope_user_id", None
+            )
+        elif scope_user_id is not None:
+            query = query.eq("scope_user_id", scope_user_id).is_("scope_organization_id", None)
+        if channel is not None:
+            query = query.eq("channel", channel)
+        if status is not None:
+            query = query.eq("status", status)
+        if referral_id is not None:
+            query = query.eq("referral_id", referral_id)
+        if since is not None:
+            query = query.gte("created_at", _to_pg_iso(since))
+        if until is not None:
+            query = query.lt("created_at", _to_pg_iso(until))
+        query = query.order("created_at", desc=True).order("id", desc=True)
+        if offset > 0:
+            query = query.range(offset, offset + limit - 1)
+        else:
+            query = query.limit(limit)
+        result = query.execute()
+        return [self._row_to_delivery(r) for r in (result.data or [])]
+
+    def get_delivery_queue_stats(
+        self,
+        *,
+        scope_organization_id: int | None = None,
+        scope_user_id: int | None = None,
+    ) -> "DeliveryQueueStats":
+        from docstats.domain.deliveries import DELIVERY_STATUS_VALUES, DeliveryQueueStats
+
+        # supabase-py doesn't expose GROUP BY directly — pull the minimal
+        # (status, created_at) projection for this scope and aggregate in
+        # Python.  Volume is bounded by total deliveries for one org.
+        query = self._t("deliveries").select("status,created_at")
+        if scope_organization_id is not None:
+            query = query.eq("scope_organization_id", scope_organization_id).is_(
+                "scope_user_id", None
+            )
+        elif scope_user_id is not None:
+            query = query.eq("scope_user_id", scope_user_id).is_("scope_organization_id", None)
+        result = query.execute()
+        rows = result.data or []
+
+        counts: dict[str, int] = {s: 0 for s in DELIVERY_STATUS_VALUES}
+        oldest_queued: datetime | None = None
+        for r in rows:
+            status = r.get("status")
+            if status in counts:
+                counts[status] += 1
+            if status == "queued":
+                ts = _parse_ts(r.get("created_at"))
+                if ts is not None and (oldest_queued is None or ts < oldest_queued):
+                    oldest_queued = ts
+
+        oldest_age: int | None = None
+        if oldest_queued is not None:
+            now = datetime.now(tz=timezone.utc)
+            oldest_age = max(0, int((now - oldest_queued).total_seconds()))
+
+        return DeliveryQueueStats(
+            queued=counts["queued"],
+            sending=counts["sending"],
+            sent=counts["sent"],
+            delivered=counts["delivered"],
+            failed=counts["failed"],
+            cancelled=counts["cancelled"],
+            oldest_queued_age_seconds=oldest_age,
+        )
 
     # --- Share tokens (Phase 9.B) ---
 
