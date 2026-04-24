@@ -38,8 +38,11 @@ from docstats.domain.invitations import (
     validate_role,
 )
 from docstats.domain.orgs import (
+    DEFAULT_ATTACHMENT_RETENTION_DAYS,
     DEFAULT_STALE_THRESHOLD_DAYS,
+    MAX_ATTACHMENT_RETENTION_DAYS,
     MAX_STALE_THRESHOLD_DAYS,
+    MIN_ATTACHMENT_RETENTION_DAYS,
     MIN_STALE_THRESHOLD_DAYS,
     ROLES,
     Organization,
@@ -1007,6 +1010,7 @@ def _org_settings_form_values(org: Organization) -> dict[str, str]:
         "phone": org.phone or "",
         "fax": org.fax or "",
         "stale_threshold_days": str(org.stale_threshold_days),
+        "attachment_retention_days": str(org.attachment_retention_days),
     }
 
 
@@ -1059,6 +1063,7 @@ async def org_settings_save(
     phone: str = Form("", max_length=40),
     fax: str = Form("", max_length=40),
     stale_threshold_days: str = Form(str(DEFAULT_STALE_THRESHOLD_DAYS), max_length=3),
+    attachment_retention_days: str = Form(str(DEFAULT_ATTACHMENT_RETENTION_DAYS), max_length=6),
     current_user: dict = Depends(require_user),
     scope: Scope = Depends(require_admin_scope),
     storage: StorageBase = Depends(get_storage),
@@ -1100,6 +1105,25 @@ async def org_settings_save(
             if not (MIN_STALE_THRESHOLD_DAYS <= stale_threshold_value <= MAX_STALE_THRESHOLD_DAYS):
                 errors.append("Stale referral threshold must be between 1 and 365 days.")
 
+    retention_clean = _clean(attachment_retention_days)
+    retention_value = DEFAULT_ATTACHMENT_RETENTION_DAYS
+    if retention_clean is None:
+        errors.append("Attachment retention is required.")
+    else:
+        try:
+            retention_value = int(retention_clean)
+        except ValueError:
+            errors.append("Attachment retention must be a whole number of days.")
+        else:
+            if not (
+                MIN_ATTACHMENT_RETENTION_DAYS <= retention_value <= MAX_ATTACHMENT_RETENTION_DAYS
+            ):
+                errors.append(
+                    f"Attachment retention must be between "
+                    f"{MIN_ATTACHMENT_RETENTION_DAYS} and "
+                    f"{MAX_ATTACHMENT_RETENTION_DAYS} days."
+                )
+
     # Preserve the admin's typing across every error path below — both the
     # route-level validation branch and the storage ValueError branch
     # re-render from this dict so a rejected save doesn't cost them the
@@ -1115,6 +1139,7 @@ async def org_settings_save(
         "phone": phone,
         "fax": fax,
         "stale_threshold_days": stale_threshold_days,
+        "attachment_retention_days": attachment_retention_days,
     }
 
     if errors:
@@ -1146,6 +1171,7 @@ async def org_settings_save(
             phone=_clean(phone),
             fax=_clean(fax),
             stale_threshold_days=stale_threshold_value,
+            attachment_retention_days=retention_value,
             overwrite=True,
         )
     except ValueError as e:
@@ -1216,6 +1242,7 @@ _KNOWN_AUDIT_ACTIONS: tuple[str, ...] = (
     "admin.specialty_rule.update_override",
     "attachment.create",
     "attachment.delete",
+    "attachment.purged",
     "attachment.scan_rejected",
     "attachment.scan_unavailable",
     "attachment.view",

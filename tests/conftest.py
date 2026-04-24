@@ -21,6 +21,10 @@ os.environ.setdefault("DOCSTATS_SKIP_BOOT_SEED", "1")
 # leave it alive across test boundaries — skip it by default. Tests
 # that exercise the dispatcher itself drive `_run_iteration` directly.
 os.environ.setdefault("DOCSTATS_SKIP_DELIVERY_DISPATCHER", "1")
+# Phase 10.C: attachment retention sweep is another lifespan task that
+# mustn't outlive TestClient boundaries.  Tests that exercise the sweep
+# drive ``storage_files.retention.run_sweep`` directly.
+os.environ.setdefault("DOCSTATS_SKIP_ATTACHMENT_RETENTION", "1")
 
 
 SAMPLE_NPI1_RESULT = {

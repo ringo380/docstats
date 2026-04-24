@@ -135,10 +135,65 @@ Sources: [Cloudmersive Virus Scan docs](https://api.cloudmersive.com/docs/virus.
 5. Flip `ATTACHMENT_UPLOAD_ENABLED=1` only after both the Supabase BAA
    and the Cloudmersive BAA are in place.
 
-## What's NOT in 10.B
+## Retention (Phase 10.C)
 
-- **Retention** — Phase 10.C adds a nightly purge job governed by an
-  org-configurable retention policy (default 7 years).
+Attachments are **hard-deleted** after their tenant's retention window
+expires.  The sweep runs as a lifespan-managed asyncio task alongside
+the Phase 9 delivery dispatcher.
+
+| Env var | Purpose | Default |
+|---|---|---|
+| `ATTACHMENT_RETENTION_INTERVAL_SECONDS` | Seconds between retention sweeps (clamped [60, 604800]) | `86400` (24h) |
+| `DOCSTATS_SKIP_ATTACHMENT_RETENTION` | Test-only: `1` disables the lifespan sweep | unset |
+
+### Per-tenant retention policy
+
+- **Orgs** — `organizations.attachment_retention_days` (30 – 10950,
+  default 2555 ≈ 7 years).  Admins edit this on the **Org settings**
+  page in the admin console.
+- **Solo users** — platform-wide default
+  (`DEFAULT_ATTACHMENT_RETENTION_DAYS` = 2555 days).  No per-user
+  override in 10.C; the feature lands if/when solo mode grows.
+- **Retention floor** — 30 days is below the delivery dispatcher's
+  exponential-backoff cap (Phase 9.E), so we never purge a document
+  before its initial delivery retries exhaust.
+
+### Sweep behavior
+
+1. Enumerate every live org plus every solo user that owns bucket-backed
+   attachments.
+2. Per tenant: compute `cutoff = now - retention_days`; pull up to
+   `DEFAULT_BATCH_SIZE` (500) expired rows; iterate.
+3. For each attachment: delete the bucket object (**best-effort** —
+   failures leave orphan bytes for the next sweep), hard-delete the DB
+   row, emit `attachment.purged` audit.
+4. Bounded: up to `DEFAULT_MAX_BATCHES_PER_TENANT` (10) iterations per
+   tenant per sweep, so one giant tenant can't starve peers.
+
+### Failure modes
+
+- **Bucket delete fails** — DB row is still removed; bucket bytes become
+  the next sweep's problem.  Audit row records the policy decision.
+- **One tenant's query fails** — the sweep logs the error and moves on
+  to the next tenant.  No tenant blocks another.
+- **`list_attachments_expired` called without scope** — raises
+  `ValueError`.  Callers must specify exactly one of
+  `scope_organization_id` / `scope_user_id`; guards against the broken
+  caller that would accidentally purge everyone's data.
+
+### Audit trail
+
+- `attachment.purged` with `{referral_id, kind, storage_ref, reason: "retention"}`.
+  No `actor_user_id` (background job).  Visible in the admin audit log
+  filter datalist.
+
+## What's NOT in 10.C
+
+- **Grace window** — today the sweep hard-deletes immediately at
+  cutoff.  A two-phase policy (mark deleted → wait N days → hard-delete)
+  lands when operator feedback demands it.
+- **Per-user retention policy for solo users** — solo users share the
+  platform default.
 - **Packet embedding** — Phase 10.D teaches `exports/pdf.py::render_packet`
   to pull the real bytes and embed them into the outbound packet.
   Today the packet includes only the checklist row.

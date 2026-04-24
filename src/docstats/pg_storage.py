@@ -26,8 +26,11 @@ from docstats.domain.imports import (
 )
 from docstats.domain.invitations import Invitation
 from docstats.domain.orgs import (
+    DEFAULT_ATTACHMENT_RETENTION_DAYS,
     DEFAULT_STALE_THRESHOLD_DAYS,
+    MAX_ATTACHMENT_RETENTION_DAYS,
     MAX_STALE_THRESHOLD_DAYS,
+    MIN_ATTACHMENT_RETENTION_DAYS,
     MIN_STALE_THRESHOLD_DAYS,
     ROLES,
     Membership,
@@ -109,6 +112,9 @@ def _row_to_organization(row: dict) -> Organization:
         fax=row.get("fax"),
         terms_bundle_version=row.get("terms_bundle_version"),
         stale_threshold_days=int(row.get("stale_threshold_days") or DEFAULT_STALE_THRESHOLD_DAYS),
+        attachment_retention_days=int(
+            row.get("attachment_retention_days") or DEFAULT_ATTACHMENT_RETENTION_DAYS
+        ),
         created_at=created_at,
         deleted_at=_parse_ts(row.get("deleted_at")),
     )
@@ -1050,6 +1056,7 @@ class PostgresStorage(StorageBase):
         phone: str | None = None,
         fax: str | None = None,
         stale_threshold_days: int | None = None,
+        attachment_retention_days: int | None = None,
         overwrite: bool = False,
     ) -> Organization | None:
         kwargs: dict[str, str | None] = {
@@ -1069,6 +1076,16 @@ class PostgresStorage(StorageBase):
             MIN_STALE_THRESHOLD_DAYS <= stale_threshold_days <= MAX_STALE_THRESHOLD_DAYS
         ):
             raise ValueError("Stale referral threshold must be between 1 and 365 days.")
+        if attachment_retention_days is not None and not (
+            MIN_ATTACHMENT_RETENTION_DAYS
+            <= attachment_retention_days
+            <= MAX_ATTACHMENT_RETENTION_DAYS
+        ):
+            raise ValueError(
+                "Attachment retention must be between "
+                f"{MIN_ATTACHMENT_RETENTION_DAYS} and "
+                f"{MAX_ATTACHMENT_RETENTION_DAYS} days."
+            )
         fields: dict[str, str | int | None] = {}
         for col, val in kwargs.items():
             if overwrite:
@@ -1077,6 +1094,8 @@ class PostgresStorage(StorageBase):
                 fields[col] = val
         if stale_threshold_days is not None:
             fields["stale_threshold_days"] = stale_threshold_days
+        if attachment_retention_days is not None:
+            fields["attachment_retention_days"] = attachment_retention_days
         if not fields:
             return self.get_organization(organization_id)
         result = (
@@ -2331,6 +2350,83 @@ class PostgresStorage(StorageBase):
         if self.get_referral(scope, row["referral_id"]) is None:
             return None
         return _row_to_referral_attachment(row)
+
+    def list_attachments_expired(
+        self,
+        cutoff_created_at: datetime,
+        *,
+        scope_organization_id: int | None = None,
+        scope_user_id: int | None = None,
+        limit: int = 500,
+    ) -> list[ReferralAttachment]:
+        """Phase 10.C — rows eligible for retention purge.  Supabase-py
+        doesn't expose SQL joins directly, so this runs as two round-trips:
+        pull the referral ids in scope, then fetch attachments by that id
+        list.  Scope must be specified exactly once."""
+        if (scope_organization_id is None) == (scope_user_id is None):
+            raise ValueError("Exactly one of scope_organization_id / scope_user_id is required.")
+        ref_query = self._t("referrals").select("id")
+        if scope_organization_id is not None:
+            ref_query = ref_query.eq("scope_organization_id", scope_organization_id).is_(
+                "scope_user_id", None
+            )
+        else:
+            ref_query = ref_query.eq("scope_user_id", scope_user_id).is_(
+                "scope_organization_id", None
+            )
+        ref_ids = [int(r["id"]) for r in (ref_query.execute().data or [])]
+        if not ref_ids:
+            return []
+        result = (
+            self._t("referral_attachments")
+            .select("*")
+            .in_("referral_id", ref_ids)
+            .lt("created_at", _to_pg_iso(cutoff_created_at))
+            .not_.is_("storage_ref", None)
+            .order("created_at")
+            .limit(limit)
+            .execute()
+        )
+        return [_row_to_referral_attachment(r) for r in (result.data or [])]
+
+    def list_all_organizations(self, *, include_deleted: bool = False) -> list[Organization]:
+        """Return every org row.  Used by the retention sweep."""
+        query = self._t("organizations").select("*").order("id")
+        if not include_deleted:
+            query = query.is_("deleted_at", None)
+        result = query.execute()
+        return [_row_to_organization(r) for r in (result.data or [])]
+
+    def list_solo_user_ids_with_attachments(self) -> list[int]:
+        """Return distinct solo user ids with bucket-backed attachments."""
+        # supabase-py doesn't expose SELECT DISTINCT, so we pull the
+        # scope_user_id column from ``referrals`` rows that own at least
+        # one bucket-backed attachment and dedupe in Python.  Safe for
+        # tenant-scale volumes; a proper DISTINCT query lands when we
+        # switch to direct Postgres access.
+        attachment_refs = (
+            self._t("referral_attachments")
+            .select("referral_id")
+            .not_.is_("storage_ref", None)
+            .execute()
+        )
+        ref_ids = sorted({int(r["referral_id"]) for r in (attachment_refs.data or [])})
+        if not ref_ids:
+            return []
+        referrals = (
+            self._t("referrals")
+            .select("scope_user_id,scope_organization_id")
+            .in_("id", ref_ids)
+            .is_("scope_organization_id", None)
+            .not_.is_("scope_user_id", None)
+            .execute()
+        )
+        ids: set[int] = set()
+        for r in referrals.data or []:
+            uid = r.get("scope_user_id")
+            if uid is not None:
+                ids.add(int(uid))
+        return sorted(ids)
 
     def update_referral_attachment(
         self,

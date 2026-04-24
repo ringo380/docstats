@@ -29,6 +29,20 @@ DEFAULT_STALE_THRESHOLD_DAYS: Final[int] = 3
 MIN_STALE_THRESHOLD_DAYS: Final[int] = 1
 MAX_STALE_THRESHOLD_DAYS: Final[int] = 365
 
+# Attachment retention (Phase 10.C).  7 years is the floor for most US
+# healthcare record-retention regulations (HIPAA §164.316(b)(2)(i)
+# mandates 6; state requirements often push it longer).  Legal teams
+# typically tighten per-tenant; the admin UI surfaces this column so
+# each org can set its own policy.
+#
+# ``MIN`` is deliberately high (30 days) — anything shorter means
+# documents may purge before the initial delivery retries exhaust
+# (Phase 9.E's 1h backoff cap, plus manual follow-up).  ``MAX`` caps
+# at 30 years which is well beyond any healthcare retention rule.
+DEFAULT_ATTACHMENT_RETENTION_DAYS: Final[int] = 2555  # ~7 years
+MIN_ATTACHMENT_RETENTION_DAYS: Final[int] = 30
+MAX_ATTACHMENT_RETENTION_DAYS: Final[int] = 10_950  # ~30 years
+
 
 def has_role_at_least(role: str | None, required: str) -> bool:
     """Return True if ``role`` is at or above ``required`` in the ladder.
@@ -59,6 +73,7 @@ class Organization(BaseModel):
     fax: str | None = None
     terms_bundle_version: str | None = None
     stale_threshold_days: int = DEFAULT_STALE_THRESHOLD_DAYS
+    attachment_retention_days: int = DEFAULT_ATTACHMENT_RETENTION_DAYS
     created_at: datetime
     deleted_at: datetime | None = None
 
