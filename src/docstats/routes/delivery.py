@@ -41,6 +41,7 @@ from docstats.routes._common import get_scope
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
+from docstats.validators import ValidationError, validate_fax_number
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,14 @@ async def send_referral(
     recipient_clean = (recipient or "").strip()
     if not recipient_clean:
         raise HTTPException(status_code=422, detail="Recipient is required.")
+
+    # Channel-specific recipient normalization.  Fax numbers get E.164'd so
+    # the storage row + any downstream retry carries the canonical form.
+    if channel == "fax":
+        try:
+            recipient_clean = validate_fax_number(recipient_clean)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e))
 
     # Verify the referral exists in scope up front so the caller gets
     # a clean 404 (rather than a ValueError bubbling from storage).

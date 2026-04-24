@@ -34,11 +34,16 @@ def _email_channel() -> Channel:
 
 
 def _fax_channel() -> Channel:
-    """Factory for the fax channel. Ships in 9.C.
+    """Factory for the fax channel (Documo — Phase 9.C).
 
-    Requires Documo BAA + ``DOCUMO_API_KEY``.
+    Raises ``ChannelDisabledError`` unless ``DOCUMO_API_KEY`` is set.
+    Live sends additionally require a signed Documo BAA at the
+    Professional tier — see ``docs/fax-delivery.md``.  The env-var
+    gate is enough for dev/test environments.
     """
-    raise ChannelDisabledError("fax", reason="Phase 9.C not yet shipped")
+    from docstats.delivery.channels.fax import DocumoFaxChannel
+
+    return DocumoFaxChannel()
 
 
 def _direct_channel() -> Channel:

@@ -14,6 +14,17 @@ Uses Svix-format HMAC (``svix-id``, ``svix-timestamp``, ``svix-signature`` heade
 Event types we act on: ``email.sent`` → ``sent``, ``email.delivered`` → ``delivered``,
 ``email.bounced`` / ``email.complained`` → ``failed``.
 Secret: ``RESEND_WEBHOOK_SECRET`` (format: ``whsec_...``).
+
+Documo (Phase 9.C)
+------------------
+POST /webhooks/documo
+Uses HMAC-SHA256 over raw body (``X-Documo-Signature: sha256=<hex>``).
+Event types we act on:
+  ``fax.queued`` / ``fax.sending``   → ``sending``
+  ``fax.sent``                        → ``sent``
+  ``fax.delivered``                   → ``delivered``
+  ``fax.failed`` / ``fax.cancelled``  → ``failed``
+Secret: ``DOCUMO_WEBHOOK_SECRET``.
 """
 
 from __future__ import annotations
@@ -27,6 +38,7 @@ from fastapi.responses import JSONResponse
 from docstats.domain.deliveries import TERMINAL_DELIVERY_STATUSES
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
+from docstats.webhook_verifiers.documo import DocumoVerificationError, verify_documo
 from docstats.webhook_verifiers.svix import SvixVerificationError, verify_svix
 
 logger = logging.getLogger(__name__)
@@ -45,6 +57,20 @@ _RESEND_ERROR_CODES: dict[str, str] = {
     "email.complained": "email_complained",
 }
 
+_DOCUMO_STATUS_MAP: dict[str, str] = {
+    "fax.queued": "sending",
+    "fax.sending": "sending",
+    "fax.sent": "sent",
+    "fax.delivered": "delivered",
+    "fax.failed": "failed",
+    "fax.cancelled": "failed",
+}
+
+_DOCUMO_ERROR_CODES: dict[str, str] = {
+    "fax.failed": "fax_failed",
+    "fax.cancelled": "fax_cancelled",
+}
+
 _ALLOWED_HEADERS = frozenset(
     {
         "content-type",
@@ -52,6 +78,8 @@ _ALLOWED_HEADERS = frozenset(
         "svix-timestamp",
         "svix-signature",
         "user-agent",
+        "x-documo-signature",
+        "x-documo-timestamp",
     }
 )
 
@@ -142,6 +170,106 @@ async def resend_webhook(
 
     logger.info(
         "Resend webhook: delivery %s → %s (event=%s)",
+        delivery.id,
+        new_status,
+        event_type,
+    )
+    return JSONResponse({"ok": True, "action": "updated", "delivery_id": delivery.id})
+
+
+@router.post("/documo")
+async def documo_webhook(
+    request: Request,
+    storage: StorageBase = Depends(get_storage),
+) -> JSONResponse:
+    secret = os.environ.get("DOCUMO_WEBHOOK_SECRET", "")
+    body = await request.body()
+
+    if secret:
+        try:
+            verify_documo(dict(request.headers), body, secret)
+        except DocumoVerificationError as exc:
+            logger.warning("Documo webhook signature invalid: %s", exc)
+            raise HTTPException(status_code=400, detail="Invalid signature.")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    filtered_headers = _filter_headers(dict(request.headers))
+    try:
+        storage.record_inbound_webhook(
+            source="documo",
+            payload_json=payload,
+            http_headers_json=filtered_headers,
+            signature=request.headers.get("x-documo-signature"),
+            status="received",
+        )
+    except Exception:
+        logger.exception("Failed to record Documo webhook in inbox")
+
+    event_type: str = payload.get("event") or payload.get("type") or ""
+    new_status = _DOCUMO_STATUS_MAP.get(event_type)
+    if new_status is None:
+        return JSONResponse({"ok": True, "action": "ignored"})
+
+    # Documo payload shape varies slightly across tiers; accept both
+    # ``data.id`` / ``data.faxId`` and top-level ``faxId``.
+    data = payload.get("data", payload) if isinstance(payload.get("data"), dict) else payload
+    vendor_message_id: str = data.get("id") or data.get("faxId") or data.get("fax_id") or ""
+    if not vendor_message_id:
+        logger.warning("Documo webhook missing fax id for event %s", event_type)
+        return JSONResponse({"ok": True, "action": "no_message_id"})
+
+    delivery = storage.get_delivery_by_vendor_message_id(str(vendor_message_id))
+    if delivery is None:
+        logger.info(
+            "Documo webhook for unknown vendor_message_id %r (event %s)",
+            vendor_message_id,
+            event_type,
+        )
+        return JSONResponse({"ok": True, "action": "unknown_delivery"})
+
+    if delivery.status in TERMINAL_DELIVERY_STATUSES:
+        return JSONResponse({"ok": True, "action": "already_terminal"})
+
+    error_code = _DOCUMO_ERROR_CODES.get(event_type)
+    error_message = data.get("reason") or data.get("errorReason") or data.get("description")
+
+    if new_status == "sending":
+        # Informational — the dispatcher owns queued→sending and the
+        # vendor_message_id was written when our channel.send() returned.
+        # We don't want to clobber sent_at, so skip the write and let the
+        # terminal-state webhook (sent / delivered / failed) resolve the row.
+        logger.info(
+            "Documo sending webhook for delivery %s (event=%s) — informational",
+            delivery.id,
+            event_type,
+        )
+        return JSONResponse({"ok": True, "action": "informational"})
+    elif new_status == "sent":
+        storage.mark_delivery_sent(
+            delivery.id,
+            vendor_name="Documo",
+            vendor_message_id=str(vendor_message_id),
+        )
+    elif new_status == "delivered":
+        storage.mark_delivery_sent(
+            delivery.id,
+            vendor_name="Documo",
+            vendor_message_id=str(vendor_message_id),
+            status="delivered",
+        )
+    elif new_status == "failed":
+        storage.mark_delivery_failed(
+            delivery.id,
+            error_code=error_code or "vendor_error",
+            error_message=str(error_message or "")[:500],
+        )
+
+    logger.info(
+        "Documo webhook: delivery %s → %s (event=%s)",
         delivery.id,
         new_status,
         event_type,
