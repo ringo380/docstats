@@ -187,13 +187,52 @@ the Phase 9 delivery dispatcher.
   No `actor_user_id` (background job).  Visible in the admin audit log
   filter datalist.
 
-## What's NOT in 10.C
+## Packet embedding (Phase 10.D)
 
-- **Grace window** — today the sweep hard-deletes immediately at
-  cutoff.  A two-phase policy (mark deleted → wait N days → hard-delete)
-  lands when operator feedback demands it.
-- **Per-user retention policy for solo users** — solo users share the
-  platform default.
+PDF attachments can be spliced into an outbound packet so the receiving
+specialist gets the referral summary + real lab/imaging/consult-note
+PDFs in a single document.  Non-PDF attachments (images, DOCX) are
+**not** inlined — pypdf can't concatenate non-PDFs without conversion,
+so they remain in the `attachments` checklist entry.
+
+### Include-token contract
+
+- **`attachment_pdfs`** — pseudo-artifact; accepted only in
+  `?include=` on the packet route, never as `?artifact=` on its own.
+  Splices every PDF-backed attachment on the referral at the spot it
+  appears in the include list.
+- Ordering: put `fax_cover,summary,attachments,attachment_pdfs` to end
+  on the actual attachments; put `fax_cover,summary,attachment_pdfs,
+  attachments` to end on the checklist (unusual but possible).
+- **Missing blobs** (bucket 404 on an attachment whose DB row says
+  `storage_ref` is set) — logged and skipped; the packet still renders
+  without that piece, and the checklist entry tells the recipient which
+  document is missing.
+
+### Dispatcher integration
+
+The delivery dispatcher consults `delivery.packet_artifact["include"]`
+at send time.  `build_delivery_packet()` rebuilds the caller's scope
+from the delivery's denormalized `scope_user_id` / `scope_organization_id`
+columns, pulls any attachment PDFs via the file backend, renders each
+artifact via WeasyPrint, and concatenates with pypdf.  The route layer
+(`/referrals/{id}/export.pdf?artifact=packet`) follows the same code
+path so downloads and fax/email sends produce byte-identical packets.
+
+### UI
+
+The export preview (`/referrals/{id}/export`) surfaces an
+"Attachment PDFs (embedded)" checkbox **only when at least one
+bucket-backed attachment exists on the referral**.  Checklist-only
+rows don't trigger the toggle (they have no bytes to embed).
+
+## What's NOT in 10.D
+
+- **Image → PDF conversion** — JPEG/PNG/TIFF attachments stay in the
+  checklist.  A conversion pass lands when a real coordinator request
+  shows up.
+- **DOCX → PDF conversion** — same rationale.  Would need LibreOffice
+  as a sidecar process; out of scope for the MVP.
 - **Packet embedding** — Phase 10.D teaches `exports/pdf.py::render_packet`
   to pull the real bytes and embed them into the outbound packet.
   Today the packet includes only the checklist row.

@@ -34,9 +34,13 @@
         <label class="export-artifact-row">
           <input type="checkbox" name="__include" value="{{ row.artifact }}" {% if row.default %}checked{% endif %}>
           <span class="export-artifact-label">{{ row.label }}</span>
+          {# attachment_pdfs is a pseudo-artifact — it splices real bucket
+             bytes into the packet and can't be previewed on its own. #}
+          {% if row.artifact != 'attachment_pdfs' %}
           <a class="export-artifact-preview"
              href="/referrals/{{ referral.id }}/export.pdf?artifact={{ row.artifact }}"
              target="_blank" rel="noopener">Preview</a>
+          {% endif %}
         </label>
         {% endfor %}
       </div>
@@ -51,10 +55,14 @@
     <p class="sub">Download a single artifact directly.</p>
     <ul class="export-single-list">
       {% for row in artifact_rows %}
+        {# Individual-artifact downloads skip attachment_pdfs — it's a
+           packet-only splice, not a single renderable PDF. #}
+        {% if row.artifact != 'attachment_pdfs' %}
       <li>
         <a href="/referrals/{{ referral.id }}/export.pdf?artifact={{ row.artifact }}"
            target="_blank" rel="noopener">{{ row.label }}</a>
       </li>
+        {% endif %}
       {% endfor %}
     </ul>
     <h2 style="margin-top:14px;">Machine-readable</h2>

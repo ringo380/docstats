@@ -36,6 +36,7 @@ from docstats.domain.referrals import STATUS_VALUES, URGENCY_VALUES
 from docstats.domain.rules import rules_based_completeness
 from docstats.enrichment import fetch_receiving_direct_endpoints
 from docstats.exports import (
+    ARTIFACT_ATTACHMENT_PDFS,
     ARTIFACT_ATTACHMENTS_CHECKLIST,
     ARTIFACT_FAX_COVER,
     ARTIFACT_MISSING_INFO,
@@ -45,6 +46,7 @@ from docstats.exports import (
     ARTIFACT_SCHEDULING_SUMMARY,
     CSV_FIELDNAMES,
     build_referral_bundle,
+    fetch_attachment_pdfs,
     referral_to_csv_row,
     render_attachments_checklist,
     render_fax_cover,
@@ -59,6 +61,7 @@ from docstats.routes._common import get_client, get_scope, render, resolve_assig
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
+from docstats.storage_files import StorageFileBackend, get_file_backend
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +208,13 @@ def _render_one(
 
 def _parse_include(raw: str | None) -> list[str]:
     """Parse a comma-separated ``?include=a,b,c`` into a dedupe-preserving
-    list of known artifact names. Unknown names raise HTTPException(400)."""
+    list of known artifact names. Unknown names raise HTTPException(400).
+
+    Phase 10.D accepts ``attachment_pdfs`` as a special token — it's a
+    "pseudo-artifact" that the packet handler resolves by fetching real
+    PDF attachment bytes via the file backend (non-PDF attachments stay
+    in the ``attachments`` checklist).
+    """
     if not raw:
         return list(_DEFAULT_PACKET_INCLUDE)
     tokens = [t.strip() for t in raw.split(",") if t.strip()]
@@ -216,7 +225,7 @@ def _parse_include(raw: str | None) -> list[str]:
     for tok in tokens:
         if tok == ARTIFACT_PACKET:
             raise HTTPException(400, detail="'packet' cannot be nested inside a packet")
-        if tok not in _ARTIFACT_BUNDLES:
+        if tok != ARTIFACT_ATTACHMENT_PDFS and tok not in _ARTIFACT_BUNDLES:
             raise HTTPException(400, detail=f"Unknown artifact in include: '{tok}'")
         seen[tok] = None
     return list(seen)
@@ -513,6 +522,21 @@ async def referral_export_preview(
         }
         for name, (_f, _r, stem, label) in _ARTIFACT_BUNDLES.items()
     ]
+    # Phase 10.D — surface the attachment-PDFs pseudo-artifact as a
+    # checkbox.  Shown only when at least one bucket-backed attachment
+    # exists; otherwise the toggle would be a dead option.
+    attachments_present = any(
+        a.storage_ref for a in storage.list_referral_attachments(scope, referral_id)
+    )
+    if attachments_present:
+        artifact_rows.append(
+            {
+                "artifact": ARTIFACT_ATTACHMENT_PDFS,
+                "label": "Attachment PDFs (embedded)",
+                "default": False,
+                "stem": "attachment-pdfs",
+            }
+        )
 
     return render(
         "referral_export.html",
@@ -622,6 +646,7 @@ async def referral_export_pdf(
     current_user: dict = Depends(require_phi_consent),
     scope: Scope = Depends(get_scope),
     storage: StorageBase = Depends(get_storage),
+    file_backend: StorageFileBackend = Depends(get_file_backend),
 ) -> Response:
     # Validate artifact first so unknown values fail before we touch the DB.
     if artifact not in _ARTIFACT_BUNDLES and artifact != ARTIFACT_PACKET:
@@ -645,6 +670,27 @@ async def referral_export_pdf(
         if storage.get_referral(scope, referral_id) is None:
             raise HTTPException(status_code=404, detail="Referral not found.")
 
+        # Phase 10.D — if the packet requests attachment PDFs, fetch them
+        # up front (the file_backend is async; pdf rendering that follows
+        # is CPU-bound and dispatched to the executor).
+        attachment_pdf_bytes: list[bytes] = []
+        if ARTIFACT_ATTACHMENT_PDFS in parts_order:
+            try:
+                attachment_pdf_bytes = [
+                    data
+                    for _aid, data in await fetch_attachment_pdfs(
+                        storage=storage,
+                        scope=scope,
+                        referral=referral,
+                        file_backend=file_backend,
+                    )
+                ]
+            except Exception:
+                logger.exception("Attachment fetch failed for packet of referral %s", referral_id)
+                # Keep going — the packet still renders without the
+                # attachments, and the checklist row tells the recipient
+                # which docs should have been included.
+
         try:
             parts: list[bytes] = []
             # The fax-cover total_pages hint is a "close-enough" approximation:
@@ -652,6 +698,13 @@ async def referral_export_pdf(
             # punt until 5.E's batch export. Renderer falls back to "1" when
             # None.
             for name in parts_order:
+                if name == ARTIFACT_ATTACHMENT_PDFS:
+                    # Splice the pre-fetched attachment PDFs at this
+                    # position so callers control ordering (e.g.
+                    # fax_cover, summary, attachments_checklist,
+                    # attachment_pdfs).
+                    parts.extend(attachment_pdf_bytes)
+                    continue
                 part = await loop.run_in_executor(
                     None,
                     lambda n=name: _render_one(  # type: ignore[misc]
