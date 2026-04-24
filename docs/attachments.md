@@ -77,19 +77,66 @@ suitable only for tests and local dev.
   never configured public.
 - **Audit rows** — every upload emits `attachment.create`; every download
   emits `attachment.view`; every delete emits `attachment.delete`.
-  Metadata includes `referral_id`, `kind`, `mime_type`, `size_bytes`.
+  Metadata includes `referral_id`, `kind`, `mime_type`, `size_bytes`, and
+  (10.B onward) the `scanner` that cleared the upload.  Rejected uploads
+  emit `attachment.scan_rejected` with `threats` and `scanner` fields;
+  scanner outages with `VIRUS_SCAN_REQUIRED=1` emit `attachment.scan_unavailable`.
 - **Scope isolation** — attachments inherit their scope from the parent
   referral via `StorageBase.get_referral_attachment(scope, id)`.  Cross-
   tenant downloads return 404, not 403 (prevents existence leaks).
 - **Encryption at rest** — Supabase provides AES-256 on all objects.
   Envelope encryption for high-sensitivity fields lands in Phase 15.
 
-## What's NOT in 10.A
+## Virus scanning (Phase 10.B)
 
-- **Virus scanning** — Phase 10.B (Cloudmersive with BAA is the default
-  vendor choice; ClamAV sidecar is an alternative if RAM budget allows).
-  Until 10.B, uploaded files are trusted to be non-malicious — do NOT
-  enable the flag in a production org without that safety net.
+Every upload runs through a `VirusScanner` **before** the bytes leave
+our process.  Cloudmersive is the default vendor (REST, BAA available at
+Enterprise tier); a no-op scanner ships for local dev so developers
+aren't blocked by a missing API key.
+
+| Env var | Purpose | Default |
+|---|---|---|
+| `VIRUS_SCANNER_BACKEND` | `cloudmersive` / `noop` / `none` / unset for auto | auto (Cloudmersive if key set, else no-op) |
+| `CLOUDMERSIVE_API_KEY` | Cloudmersive REST API key | unset |
+| `CLOUDMERSIVE_BASE_URL` | Override host for sandbox envs | `https://api.cloudmersive.com` |
+| `CLOUDMERSIVE_TIMEOUT` | Per-scan timeout in seconds (clamped [1, 300]) | `60` |
+| `VIRUS_SCAN_REQUIRED` | **Fail-closed** when `1`/`true`: scanner outage → 502.  Unset/`0` → log and proceed (dev only) | unset (permissive) |
+
+### Policy matrix
+
+| Scanner returns | `VIRUS_SCAN_REQUIRED` | Outcome |
+|---|---|---|
+| Clean verdict | — | Upload proceeds; audit records `scanner=<name>` |
+| Infected verdict | — | **422**; audit `attachment.scan_rejected`; no DB row, no bucket write |
+| `ScannerUnavailable` | `1` | **502**; audit `attachment.scan_unavailable`; no upload |
+| `ScannerUnavailable` | unset/`0` | Log warning; upload proceeds with `scanner=none` |
+| Scanner = `None` | `1` | **502** (misconfiguration); no upload |
+| Scanner = `None` | unset/`0` | Upload proceeds with `scanner=none` (dev only) |
+
+### Cloudmersive wire contract
+
+- `POST https://api.cloudmersive.com/virus/scan/file`
+- Header: `Apikey: <key>`
+- Multipart field: `inputFile` (camelCase — **not** `input_file`, which is
+  the Python SDK symbol)
+- Response JSON: `{"CleanResult": bool, "FoundViruses": [{"FileName": "...",
+  "VirusName": "..."}, ...]}`.  `FoundViruses` may be absent on a clean
+  result — we treat missing as empty.
+
+Sources: [Cloudmersive Virus Scan docs](https://api.cloudmersive.com/docs/virus.asp).
+
+### Production rollout checklist
+
+1. Sign the Cloudmersive BAA (Enterprise plan).
+2. Mint an API key in the Cloudmersive dashboard.
+3. Set Railway vars: `CLOUDMERSIVE_API_KEY`, `VIRUS_SCAN_REQUIRED=1`.
+4. Watch `/admin/audit?action=attachment.scan_unavailable` for any
+   transient scanner outages after deploy.
+5. Flip `ATTACHMENT_UPLOAD_ENABLED=1` only after both the Supabase BAA
+   and the Cloudmersive BAA are in place.
+
+## What's NOT in 10.B
+
 - **Retention** — Phase 10.C adds a nightly purge job governed by an
   org-configurable retention policy (default 7 years).
 - **Packet embedding** — Phase 10.D teaches `exports/pdf.py::render_packet`
