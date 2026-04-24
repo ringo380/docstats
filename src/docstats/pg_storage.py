@@ -61,6 +61,7 @@ from docstats.domain.referrals import (
     ReferralMedication,
     ReferralResponse,
 )
+from docstats.domain.eligibility import EligibilityCheck, EligibilityResult
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.scope import Scope, ScopeRequired
@@ -3669,6 +3670,119 @@ class PostgresStorage(StorageBase):
         if not result.data:
             raise RuntimeError("webhook_inbox insert returned no rows")
         return int(result.data[0]["id"])
+
+    # -----------------------------------------------------------------------
+    # Eligibility checks (Phase 11.A)
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _row_to_eligibility_check(r: dict) -> EligibilityCheck:
+        result: EligibilityResult | None = None
+        if r.get("result_json"):
+            try:
+                result = EligibilityResult.model_validate_json(r["result_json"])
+            except Exception:
+                pass
+        return EligibilityCheck(
+            id=int(r["id"]),
+            scope_user_id=r.get("scope_user_id"),
+            scope_organization_id=r.get("scope_organization_id"),
+            patient_id=int(r["patient_id"]),
+            availity_payer_id=r["availity_payer_id"],
+            payer_name=r.get("payer_name"),
+            service_type=r["service_type"],
+            status=r["status"],
+            error_message=r.get("error_message"),
+            result=result,
+            raw_response_json=r.get("raw_response_json"),
+            checked_at=_parse_ts(r.get("checked_at")),
+            created_at=_parse_ts(r.get("created_at")),
+        )
+
+    def create_eligibility_check(
+        self,
+        scope: Scope,
+        *,
+        patient_id: int,
+        availity_payer_id: str,
+        payer_name: str | None = None,
+        service_type: str,
+        status: str,
+        error_message: str | None = None,
+        result_json: str | None = None,
+        raw_response_json: str | None = None,
+        checked_at: datetime | None = None,
+    ) -> EligibilityCheck:
+        self._require_scoped(scope)
+        row: dict[str, Any] = {
+            "scope_user_id": scope.user_id if scope.is_solo else None,
+            "scope_organization_id": scope.organization_id if scope.is_org else None,
+            "patient_id": patient_id,
+            "availity_payer_id": availity_payer_id,
+            "payer_name": payer_name,
+            "service_type": service_type,
+            "status": status,
+            "error_message": error_message,
+            "result_json": result_json,
+            "raw_response_json": raw_response_json,
+            "checked_at": checked_at.isoformat() if checked_at else None,
+        }
+        result = self._t("eligibility_checks").insert(row).execute()
+        return self._row_to_eligibility_check(result.data[0])
+
+    def update_eligibility_check(
+        self,
+        check_id: int,
+        *,
+        status: str,
+        error_message: str | None = None,
+        result_json: str | None = None,
+        raw_response_json: str | None = None,
+        checked_at: datetime | None = None,
+    ) -> None:
+        update: dict[str, Any] = {
+            "status": status,
+            "error_message": error_message,
+            "result_json": result_json,
+            "raw_response_json": raw_response_json,
+            "checked_at": checked_at.isoformat() if checked_at else None,
+        }
+        self._t("eligibility_checks").update(update).eq("id", check_id).execute()
+
+    def get_latest_eligibility_check(
+        self,
+        scope: Scope,
+        patient_id: int,
+        *,
+        availity_payer_id: str | None = None,
+        service_type: str | None = None,
+    ) -> EligibilityCheck | None:
+        query = self._t("eligibility_checks").select("*").eq("patient_id", patient_id)
+        query = self._apply_scope(query, scope)
+        if availity_payer_id is not None:
+            query = query.eq("availity_payer_id", availity_payer_id)
+        if service_type is not None:
+            query = query.eq("service_type", service_type)
+        query = query.order("checked_at", desc=True, nullsfirst=False).order("id", desc=True).limit(1)
+        result = query.execute()
+        return self._row_to_eligibility_check(result.data[0]) if result.data else None
+
+    def list_eligibility_checks(
+        self,
+        scope: Scope,
+        patient_id: int,
+        *,
+        limit: int = 20,
+    ) -> list[EligibilityCheck]:
+        query = (
+            self._t("eligibility_checks")
+            .select("*")
+            .eq("patient_id", patient_id)
+        )
+        query = self._apply_scope(query, scope)
+        query = query.order("checked_at", desc=True, nullsfirst=False).order("id", desc=True).limit(limit)
+        result = query.execute()
+        return [self._row_to_eligibility_check(r) for r in result.data]
 
     def close(self) -> None:
         pass  # supabase-py client has no close method

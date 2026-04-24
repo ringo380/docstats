@@ -59,6 +59,7 @@ from docstats.domain.referrals import (
     ReferralMedication,
     ReferralResponse,
 )
+from docstats.domain.eligibility import EligibilityCheck, EligibilityResult
 from docstats.domain.sessions import Session
 from docstats.domain.share_tokens import ShareToken
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
@@ -584,6 +585,7 @@ class Storage(StorageBase):
         self._migrate_referral_events_event_type()
         self._migrate_deliveries()
         self._migrate_share_tokens()
+        self._migrate_eligibility_checks()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -4563,6 +4565,166 @@ class Storage(StorageBase):
             created_at=_parse_sqlite_utc(row["created_at"]) or datetime.now(timezone.utc),
             updated_at=_parse_sqlite_utc(row["updated_at"]) or datetime.now(timezone.utc),
         )
+
+    # -----------------------------------------------------------------------
+    # Eligibility checks (Phase 11.A)
+    # -----------------------------------------------------------------------
+
+    def _migrate_eligibility_checks(self) -> None:
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS eligibility_checks (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_user_id           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                scope_organization_id   INTEGER REFERENCES organizations(id) ON DELETE SET NULL,
+                patient_id              INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+                availity_payer_id       TEXT NOT NULL,
+                payer_name              TEXT,
+                service_type            TEXT NOT NULL,
+                status                  TEXT NOT NULL CHECK (status IN
+                    ('pending','complete','error','unavailable')),
+                error_message           TEXT,
+                result_json             TEXT,
+                raw_response_json       TEXT,
+                checked_at              TEXT,
+                created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        self._conn.execute(
+            """CREATE INDEX IF NOT EXISTS ix_eligibility_checks_patient_payer
+               ON eligibility_checks (patient_id, availity_payer_id, service_type, checked_at)"""
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def _row_to_eligibility_check(row: sqlite3.Row) -> EligibilityCheck:
+        result: EligibilityResult | None = None
+        if row["result_json"]:
+            try:
+                result = EligibilityResult.model_validate_json(row["result_json"])
+            except Exception:
+                pass
+        return EligibilityCheck(
+            id=row["id"],
+            scope_user_id=row["scope_user_id"],
+            scope_organization_id=row["scope_organization_id"],
+            patient_id=row["patient_id"],
+            availity_payer_id=row["availity_payer_id"],
+            payer_name=row["payer_name"],
+            service_type=row["service_type"],
+            status=row["status"],
+            error_message=row["error_message"],
+            result=result,
+            raw_response_json=row["raw_response_json"],
+            checked_at=_parse_sqlite_utc(row["checked_at"]),
+            created_at=_parse_sqlite_utc(row["created_at"]),
+        )
+
+    def create_eligibility_check(
+        self,
+        scope: Scope,
+        *,
+        patient_id: int,
+        availity_payer_id: str,
+        payer_name: str | None = None,
+        service_type: str,
+        status: str,
+        error_message: str | None = None,
+        result_json: str | None = None,
+        raw_response_json: str | None = None,
+        checked_at: datetime | None = None,
+    ) -> EligibilityCheck:
+        scope_sql_clause(scope)  # guard — raises ScopeRequired on anon
+        cur = self._conn.execute(
+            """INSERT INTO eligibility_checks
+               (scope_user_id, scope_organization_id, patient_id,
+                availity_payer_id, payer_name, service_type, status,
+                error_message, result_json, raw_response_json, checked_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                scope.user_id if scope.is_solo else None,
+                scope.organization_id if scope.is_org else None,
+                patient_id,
+                availity_payer_id,
+                payer_name,
+                service_type,
+                status,
+                error_message,
+                result_json,
+                raw_response_json,
+                checked_at.isoformat() if checked_at else None,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM eligibility_checks WHERE id = ?", (cur.lastrowid,)
+        ).fetchone()
+        return self._row_to_eligibility_check(row)
+
+    def update_eligibility_check(
+        self,
+        check_id: int,
+        *,
+        status: str,
+        error_message: str | None = None,
+        result_json: str | None = None,
+        raw_response_json: str | None = None,
+        checked_at: datetime | None = None,
+    ) -> None:
+        self._conn.execute(
+            """UPDATE eligibility_checks
+               SET status = ?, error_message = ?, result_json = ?,
+                   raw_response_json = ?, checked_at = ?
+               WHERE id = ?""",
+            (
+                status,
+                error_message,
+                result_json,
+                raw_response_json,
+                checked_at.isoformat() if checked_at else None,
+                check_id,
+            ),
+        )
+        self._conn.commit()
+
+    def get_latest_eligibility_check(
+        self,
+        scope: Scope,
+        patient_id: int,
+        *,
+        availity_payer_id: str | None = None,
+        service_type: str | None = None,
+    ) -> EligibilityCheck | None:
+        clause, params = scope_sql_clause(scope)
+        where_parts = [clause, "patient_id = ?"]
+        params.append(patient_id)
+        if availity_payer_id is not None:
+            where_parts.append("availity_payer_id = ?")
+            params.append(availity_payer_id)
+        if service_type is not None:
+            where_parts.append("service_type = ?")
+            params.append(service_type)
+        sql = (
+            f"SELECT * FROM eligibility_checks WHERE {' AND '.join(where_parts)} "
+            "ORDER BY checked_at DESC, id DESC LIMIT 1"
+        )
+        row = self._conn.execute(sql, params).fetchone()
+        return self._row_to_eligibility_check(row) if row else None
+
+    def list_eligibility_checks(
+        self,
+        scope: Scope,
+        patient_id: int,
+        *,
+        limit: int = 20,
+    ) -> list[EligibilityCheck]:
+        clause, params = scope_sql_clause(scope)
+        sql = (
+            f"SELECT * FROM eligibility_checks WHERE {clause} AND patient_id = ? "
+            "ORDER BY checked_at DESC, id DESC LIMIT ?"
+        )
+        params.extend([patient_id, int(limit)])
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_eligibility_check(r) for r in rows]
 
     def close(self) -> None:
         self._conn.close()
