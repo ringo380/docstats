@@ -44,6 +44,11 @@ from docstats.storage_files.base import (
 from docstats.storage_files.factory import get_file_backend
 from docstats.storage_files.memory_store import InMemoryFileBackend
 from docstats.storage_files.mime import MimeSniffError, sniff_mime
+from docstats.storage_files.scanner import ScannerUnavailable, ScanResult, VirusScanner
+from docstats.storage_files.scanner_factory import (
+    get_virus_scanner,
+    virus_scan_is_required,
+)
 
 __all__ = [
     "ALLOWED_MIME_TYPES",
@@ -52,9 +57,14 @@ __all__ = [
     "FileRef",
     "InMemoryFileBackend",
     "MimeSniffError",
+    "ScanResult",
+    "ScannerUnavailable",
     "StorageFileBackend",
     "StorageFileError",
+    "VirusScanner",
     "build_object_path",
     "get_file_backend",
+    "get_virus_scanner",
     "sniff_mime",
+    "virus_scan_is_required",
 ]

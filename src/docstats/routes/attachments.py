@@ -60,11 +60,15 @@ from docstats.storage_files import (
     MAX_UPLOAD_BYTES,
     FileNotFoundInBackend,
     MimeSniffError,
+    ScannerUnavailable,
     StorageFileBackend,
     StorageFileError,
+    VirusScanner,
     build_object_path,
     get_file_backend,
+    get_virus_scanner,
     sniff_mime,
+    virus_scan_is_required,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,6 +120,7 @@ async def upload_attachment(
     scope: Scope = Depends(get_scope),
     storage: StorageBase = Depends(get_storage),
     file_backend: StorageFileBackend = Depends(get_file_backend),
+    virus_scanner: VirusScanner | None = Depends(get_virus_scanner),
 ) -> Response:
     _reject_if_disabled()
     _reject_oversized(request)
@@ -148,6 +153,73 @@ async def upload_attachment(
         raise HTTPException(status_code=415, detail=str(exc))
     if mime not in ALLOWED_MIME_TYPES:  # paranoia — sniff_mime is the gate
         raise HTTPException(status_code=415, detail=f"Unsupported MIME {mime!r}.")
+
+    # Phase 10.B — scan bytes BEFORE they leave our process.  Two failure
+    # modes the route must distinguish:
+    #   - definitive infected verdict → 422 with audit (attachment.scan_rejected)
+    #   - scanner unavailable → policy-gated: 502 if VIRUS_SCAN_REQUIRED=1,
+    #     else log-and-proceed (dev mode)
+    scanner_name = "none"
+    if virus_scanner is not None:
+        try:
+            verdict = await virus_scanner.scan(data, filename=file.filename)
+        except ScannerUnavailable as exc:
+            if virus_scan_is_required():
+                logger.warning(
+                    "Virus scan unavailable (%s) with VIRUS_SCAN_REQUIRED=1 — rejecting upload",
+                    exc,
+                )
+                audit_record(
+                    storage,
+                    action="attachment.scan_unavailable",
+                    request=request,
+                    actor_user_id=current_user["id"],
+                    scope_user_id=scope.user_id if scope.is_solo else None,
+                    scope_organization_id=scope.organization_id,
+                    entity_type="referral",
+                    entity_id=str(referral_id),
+                    metadata={"reason": str(exc)[:200]},
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail="Virus scanner unavailable; please retry.",
+                )
+            logger.warning("Virus scan unavailable in permissive mode: %s", exc)
+        else:
+            scanner_name = verdict.scanner_name
+            if verdict.infected:
+                audit_record(
+                    storage,
+                    action="attachment.scan_rejected",
+                    request=request,
+                    actor_user_id=current_user["id"],
+                    scope_user_id=scope.user_id if scope.is_solo else None,
+                    scope_organization_id=scope.organization_id,
+                    entity_type="referral",
+                    entity_id=str(referral_id),
+                    metadata={
+                        "scanner": verdict.scanner_name,
+                        "threats": verdict.threat_names,
+                        "mime_type": mime,
+                        "size_bytes": len(data),
+                    },
+                )
+                # Name the threats in the response only when there are any;
+                # Cloudmersive doesn't always populate the list on a positive
+                # hit and we don't want to leak a bare "Infected." message.
+                threats = ", ".join(verdict.threat_names) if verdict.threat_names else "unknown"
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"File failed virus scan ({threats}).",
+                )
+    elif virus_scan_is_required():
+        # VIRUS_SCAN_REQUIRED=1 but the factory returned None (backend=none).
+        # This is a misconfiguration — fail closed loudly.
+        logger.error("VIRUS_SCAN_REQUIRED=1 but no scanner is configured — rejecting upload")
+        raise HTTPException(
+            status_code=502,
+            detail="Virus scanner not configured.",
+        )
 
     # Insert the DB row first (still checklist_only = False) so we know the
     # attachment id before building the object path.  If the bucket upload
@@ -203,6 +275,7 @@ async def upload_attachment(
             "kind": kind,
             "mime_type": mime,
             "size_bytes": file_ref.size_bytes,
+            "scanner": scanner_name,
         },
     )
 
