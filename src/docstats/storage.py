@@ -26,7 +26,9 @@ from docstats.domain.imports import (
 from docstats.domain.invitations import Invitation
 from docstats.domain.orgs import (
     DEFAULT_STALE_THRESHOLD_DAYS,
+    MAX_ATTACHMENT_RETENTION_DAYS,
     MAX_STALE_THRESHOLD_DAYS,
+    MIN_ATTACHMENT_RETENTION_DAYS,
     MIN_STALE_THRESHOLD_DAYS,
     ROLES,
     Membership,
@@ -111,8 +113,18 @@ def _to_sqlite_utc_iso(dt: datetime) -> str:
 
 def _row_to_organization(row: sqlite3.Row) -> Organization:
     """Convert a SQLite organizations row into an Organization model."""
+    from docstats.domain.orgs import DEFAULT_ATTACHMENT_RETENTION_DAYS
+
     created = _parse_sqlite_utc(row["created_at"])
     assert created is not None
+    # ``attachment_retention_days`` was added in migration 017 via
+    # ALTER TABLE; old connections still carry rows without the column.
+    # sqlite3.Row supports membership tests via the key tuple — probe
+    # before reading so an older schema gracefully degrades.
+    try:
+        retention = row["attachment_retention_days"]
+    except (IndexError, KeyError):
+        retention = None
     return Organization(
         id=int(row["id"]),
         name=row["name"],
@@ -127,6 +139,9 @@ def _row_to_organization(row: sqlite3.Row) -> Organization:
         fax=row["fax"],
         terms_bundle_version=row["terms_bundle_version"],
         stale_threshold_days=int(row["stale_threshold_days"]),
+        attachment_retention_days=(
+            int(retention) if retention is not None else DEFAULT_ATTACHMENT_RETENTION_DAYS
+        ),
         created_at=created,
         deleted_at=_parse_sqlite_utc(row["deleted_at"]),
     )
@@ -555,6 +570,7 @@ class Storage(StorageBase):
         self._migrate_audit_events()
         self._migrate_orgs_and_memberships()
         self._migrate_organization_stale_threshold()
+        self._migrate_organization_attachment_retention()
         self._migrate_users_active_org_and_role_hint()
         self._migrate_sessions()
         self._migrate_patients()
@@ -753,6 +769,18 @@ class Storage(StorageBase):
             self._conn.execute(
                 "ALTER TABLE organizations ADD COLUMN stale_threshold_days "
                 "INTEGER NOT NULL DEFAULT 3 CHECK (stale_threshold_days BETWEEN 1 AND 365)"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+    def _migrate_organization_attachment_retention(self) -> None:
+        """Phase 10.C — org-configurable attachment retention window."""
+        try:
+            self._conn.execute(
+                "ALTER TABLE organizations ADD COLUMN attachment_retention_days "
+                "INTEGER NOT NULL DEFAULT 2555 "
+                "CHECK (attachment_retention_days BETWEEN 30 AND 10950)"
             )
             self._conn.commit()
         except sqlite3.OperationalError:
@@ -1839,6 +1867,7 @@ class Storage(StorageBase):
         phone: str | None = None,
         fax: str | None = None,
         stale_threshold_days: int | None = None,
+        attachment_retention_days: int | None = None,
         overwrite: bool = False,
     ) -> Organization | None:
         # Gather (column, value) for each kwarg the caller supplied. In
@@ -1863,6 +1892,16 @@ class Storage(StorageBase):
             MIN_STALE_THRESHOLD_DAYS <= stale_threshold_days <= MAX_STALE_THRESHOLD_DAYS
         ):
             raise ValueError("Stale referral threshold must be between 1 and 365 days.")
+        if attachment_retention_days is not None and not (
+            MIN_ATTACHMENT_RETENTION_DAYS
+            <= attachment_retention_days
+            <= MAX_ATTACHMENT_RETENTION_DAYS
+        ):
+            raise ValueError(
+                "Attachment retention must be between "
+                f"{MIN_ATTACHMENT_RETENTION_DAYS} and "
+                f"{MAX_ATTACHMENT_RETENTION_DAYS} days."
+            )
         fields: dict[str, str | int | None] = {}
         for col, val in kwargs.items():
             if overwrite:
@@ -1871,6 +1910,8 @@ class Storage(StorageBase):
                 fields[col] = val
         if stale_threshold_days is not None:
             fields["stale_threshold_days"] = stale_threshold_days
+        if attachment_retention_days is not None:
+            fields["attachment_retention_days"] = attachment_retention_days
         if not fields:
             # Nothing to write — return current row (may be None if missing).
             return self.get_organization(organization_id)
@@ -3105,6 +3146,71 @@ class Storage(StorageBase):
         if self.get_referral(scope, row["referral_id"]) is None:
             return None
         return _row_to_referral_attachment(row)
+
+    def list_attachments_expired(
+        self,
+        cutoff_created_at: datetime,
+        *,
+        scope_organization_id: int | None = None,
+        scope_user_id: int | None = None,
+        limit: int = 500,
+    ) -> list[ReferralAttachment]:
+        """Phase 10.C — rows eligible for retention purge.
+
+        Returns bucket-backed attachments (``storage_ref IS NOT NULL``)
+        whose ``created_at < cutoff`` AND whose parent referral is in the
+        requested scope.  Scope MUST be specified (exactly one of
+        ``scope_organization_id`` / ``scope_user_id``) so a broken caller
+        can't accidentally purge everyone's data in one call.
+        """
+        if (scope_organization_id is None) == (scope_user_id is None):
+            raise ValueError("Exactly one of scope_organization_id / scope_user_id is required.")
+        cutoff_iso = _to_sqlite_utc_iso(cutoff_created_at)
+        if scope_organization_id is not None:
+            scope_clause = "r.scope_organization_id = ? AND r.scope_user_id IS NULL"
+            scope_param: int = scope_organization_id
+        else:
+            scope_clause = "r.scope_user_id = ? AND r.scope_organization_id IS NULL"
+            scope_param = scope_user_id  # type: ignore[assignment]
+        rows = self._conn.execute(
+            f"""SELECT a.*
+                FROM referral_attachments a
+                JOIN referrals r ON r.id = a.referral_id
+                WHERE a.created_at < ?
+                  AND a.storage_ref IS NOT NULL
+                  AND {scope_clause}
+                ORDER BY a.created_at ASC
+                LIMIT ?""",
+            (cutoff_iso, scope_param, int(limit)),
+        ).fetchall()
+        return [_row_to_referral_attachment(r) for r in rows]
+
+    def list_all_organizations(self, *, include_deleted: bool = False) -> list[Organization]:
+        """Return every org.  Used by the retention sweep to iterate
+        tenants — no scope gate because the sweep is a platform-wide job.
+        """
+        sql = "SELECT * FROM organizations"
+        if not include_deleted:
+            sql += " WHERE deleted_at IS NULL"
+        sql += " ORDER BY id ASC"
+        rows = self._conn.execute(sql).fetchall()
+        return [_row_to_organization(r) for r in rows]
+
+    def list_solo_user_ids_with_attachments(self) -> list[int]:
+        """Return distinct scope_user_ids that own at least one
+        bucket-backed attachment.  Fed to the retention sweep so solo
+        users' attachments get the same purge treatment as org ones,
+        without needing to enumerate every user row.
+        """
+        rows = self._conn.execute(
+            """SELECT DISTINCT r.scope_user_id
+               FROM referral_attachments a
+               JOIN referrals r ON r.id = a.referral_id
+               WHERE a.storage_ref IS NOT NULL
+                 AND r.scope_user_id IS NOT NULL
+                 AND r.scope_organization_id IS NULL"""
+        ).fetchall()
+        return [int(r["scope_user_id"]) for r in rows]
 
     def update_referral_attachment(
         self,

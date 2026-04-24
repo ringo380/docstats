@@ -169,6 +169,7 @@ class StorageBase(ABC):
         phone: str | None = None,
         fax: str | None = None,
         stale_threshold_days: int | None = None,
+        attachment_retention_days: int | None = None,
         overwrite: bool = False,
     ) -> "Organization | None":
         """Update an org's mutable columns.
@@ -213,6 +214,13 @@ class StorageBase(ABC):
 
     @abstractmethod
     def list_memberships_for_org(self, organization_id: int) -> list["Membership"]: ...
+
+    @abstractmethod
+    def list_all_organizations(self, *, include_deleted: bool = False) -> list["Organization"]:
+        """Return every org row (live by default).  Platform-wide sweep
+        helper — the retention job (10.C) iterates tenants via this.
+        No scope gate: callers with cross-tenant authority are
+        dispatcher-style background jobs, not user sessions."""
 
     @abstractmethod
     def update_membership_role(self, organization_id: int, user_id: int, role: str) -> bool: ...
@@ -811,6 +819,28 @@ class StorageBase(ABC):
         outside the caller's scope.  Used by the attachment download /
         delete routes where the URL carries only the attachment id.
         """
+
+    @abstractmethod
+    def list_attachments_expired(
+        self,
+        cutoff_created_at: "datetime",
+        *,
+        scope_organization_id: int | None = None,
+        scope_user_id: int | None = None,
+        limit: int = 500,
+    ) -> list["ReferralAttachment"]:
+        """Phase 10.C — bucket-backed attachments older than ``cutoff`` in
+        the specified scope.  Exactly one of ``scope_organization_id`` /
+        ``scope_user_id`` must be provided; the retention sweep calls this
+        once per tenant and processes results in batches of ``limit``.
+        """
+
+    @abstractmethod
+    def list_solo_user_ids_with_attachments(self) -> list[int]:
+        """Phase 10.C — distinct ``scope_user_id`` values that own at
+        least one bucket-backed attachment.  Feeds the retention sweep
+        so solo users get their attachments purged without enumerating
+        every user row."""
 
     @abstractmethod
     def update_referral_attachment(

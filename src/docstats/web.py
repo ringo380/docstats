@@ -108,6 +108,28 @@ async def _lifespan(_app: FastAPI):
         except Exception:
             logger.exception("Failed to start delivery dispatcher (continuing)")
 
+    # Phase 10.C: attachment retention sweep.  Disabled under tests via
+    # DOCSTATS_SKIP_ATTACHMENT_RETENTION=1.  Policy: daily sweep; tuned
+    # lower in dev/sandbox envs via ATTACHMENT_RETENTION_INTERVAL_SECONDS.
+    retention_task: "asyncio.Task | None" = None
+    retention_stop = asyncio.Event()
+    if os.environ.get("DOCSTATS_SKIP_ATTACHMENT_RETENTION") != "1":
+        from docstats.storage_files.factory import get_file_backend
+        from docstats.storage_files.retention import run as _retention_run
+
+        try:
+            retention_task = asyncio.create_task(
+                _retention_run(
+                    get_storage(),
+                    get_file_backend(),
+                    stop_event=retention_stop,
+                ),
+                name="attachment-retention",
+            )
+            logger.info("Attachment retention sweep scheduled")
+        except Exception:
+            logger.exception("Failed to start attachment retention sweep (continuing)")
+
     try:
         yield
     finally:
@@ -117,6 +139,12 @@ async def _lifespan(_app: FastAPI):
                 await asyncio.wait_for(dispatcher_task, timeout=15)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 logger.warning("Delivery dispatcher did not shut down cleanly")
+        if retention_task is not None:
+            retention_stop.set()
+            try:
+                await asyncio.wait_for(retention_task, timeout=15)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                logger.warning("Attachment retention sweep did not shut down cleanly")
 
 
 app = FastAPI(
