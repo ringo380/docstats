@@ -2321,6 +2321,17 @@ class PostgresStorage(StorageBase):
         )
         return [_row_to_referral_attachment(r) for r in result.data]
 
+    def get_referral_attachment(
+        self, scope: Scope, attachment_id: int
+    ) -> ReferralAttachment | None:
+        result = self._t("referral_attachments").select("*").eq("id", attachment_id).execute()
+        if not result.data:
+            return None
+        row = result.data[0]
+        if self.get_referral(scope, row["referral_id"]) is None:
+            return None
+        return _row_to_referral_attachment(row)
+
     def update_referral_attachment(
         self,
         scope: Scope,

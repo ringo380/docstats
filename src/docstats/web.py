@@ -34,6 +34,7 @@ from docstats.routes.api_v2 import (
     router as api_v2_router,
 )
 from docstats.routes.auth import router as auth_router
+from docstats.routes.attachments import router as attachments_router
 from docstats.routes.exports import router as exports_router
 from docstats.routes.imports import router as imports_router
 from docstats.routes.invite import router as invite_router
@@ -244,6 +245,7 @@ app.include_router(exports_router)
 app.include_router(delivery_router)
 app.include_router(share_router)
 app.include_router(webhooks_vendor_router)
+app.include_router(attachments_router)
 app.include_router(referrals_router)
 app.include_router(saved_router)
 app.include_router(providers_router)

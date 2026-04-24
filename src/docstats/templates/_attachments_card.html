@@ -1,0 +1,62 @@
+{# Phase 10.A — Attachments section on referral detail.
+
+   Renders the current attachment list plus (when the feature flag is on)
+   an upload form.  Flag is ``attachment_uploads_enabled`` — pulled from
+   the ``ATTACHMENT_UPLOAD_ENABLED`` env var by the route layer. #}
+<section class="card" id="attachments">
+  <h3>Attachments</h3>
+  {% if attachments %}
+    <ul class="attachment-list">
+      {% for a in attachments %}
+        <li class="attachment-row">
+          <strong>{{ a.label }}</strong>
+          <span class="sub muted">
+            {{ a.kind }}
+            {% if a.date_of_service %} · {{ a.date_of_service }}{% endif %}
+            {% if a.checklist_only %} · checklist only{% endif %}
+          </span>
+          {% if a.storage_ref and attachment_uploads_enabled %}
+            <span class="attachment-actions">
+              <a href="/attachments/{{ a.id }}" target="_blank" rel="noopener">Download</a>
+            </span>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted sub">No attachments yet.</p>
+  {% endif %}
+
+  {% if attachment_uploads_enabled %}
+    <form method="post"
+          action="/referrals/{{ referral.id }}/attachments"
+          enctype="multipart/form-data"
+          class="inline-form"
+          style="margin-top:12px;">
+      <label>Kind
+        <select name="kind" required>
+          {% for k in attachment_kinds %}
+            <option value="{{ k }}">{{ k | replace('_', ' ') | title }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Label
+        <input type="text" name="label" required maxlength="200" placeholder="e.g. Lab results 2026-03-12">
+      </label>
+      <label>Date of service
+        <input type="date" name="date_of_service">
+      </label>
+      <label>File
+        <input type="file" name="file" required
+               accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.docx">
+      </label>
+      <div class="action-bar">
+        <button type="submit" class="btn btn-primary btn-sm">Upload</button>
+      </div>
+    </form>
+    <p class="sub muted" style="margin-top:6px;">
+      PDF, JPEG, PNG, TIFF, or DOCX up to 50 MB.  Files are stored encrypted
+      at rest; download links expire 15 minutes after issue.
+    </p>
+  {% endif %}
+</section>

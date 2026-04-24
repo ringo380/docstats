@@ -800,6 +800,19 @@ class StorageBase(ABC):
     ) -> list["ReferralAttachment"]: ...
 
     @abstractmethod
+    def get_referral_attachment(
+        self,
+        scope: "Scope",
+        attachment_id: int,
+    ) -> "ReferralAttachment | None":
+        """Fetch one attachment by id, scope-gated via the parent referral.
+
+        Returns None when the row doesn't exist OR the parent referral is
+        outside the caller's scope.  Used by the attachment download /
+        delete routes where the URL carries only the attachment id.
+        """
+
+    @abstractmethod
     def update_referral_attachment(
         self,
         scope: "Scope",
