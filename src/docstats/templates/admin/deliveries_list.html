@@ -1,0 +1,94 @@
+{% extends "admin/_admin_layout.html" %}
+
+{% block admin_content %}
+<div class="saved-header">
+  <div>
+    <h1>Deliveries</h1>
+    <div class="sub">Outbound fax, email, and Direct Trust deliveries for this organization.</div>
+  </div>
+  <div>
+    <a href="/admin/deliveries/health" class="btn btn-secondary btn-sm">Queue health</a>
+  </div>
+</div>
+
+<form method="get" action="/admin/deliveries" class="filter-bar">
+  <label>Channel
+    <select name="channel">
+      <option value="">All</option>
+      {% for ch in channel_values %}
+        <option value="{{ ch }}" {% if filters.channel == ch %}selected{% endif %}>{{ ch | title }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Status
+    <select name="status">
+      <option value="">All</option>
+      {% for s in status_values %}
+        <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s | title }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Referral id
+    <input type="number" name="referral_id" value="{{ filters.referral_id }}" min="1" inputmode="numeric">
+  </label>
+  <label>From
+    <input type="date" name="since" value="{{ filters.since }}">
+  </label>
+  <label>To
+    <input type="date" name="until" value="{{ filters.until }}">
+  </label>
+  <button type="submit" class="btn btn-primary btn-sm">Filter</button>
+  <a href="/admin/deliveries" class="btn btn-secondary btn-sm">Clear</a>
+</form>
+
+<div class="card" style="margin-top:16px;">
+  {% if deliveries %}
+    <table class="admin-events">
+      <thead>
+        <tr>
+          <th>Created (UTC)</th>
+          <th>Id</th>
+          <th>Referral</th>
+          <th>Channel</th>
+          <th>Recipient</th>
+          <th>Status</th>
+          <th>Retries</th>
+          <th>Last error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in deliveries %}
+          <tr>
+            <td class="muted">{{ d.created_at.strftime('%Y-%m-%d %H:%M:%S') if d.created_at else '—' }}</td>
+            <td><a href="/admin/deliveries/{{ d.id }}">#{{ d.id }}</a></td>
+            <td><a href="/referrals/{{ d.referral_id }}" class="muted">#{{ d.referral_id }}</a></td>
+            <td>{{ d.channel }}</td>
+            <td class="muted">{{ d.recipient }}</td>
+            <td><span class="status-{{ d.status }}">{{ d.status }}</span></td>
+            <td class="muted">{{ d.retry_count }}</td>
+            <td class="muted">
+              {% if d.last_error_code %}<code>{{ d.last_error_code }}</code>{% else %}—{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No deliveries match the current filters.</p>
+  {% endif %}
+  {% if prev_offset is not none or next_offset is not none %}
+    <div class="action-bar" style="margin-top:12px; display:flex; gap:8px; align-items:center;">
+      <span class="muted sub">Page offset {{ offset }} · showing {{ deliveries | length }} of up to {{ page_size }}.</span>
+      <span style="flex:1;"></span>
+      {% if prev_offset is not none %}
+        {% set prev_qs = request.url.include_query_params(offset=prev_offset) %}
+        <a href="?{{ prev_qs.query }}" class="btn btn-secondary btn-sm">← Previous</a>
+      {% endif %}
+      {% if next_offset is not none %}
+        {% set next_qs = request.url.include_query_params(offset=next_offset) %}
+        <a href="?{{ next_qs.query }}" class="btn btn-secondary btn-sm">Next →</a>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

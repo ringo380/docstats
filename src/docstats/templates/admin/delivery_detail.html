@@ -1,0 +1,100 @@
+{% extends "admin/_admin_layout.html" %}
+
+{% block admin_content %}
+<div class="saved-header">
+  <div>
+    <h1>Delivery #{{ delivery.id }}</h1>
+    <div class="sub">
+      Referral <a href="/referrals/{{ delivery.referral_id }}">#{{ delivery.referral_id }}</a>
+      {% if patient %}
+        · patient {{ patient.first_name }} {{ patient.last_name }}
+      {% endif %}
+    </div>
+  </div>
+  <div>
+    <a href="/admin/deliveries" class="btn btn-secondary btn-sm">← All deliveries</a>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3>State</h3>
+  <dl class="admin-stat-grid">
+    <div><dt>Channel</dt><dd>{{ delivery.channel }}</dd></div>
+    <div><dt>Status</dt><dd><span class="status-{{ delivery.status }}">{{ delivery.status }}</span></dd></div>
+    <div><dt>Recipient</dt><dd class="muted">{{ delivery.recipient }}</dd></div>
+    <div><dt>Vendor</dt><dd>{{ delivery.vendor_name or '—' }}</dd></div>
+    <div><dt>Vendor message id</dt><dd><code>{{ delivery.vendor_message_id or '—' }}</code></dd></div>
+    <div><dt>Idempotency key</dt><dd><code>{{ delivery.idempotency_key or '—' }}</code></dd></div>
+    <div><dt>Retries</dt><dd>{{ delivery.retry_count }}</dd></div>
+    <div><dt>Created</dt><dd class="muted">{{ delivery.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') if delivery.created_at else '—' }}</dd></div>
+    <div><dt>Updated</dt><dd class="muted">{{ delivery.updated_at.strftime('%Y-%m-%d %H:%M:%S UTC') if delivery.updated_at else '—' }}</dd></div>
+    <div><dt>Sent</dt><dd class="muted">{{ delivery.sent_at.strftime('%Y-%m-%d %H:%M:%S UTC') if delivery.sent_at else '—' }}</dd></div>
+    <div><dt>Delivered</dt><dd class="muted">{{ delivery.delivered_at.strftime('%Y-%m-%d %H:%M:%S UTC') if delivery.delivered_at else '—' }}</dd></div>
+    {% if delivery.cancelled_at %}
+      <div><dt>Cancelled</dt><dd class="muted">{{ delivery.cancelled_at.strftime('%Y-%m-%d %H:%M:%S UTC') }} by user {{ delivery.cancelled_by_user_id }}</dd></div>
+    {% endif %}
+  </dl>
+
+  {% if delivery.last_error_code %}
+    <div class="alert-card" style="margin-top:12px;">
+      <strong>Last error:</strong> <code>{{ delivery.last_error_code }}</code>
+      {% if delivery.last_error_message %}
+        <div class="muted" style="margin-top:4px;">{{ delivery.last_error_message }}</div>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if not delivery.is_terminal %}
+    <form method="post" action="/admin/deliveries/{{ delivery.id }}/cancel"
+          style="margin-top:16px;"
+          onsubmit="return confirm('Cancel this delivery? It will not be retried.');">
+      <button type="submit" class="btn btn-danger btn-sm">Cancel delivery</button>
+    </form>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3>Attempt history</h3>
+  {% if attempts %}
+    <table class="admin-events">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Started (UTC)</th>
+          <th>Completed (UTC)</th>
+          <th>Result</th>
+          <th>Error code</th>
+          <th>Vendor response</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in attempts %}
+          <tr>
+            <td>{{ a.attempt_number }}</td>
+            <td class="muted">{{ a.started_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+            <td class="muted">{{ a.completed_at.strftime('%Y-%m-%d %H:%M:%S') if a.completed_at else '—' }}</td>
+            <td><code>{{ a.result }}</code></td>
+            <td class="muted">{{ a.error_code or '—' }}</td>
+            <td class="muted" style="max-width: 480px; overflow-wrap: anywhere;">
+              {% if a.vendor_response_excerpt %}
+                <pre style="white-space: pre-wrap; margin: 0;">{{ a.vendor_response_excerpt }}</pre>
+              {% elif a.error_message %}
+                <pre style="white-space: pre-wrap; margin: 0;">{{ a.error_message }}</pre>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No attempts recorded yet.</p>
+  {% endif %}
+</div>
+
+{% if delivery.packet_artifact %}
+  <div class="card" style="margin-top:16px;">
+    <h3>Packet artifact</h3>
+    <pre class="muted" style="white-space: pre-wrap; max-height: 240px; overflow: auto;">{{ delivery.packet_artifact | tojson(indent=2) }}</pre>
+  </div>
+{% endif %}
+{% endblock %}
