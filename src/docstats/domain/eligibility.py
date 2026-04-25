@@ -12,9 +12,13 @@ deductible status.  Raw response JSON is stored alongside for audit/debug.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from docstats.domain.referrals import CompletenessItem  # noqa: F401 — used in overlay_eligibility
+    from docstats.domain.rules import CompletenessReportV2
 
 # ---------------------------------------------------------------------------
 # Status vocabulary
@@ -176,6 +180,73 @@ def _extract_benefit_amount(
                 except (TypeError, ValueError):
                     pass
     return None
+
+
+def overlay_eligibility(
+    completeness: "CompletenessReportV2",
+    check: EligibilityCheck,
+) -> "CompletenessReportV2":
+    """Annotate a completeness report with live eligibility data.
+
+    Adds two synthetic items to the completeness report:
+    - ``elig_coverage_active``: satisfied when the live check confirms active coverage
+    - ``elig_referral_required``: satisfied when referral_required is False (i.e. no
+      referral needed) or when an auth number is already present on the referral
+
+    Items are appended so they appear after the baseline checks in the UI.
+    Returns a new CompletenessReportV2 — does not mutate the original.
+    """
+    from docstats.domain.rules import CompletenessReportV2
+    from docstats.domain.referrals import CompletenessItem
+
+    if check.status != "complete" or check.result is None:
+        return completeness
+
+    r = check.result
+    new_items = list(completeness.items)
+
+    # Coverage active
+    new_items.append(
+        CompletenessItem(
+            code="elig_coverage_active",
+            label="Coverage active (live verified)",
+            required=True,
+            satisfied=r.coverage_active,
+        )
+    )
+
+    # Referral required flag — if None (unknown), don't add the item
+    if r.referral_required is not None:
+        new_items.append(
+            CompletenessItem(
+                code="elig_referral_not_required",
+                label="No referral required (live verified)" if not r.referral_required
+                      else "Referral required — authorization needed",
+                required=False,
+                satisfied=not r.referral_required,
+            )
+        )
+
+    # Prior auth flag
+    if r.prior_auth_required is not None:
+        new_items.append(
+            CompletenessItem(
+                code="elig_prior_auth",
+                label="Prior authorization not required (live verified)" if not r.prior_auth_required
+                      else "Prior authorization required",
+                required=False,
+                satisfied=not r.prior_auth_required,
+            )
+        )
+
+    return CompletenessReportV2(
+        items=new_items,
+        red_flags=completeness.red_flags,
+        recommended_attachments=completeness.recommended_attachments,
+        rejection_hints=completeness.rejection_hints,
+        specialty_display_name=completeness.specialty_display_name,
+        payer_display_name=completeness.payer_display_name,
+    )
 
 
 def _extract_referral_required(data: dict, plan: dict) -> bool | None:

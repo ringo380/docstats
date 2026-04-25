@@ -1,4 +1,13 @@
-"""Eligibility check routes — Phase 11.B.
+"""Eligibility check routes — Phase 11.B/C.
+
+Phase 11.B endpoints (patient context):
+  POST /patients/{id}/eligibility          — trigger a new eligibility check
+  GET  /patients/{id}/eligibility/latest   — fetch the most recent result (htmx partial)
+
+Phase 11.C endpoints (referral context):
+  POST /referrals/{id}/eligibility         — trigger from referral; pre-fills payer from
+                                             referral.payer_plan_id if available
+  GET  /referrals/{id}/eligibility/latest  — side-rail card partial
 
 Two endpoints per resource type:
 
@@ -235,4 +244,172 @@ async def get_latest_eligibility(
     return render(
         "_eligibility_result.html",
         _ctx(request, current_user, storage, check=check, patient=patient),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /referrals/{id}/eligibility  — trigger from referral context (11.C)
+# ---------------------------------------------------------------------------
+
+@router.post("/referrals/{referral_id}/eligibility", response_class=HTMLResponse)
+async def trigger_eligibility_from_referral(
+    request: Request,
+    referral_id: int = Path(..., ge=1),
+    payer_id: str = Form(..., max_length=64),
+    payer_name: str | None = Form(None, max_length=200),
+    member_id: str = Form(..., max_length=64),
+    service_type: str | None = Form(None, max_length=8),
+    provider_npi: str | None = Form(None, max_length=10),
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    referral = storage.get_referral(scope, referral_id)
+    if referral is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    patient = storage.get_patient(scope, referral.patient_id)
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+
+    svc_type = (service_type or "").strip() or _DEFAULT_SERVICE_TYPE
+
+    # Cooldown guard
+    latest = storage.get_latest_eligibility_check(
+        scope, referral.patient_id, availity_payer_id=payer_id, service_type=svc_type
+    )
+    cooldown = _cooldown_seconds()
+    if latest and latest.checked_at:
+        age = (datetime.now(tz=timezone.utc) - latest.checked_at).total_seconds()
+        if age < cooldown:
+            seconds_left = int(cooldown - age)
+            return render(
+                "_referral_eligibility_card.html",
+                _ctx(
+                    request,
+                    current_user,
+                    storage,
+                    check=latest,
+                    referral=referral,
+                    patient=patient,
+                    error=f"Checked {int(age)}s ago — wait {seconds_left}s.",
+                    cooldown_active=True,
+                ),
+            )
+
+    check = storage.create_eligibility_check(
+        scope,
+        patient_id=referral.patient_id,
+        availity_payer_id=payer_id,
+        payer_name=payer_name,
+        service_type=svc_type,
+        status="pending",
+    )
+
+    if not patient.date_of_birth:
+        storage.update_eligibility_check(
+            check.id,  # type: ignore[arg-type]
+            status="error",
+            error_message="Patient date of birth is required.",
+        )
+        latest_err = storage.get_latest_eligibility_check(
+            scope, referral.patient_id, availity_payer_id=payer_id, service_type=svc_type
+        )
+        return render(
+            "_referral_eligibility_card.html",
+            _ctx(
+                request,
+                current_user,
+                storage,
+                check=latest_err,
+                referral=referral,
+                patient=patient,
+                error="Patient date of birth is required.",
+            ),
+        )
+
+    npi = (provider_npi or "").strip() or (referral.referring_provider_npi or "") or "0000000000"
+    payload: dict = {
+        "payerId": payer_id,
+        "providerNpi": npi,
+        "memberId": member_id,
+        "patientBirthDate": patient.date_of_birth,
+        "patientLastName": patient.last_name,
+        "patientFirstName": patient.first_name,
+        "serviceType": svc_type,
+    }
+
+    now = datetime.now(tz=timezone.utc)
+    try:
+        client = get_availity_client()
+        raw = await client.async_check_eligibility(payload)
+        result = parse_coverage_response(raw)
+        storage.update_eligibility_check(
+            check.id,  # type: ignore[arg-type]
+            status="complete",
+            result_json=result.model_dump_json(),
+            raw_response_json=json.dumps(raw),
+            checked_at=now,
+        )
+        audit_record(
+            storage,
+            action="eligibility.check",
+            request=request,
+            actor_user_id=current_user["id"],
+            scope_user_id=scope.user_id if scope.is_solo else None,
+            scope_organization_id=scope.organization_id,
+            entity_type="referral",
+            entity_id=str(referral_id),
+            metadata={"payer_id": payer_id, "service_type": svc_type, "status": "complete"},
+        )
+    except (AvailityDisabledError, AvailityUnavailableError, AvailityError) as e:
+        msg = (
+            "Eligibility checking is not configured on this server."
+            if isinstance(e, AvailityDisabledError)
+            else str(e)
+        )
+        storage.update_eligibility_check(
+            check.id,  # type: ignore[arg-type]
+            status="error",
+            error_message=msg,
+            checked_at=now,
+        )
+
+    updated_check = storage.get_latest_eligibility_check(
+        scope, referral.patient_id, availity_payer_id=payer_id, service_type=svc_type
+    )
+    return render(
+        "_referral_eligibility_card.html",
+        _ctx(request, current_user, storage, check=updated_check,
+             referral=referral, patient=patient),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /referrals/{id}/eligibility/latest  — side-rail card (htmx, 11.C)
+# ---------------------------------------------------------------------------
+
+@router.get("/referrals/{referral_id}/eligibility/latest", response_class=HTMLResponse)
+async def get_referral_eligibility_latest(
+    request: Request,
+    referral_id: int = Path(..., ge=1),
+    payer_id: str | None = None,
+    service_type: str | None = None,
+    current_user: dict = Depends(require_phi_consent),
+    scope: Scope = Depends(get_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    referral = storage.get_referral(scope, referral_id)
+    if referral is None:
+        raise HTTPException(status_code=404, detail="Referral not found.")
+    patient = storage.get_patient(scope, referral.patient_id)
+    check = storage.get_latest_eligibility_check(
+        scope,
+        referral.patient_id,
+        availity_payer_id=payer_id or None,
+        service_type=service_type or None,
+    )
+    return render(
+        "_referral_eligibility_card.html",
+        _ctx(request, current_user, storage, check=check,
+             referral=referral, patient=patient),
     )

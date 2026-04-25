@@ -35,6 +35,7 @@ from docstats.domain.referrals import (
 )
 from docstats.domain.orgs import DEFAULT_STALE_THRESHOLD_DAYS
 from docstats.enrichment import fetch_receiving_direct_endpoints
+from docstats.domain.eligibility import overlay_eligibility
 from docstats.domain.rules import (
     detect_red_flags_in_text,
     resolve_specialty_rule,
@@ -455,6 +456,10 @@ async def _render_detail(
     events = storage.list_referral_events(scope, referral_id, limit=50)
     responses = storage.list_referral_responses(scope, referral_id)
     completeness = rules_based_completeness(storage, scope, referral)
+    # Phase 11.C: overlay live eligibility data into the completeness report when available.
+    latest_eligibility = storage.get_latest_eligibility_check(scope, referral.patient_id)
+    if latest_eligibility:
+        completeness = overlay_eligibility(completeness, latest_eligibility)
     actors_by_id = _build_actor_map(storage, events)
     # Phase 8.C: surface Direct Trust endpoints from NPPES when a receiving
     # NPI is set. Best-effort — NPPES failures degrade to an empty list so
@@ -525,6 +530,7 @@ async def _render_detail(
             attachments=attachments,
             attachment_uploads_enabled=attachment_uploads_enabled,
             attachment_kinds=ATTACHMENT_KIND_VALUES,
+            check=latest_eligibility,
             errors=errors,
             response_errors=response_errors,
             response_values=response_values or {},
