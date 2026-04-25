@@ -76,6 +76,9 @@ class InsurancePlan(BaseModel):
 
     notes: str | None = None
 
+    # Availity payer link (Phase 11.D) — soft link, not a FK
+    availity_payer_id: str | None = None
+
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None

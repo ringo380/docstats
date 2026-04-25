@@ -1228,6 +1228,8 @@ _AUDIT_PAGE_SIZE = 50
 # New actions added in future phases don't need to touch this list
 # immediately; the free-text input still accepts them.
 _KNOWN_AUDIT_ACTIONS: tuple[str, ...] = (
+    "admin.availity_payers.match_plans",
+    "admin.availity_payers.sync",
     "admin.member.invitation_revoke",
     "admin.member.invite",
     "admin.member.joined",
@@ -1869,3 +1871,138 @@ async def members_remove(
         metadata={"role": membership.role},
     )
     return _redirect_after_save(request, "/admin/members")
+
+
+# ---------------------------------------------------------------------------
+# Phase 11.D — Availity payer directory admin
+# ---------------------------------------------------------------------------
+
+
+@router.get("/payers/availity", response_class=HTMLResponse)
+async def availity_payers_list(
+    request: Request,
+    search: str | None = Query(None, max_length=200),
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Admin view: list cached Availity payer directory entries."""
+    org = _require_org(scope, storage)
+    payers = storage.list_availity_payers(search=search, limit=500)
+    count = storage.count_availity_payers()
+    last_synced = storage.get_availity_payer_last_synced()
+    return render(
+        "admin/availity_payers.html",
+        _ctx(
+            request,
+            current_user,
+            storage,
+            scope,
+            org,
+            active_section="availity-payers",
+            payers=payers,
+            payer_count=count,
+            last_synced=last_synced,
+            search=search or "",
+            flash_success=request.query_params.get("success"),
+            flash_error=request.query_params.get("error"),
+        ),
+    )
+
+
+@router.post("/payers/availity/sync", response_class=HTMLResponse)
+async def availity_payers_sync(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Trigger a fresh sync of the Availity payer directory."""
+    from docstats.availity_client import AvailityDisabledError, get_availity_client
+    from docstats.domain.eligibility import AvailityPayer
+
+    try:
+        client = get_availity_client()
+    except AvailityDisabledError:
+        return _redirect_after_save(
+            request,
+            "/admin/payers/availity?error=Availity+credentials+not+configured.",
+        )
+
+    loop = __import__("asyncio").get_running_loop()
+    try:
+        raw_payers: list[dict[str, Any]] = await loop.run_in_executor(None, client.list_payers)
+    except Exception as exc:
+        logger.exception("Availity payer sync failed")
+        return _redirect_after_save(
+            request,
+            f"/admin/payers/availity?error=Sync+failed:+{exc!s:.120}",
+        )
+
+    payer_models = [
+        AvailityPayer(
+            availity_id=p.get("payerId") or p.get("id") or "",
+            payer_name=p.get("payerName") or p.get("name") or "",
+            aliases=[str(a) for a in (p.get("aliases") or [])],
+            transaction_types=[str(t) for t in (p.get("transactionTypes") or [])],
+            state_codes=[str(s) for s in (p.get("stateCodes") or [])],
+        )
+        for p in raw_payers
+        if p.get("payerId") or p.get("id")  # skip rows with no ID
+    ]
+
+    count = storage.upsert_availity_payers(payer_models)
+
+    audit_record(
+        storage,
+        action="admin.availity_payers.sync",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_organization_id=scope.organization_id,
+        metadata={"count": count},
+    )
+    return _redirect_after_save(
+        request,
+        f"/admin/payers/availity?success=Synced+{count}+payers+from+Availity.",
+    )
+
+
+@router.post("/payers/availity/match-plans", response_class=HTMLResponse)
+async def availity_payers_match_plans(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    scope: Scope = Depends(require_admin_scope),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Auto-match unlinked insurance_plans rows to Availity payer IDs."""
+    from docstats.domain.eligibility import match_payer_to_availity
+
+    payers = storage.list_availity_payers(limit=1000)
+    if not payers:
+        return _redirect_after_save(
+            request,
+            "/admin/payers/availity?error=No+payers+cached.+Run+sync+first.",
+        )
+
+    plans = storage.list_insurance_plans(scope)
+    matched = 0
+    for plan in plans:
+        if plan.availity_payer_id:  # type: ignore[attr-defined]
+            continue  # already linked
+        availity_id = match_payer_to_availity(plan.payer_name or "", payers)
+        if availity_id:
+            storage.link_insurance_plan_payer(plan.id, availity_id)  # type: ignore[arg-type]
+            matched += 1
+
+    audit_record(
+        storage,
+        action="admin.availity_payers.match_plans",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_organization_id=scope.organization_id,
+        metadata={"matched": matched, "total": len(plans)},
+    )
+    return _redirect_after_save(
+        request,
+        f"/admin/payers/availity?success=Matched+{matched}+of+{len(plans)}+insurance+plans.",
+    )

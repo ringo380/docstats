@@ -213,9 +213,12 @@ async def patient_detail(
     storage: StorageBase = Depends(get_storage),
 ):
     patient = _require_patient(scope, storage, patient_id)
+    latest_check = storage.get_latest_eligibility_check(scope, patient_id)
     return render(
         "patient_detail.html",
-        _ctx(request, current_user, storage, patient=patient, errors=None),
+        _ctx(
+            request, current_user, storage, patient=patient, errors=None, latest_check=latest_check
+        ),
     )
 
 
@@ -250,6 +253,7 @@ async def patient_update(
     last = _clean(last_name) or ""
     if not first or not last:
         patient = storage.get_patient(scope, patient_id)
+        latest_check = storage.get_latest_eligibility_check(scope, patient_id)
         return render(
             "patient_detail.html",
             _ctx(
@@ -257,6 +261,7 @@ async def patient_update(
                 current_user,
                 storage,
                 patient=patient,
+                latest_check=latest_check,
                 errors=["First name and last name are required."],
             ),
         )
@@ -286,9 +291,17 @@ async def patient_update(
         )
     except ValueError as e:
         patient = storage.get_patient(scope, patient_id)
+        latest_check = storage.get_latest_eligibility_check(scope, patient_id)
         return render(
             "patient_detail.html",
-            _ctx(request, current_user, storage, patient=patient, errors=[str(e)]),
+            _ctx(
+                request,
+                current_user,
+                storage,
+                patient=patient,
+                latest_check=latest_check,
+                errors=[str(e)],
+            ),
         )
     if updated is None:
         raise HTTPException(status_code=404, detail="Patient not found.")

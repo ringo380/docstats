@@ -1,0 +1,112 @@
+{# Eligibility card for the referral detail side rail.
+   Expects: check (EligibilityCheck|None), referral, patient, error (optional) #}
+<section class="card" id="eligibility-card">
+  <h3>Eligibility
+    {% if check and check.status == 'complete' and check.result %}
+      {% if check.result.coverage_active %}
+        <span class="eligibility-badge elig-active" style="font-size:0.7rem;margin-left:6px;">✓ Active</span>
+      {% else %}
+        <span class="eligibility-badge elig-inactive" style="font-size:0.7rem;margin-left:6px;">✗ Inactive</span>
+      {% endif %}
+    {% elif check and check.status == 'error' %}
+      <span class="eligibility-badge elig-error" style="font-size:0.7rem;margin-left:6px;">⚠ Error</span>
+    {% endif %}
+  </h3>
+
+  {% if error %}
+    <div class="alert alert-error" style="margin:0 0 10px;font-size:0.82rem;">{{ error }}</div>
+  {% endif %}
+
+  {# Check form #}
+  <form hx-post="/referrals/{{ referral.id }}/eligibility"
+        hx-target="#eligibility-card"
+        hx-swap="outerHTML"
+        hx-indicator="#elig-spinner-{{ referral.id }}"
+        style="margin-bottom: 12px;">
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <label style="font-size:0.82rem;">Payer ID *
+        <input type="text" name="payer_id" required maxlength="64"
+               placeholder="e.g. BCBSM"
+               value="{{ (check.availity_payer_id if check else '') }}"
+               style="font-size:0.82rem;">
+      </label>
+      <label style="font-size:0.82rem;">Payer name
+        <input type="text" name="payer_name" maxlength="200"
+               placeholder="(optional)"
+               value="{{ (check.payer_name if check and check.payer_name else '') }}"
+               style="font-size:0.82rem;">
+      </label>
+      <label style="font-size:0.82rem;">Member ID *
+        <input type="text" name="member_id" required maxlength="64"
+               placeholder="Patient's member ID"
+               style="font-size:0.82rem;">
+      </label>
+      <label style="font-size:0.82rem;">Service type
+        <select name="service_type" style="font-size:0.82rem;">
+          <option value="30" {% if not check or check.service_type == '30' %}selected{% endif %}>30 — Health Benefit Plan</option>
+          <option value="1"  {% if check and check.service_type == '1' %}selected{% endif %}>1 — Medical Care</option>
+          <option value="2"  {% if check and check.service_type == '2' %}selected{% endif %}>2 — Surgical</option>
+          <option value="33" {% if check and check.service_type == '33' %}selected{% endif %}>33 — Chiropractic</option>
+          <option value="47" {% if check and check.service_type == '47' %}selected{% endif %}>47 — Hospital</option>
+          <option value="50" {% if check and check.service_type == '50' %}selected{% endif %}>50 — Outpatient</option>
+          <option value="98" {% if check and check.service_type == '98' %}selected{% endif %}>98 — Professional</option>
+          <option value="MH" {% if check and check.service_type == 'MH' %}selected{% endif %}>MH — Mental Health</option>
+          <option value="UC" {% if check and check.service_type == 'UC' %}selected{% endif %}>UC — Urgent Care</option>
+        </select>
+      </label>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+      <button type="submit" class="btn btn-sm btn-primary">Check Eligibility</button>
+      <span id="elig-spinner-{{ referral.id }}" class="htmx-indicator text-muted" style="font-size:0.78rem;">Checking…</span>
+    </div>
+  </form>
+
+  {# Result section #}
+  {% if check %}
+    {% set r = check.result %}
+
+    {% if check.status == 'complete' and r %}
+      <table class="eligibility-table">
+        {% if r.plan_name %}
+        <tr><th>Plan</th><td>{{ r.plan_name }}</td></tr>
+        {% endif %}
+        {% if r.group_number %}
+        <tr><th>Group</th><td>{{ r.group_number }}</td></tr>
+        {% endif %}
+        {% if r.member_id %}
+        <tr><th>Member ID</th><td>{{ r.member_id }}</td></tr>
+        {% endif %}
+        {% if r.plan_begin_date or r.plan_end_date %}
+        <tr><th>Coverage</th><td>{{ r.plan_begin_date or '?' }} – {{ r.plan_end_date or '∞' }}</td></tr>
+        {% endif %}
+        {% if r.copay_amount is not none %}
+        <tr><th>Copay</th><td>${{ "%.2f"|format(r.copay_amount) }}</td></tr>
+        {% endif %}
+        {% if r.deductible_remaining is not none %}
+        <tr><th>Deductible left</th><td>${{ "%.2f"|format(r.deductible_remaining) }}</td></tr>
+        {% endif %}
+        {% if r.referral_required is not none %}
+        <tr><th>Referral req.</th>
+            <td>{% if r.referral_required %}<span class="elig-req-yes">Yes</span>{% else %}<span class="elig-req-no">No</span>{% endif %}</td>
+        </tr>
+        {% endif %}
+        {% if r.prior_auth_required is not none %}
+        <tr><th>Prior auth</th>
+            <td>{% if r.prior_auth_required %}<span class="elig-req-yes">Yes</span>{% else %}<span class="elig-req-no">No</span>{% endif %}</td>
+        </tr>
+        {% endif %}
+      </table>
+    {% elif check.status == 'error' and check.error_message %}
+      <p class="eligibility-error-msg">{{ check.error_message }}</p>
+    {% elif check.status == 'pending' %}
+      <p class="text-muted" style="font-size:0.82rem;">Check in progress…</p>
+    {% endif %}
+
+    <div class="eligibility-meta" style="margin-top:8px;">
+      {% if check.checked_at %}
+        {{ check.checked_at.strftime('%b %-d %H:%M UTC') }}
+      {% endif %}
+      <span class="elig-source-badge">Live · Availity</span>
+    </div>
+  {% endif %}
+</section>

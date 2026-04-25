@@ -1,0 +1,111 @@
+{% extends "admin/_admin_layout.html" %}
+
+{% block admin_content %}
+<div class="saved-header">
+  <div>
+    <h1>Availity Payer Directory</h1>
+    <div class="sub">
+      {% if last_synced %}
+        {{ payer_count }} payers cached &middot; last synced {{ last_synced.strftime('%Y-%m-%d %H:%M UTC') }}
+      {% else %}
+        Not yet synced.
+      {% endif %}
+    </div>
+  </div>
+  <div class="header-actions">
+    <form method="post" action="/admin/payers/availity/match-plans" style="display:inline;">
+      <button type="submit" class="btn btn-secondary btn-sm"
+              title="Auto-match insurance plans to Availity payer IDs by name">
+        Match plans
+      </button>
+    </form>
+    <form method="post" action="/admin/payers/availity/sync" style="display:inline;">
+      <button type="submit" class="btn btn-primary btn-sm">
+        Sync from Availity
+      </button>
+    </form>
+  </div>
+</div>
+
+{% if flash_success %}
+  <div class="alert alert-success">{{ flash_success }}</div>
+{% endif %}
+{% if flash_error %}
+  <div class="alert alert-error">{{ flash_error }}</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:16px;">
+  <form method="get" action="/admin/payers/availity" class="inline-form">
+    <label style="margin-bottom:0;">
+      Search
+      <input type="text" name="search" value="{{ search }}" placeholder="Filter by payer name…" maxlength="200" style="min-width:260px;">
+    </label>
+    <button type="submit" class="btn btn-secondary btn-sm">Filter</button>
+    {% if search %}
+      <a href="/admin/payers/availity" class="btn btn-secondary btn-sm">Clear</a>
+    {% endif %}
+  </form>
+</div>
+
+{% if payers %}
+  <div class="card" style="padding:0;">
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>Payer ID</th>
+          <th>Payer name</th>
+          <th>Aliases</th>
+          <th>States</th>
+          <th>Transactions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in payers %}
+          <tr>
+            <td><code>{{ p.availity_id }}</code></td>
+            <td>{{ p.payer_name }}</td>
+            <td class="muted">
+              {% if p.aliases %}
+                {{ p.aliases | join(', ') | truncate(60) }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td class="muted">
+              {% if p.state_codes %}
+                {{ p.state_codes | join(', ') }}
+              {% else %}
+                All
+              {% endif %}
+            </td>
+            <td class="muted">
+              {% if p.transaction_types %}
+                {{ p.transaction_types | join(', ') }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if payer_count > payers | length %}
+    <p class="muted" style="margin-top:8px;">
+      Showing {{ payers | length }} of {{ payer_count }}. Use the search filter to narrow results.
+    </p>
+  {% endif %}
+{% elif search %}
+  <p class="muted">No payers match "{{ search }}".</p>
+{% else %}
+  <div class="card">
+    <p class="muted">
+      No payers cached yet.
+      Click <strong>Sync from Availity</strong> to fetch the payer directory.
+    </p>
+    <p class="muted" style="margin-top:8px;">
+      Requires <code>AVAILITY_API_KEY</code> and <code>AVAILITY_API_SECRET</code> environment variables.
+    </p>
+  </div>
+{% endif %}
+{% endblock %}

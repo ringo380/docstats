@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         ReferralResponse,
     )
     from docstats.domain.sessions import Session
+    from docstats.domain.eligibility import AvailityPayer, EligibilityCheck
     from docstats.scope import Scope
 
 
@@ -1441,3 +1442,91 @@ class StorageBase(ABC):
 
     @abstractmethod
     def close(self) -> None: ...
+
+    # --- Eligibility checks (Phase 11.A) ---
+
+    @abstractmethod
+    def create_eligibility_check(
+        self,
+        scope: "Scope",
+        *,
+        patient_id: int,
+        availity_payer_id: str,
+        payer_name: str | None = None,
+        service_type: str,
+        status: str,
+        error_message: str | None = None,
+        result_json: str | None = None,
+        raw_response_json: str | None = None,
+        checked_at: "datetime | None" = None,
+    ) -> "EligibilityCheck":
+        """Create an eligibility check record.  Returns the created row."""
+
+    @abstractmethod
+    def update_eligibility_check(
+        self,
+        check_id: int,
+        *,
+        status: str,
+        error_message: str | None = None,
+        result_json: str | None = None,
+        raw_response_json: str | None = None,
+        checked_at: "datetime | None" = None,
+    ) -> None:
+        """Update status / result of an existing eligibility check row."""
+
+    @abstractmethod
+    def get_latest_eligibility_check(
+        self,
+        scope: "Scope",
+        patient_id: int,
+        *,
+        availity_payer_id: str | None = None,
+        service_type: str | None = None,
+    ) -> "EligibilityCheck | None":
+        """Return the most recent eligibility check for a patient.
+
+        If ``availity_payer_id`` and/or ``service_type`` are provided they
+        narrow the search.
+        """
+
+    @abstractmethod
+    def list_eligibility_checks(
+        self,
+        scope: "Scope",
+        patient_id: int,
+        *,
+        limit: int = 20,
+    ) -> "list[EligibilityCheck]":
+        """Return eligibility checks for a patient, newest-first."""
+
+    # --- Availity payer directory ---
+
+    @abstractmethod
+    def upsert_availity_payers(self, payers: "list[AvailityPayer]") -> int:
+        """Bulk-upsert payer rows from a fresh API sync.  Returns count upserted."""
+
+    @abstractmethod
+    def list_availity_payers(
+        self,
+        *,
+        search: str | None = None,
+        limit: int = 500,
+    ) -> "list[AvailityPayer]":
+        """Return cached payer rows, optionally filtered by name substring."""
+
+    @abstractmethod
+    def count_availity_payers(self) -> int:
+        """Return total number of cached payer rows."""
+
+    @abstractmethod
+    def get_availity_payer_last_synced(self) -> "datetime | None":
+        """Return the most recent last_synced_at across all payer rows, or None."""
+
+    @abstractmethod
+    def link_insurance_plan_payer(
+        self,
+        plan_id: int,
+        availity_payer_id: str | None,
+    ) -> None:
+        """Set or clear insurance_plans.availity_payer_id for one plan."""
