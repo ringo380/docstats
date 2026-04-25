@@ -61,7 +61,7 @@ from docstats.domain.referrals import (
     ReferralMedication,
     ReferralResponse,
 )
-from docstats.domain.eligibility import EligibilityCheck, EligibilityResult
+from docstats.domain.eligibility import AvailityPayer, EligibilityCheck, EligibilityResult
 from docstats.domain.sessions import Session
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.scope import Scope, ScopeRequired
@@ -368,6 +368,7 @@ def _row_to_insurance_plan(row: dict) -> InsurancePlan:
         requires_referral=bool(row.get("requires_referral", False)),
         requires_prior_auth=bool(row.get("requires_prior_auth", False)),
         notes=row.get("notes"),
+        availity_payer_id=row.get("availity_payer_id"),
         created_at=created,
         updated_at=updated,
         deleted_at=_parse_ts(row.get("deleted_at")),
@@ -3763,7 +3764,9 @@ class PostgresStorage(StorageBase):
             query = query.eq("availity_payer_id", availity_payer_id)
         if service_type is not None:
             query = query.eq("service_type", service_type)
-        query = query.order("checked_at", desc=True, nullsfirst=False).order("id", desc=True).limit(1)
+        query = (
+            query.order("checked_at", desc=True, nullsfirst=False).order("id", desc=True).limit(1)
+        )
         result = query.execute()
         return self._row_to_eligibility_check(result.data[0]) if result.data else None
 
@@ -3774,15 +3777,86 @@ class PostgresStorage(StorageBase):
         *,
         limit: int = 20,
     ) -> list[EligibilityCheck]:
-        query = (
-            self._t("eligibility_checks")
-            .select("*")
-            .eq("patient_id", patient_id)
-        )
+        query = self._t("eligibility_checks").select("*").eq("patient_id", patient_id)
         query = self._apply_scope(query, scope)
-        query = query.order("checked_at", desc=True, nullsfirst=False).order("id", desc=True).limit(limit)
+        query = (
+            query.order("checked_at", desc=True, nullsfirst=False)
+            .order("id", desc=True)
+            .limit(limit)
+        )
         result = query.execute()
         return [self._row_to_eligibility_check(r) for r in result.data]
+
+    # --- Availity payer directory ---
+
+    @staticmethod
+    def _row_to_availity_payer(r: dict) -> AvailityPayer:
+        import json as _json
+
+        return AvailityPayer(
+            id=int(r["id"]),
+            availity_id=r["availity_id"],
+            payer_name=r["payer_name"],
+            aliases=_json.loads(r.get("aliases_json") or "[]"),
+            transaction_types=_json.loads(r.get("transaction_types_json") or "[]"),
+            state_codes=_json.loads(r.get("state_codes_json") or "[]"),
+            last_synced_at=_parse_ts(r.get("last_synced_at")),
+        )
+
+    def upsert_availity_payers(self, payers: list[AvailityPayer]) -> int:
+        import json as _json
+        from datetime import timezone as _tz
+
+        now = datetime.now(tz=_tz.utc).isoformat()
+        rows = [
+            {
+                "availity_id": p.availity_id,
+                "payer_name": p.payer_name,
+                "aliases_json": _json.dumps(p.aliases),
+                "transaction_types_json": _json.dumps(p.transaction_types),
+                "state_codes_json": _json.dumps(p.state_codes),
+                "last_synced_at": now,
+            }
+            for p in payers
+        ]
+        if not rows:
+            return 0
+        self._t("availity_payers").upsert(rows, on_conflict="availity_id").execute()
+        return len(rows)
+
+    def list_availity_payers(
+        self,
+        *,
+        search: str | None = None,
+        limit: int = 500,
+    ) -> list[AvailityPayer]:
+        query = self._t("availity_payers").select("*").order("payer_name")
+        if search:
+            query = query.ilike("payer_name", f"%{search}%")
+        query = query.limit(limit)
+        result = query.execute()
+        return [self._row_to_availity_payer(r) for r in result.data]
+
+    def count_availity_payers(self) -> int:
+        result = self._t("availity_payers").select("id", count="exact").execute()
+        return int(result.count or 0)
+
+    def get_availity_payer_last_synced(self) -> datetime | None:
+        result = (
+            self._t("availity_payers")
+            .select("last_synced_at")
+            .order("last_synced_at", desc=True, nullsfirst=False)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return None
+        return _parse_ts(result.data[0].get("last_synced_at"))
+
+    def link_insurance_plan_payer(self, plan_id: int, availity_payer_id: str | None) -> None:
+        self._t("insurance_plans").update({"availity_payer_id": availity_payer_id}).eq(
+            "id", plan_id
+        ).execute()
 
     def close(self) -> None:
         pass  # supabase-py client has no close method

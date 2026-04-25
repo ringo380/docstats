@@ -83,6 +83,7 @@ def _ctx(request: Request, user: dict, storage: StorageBase, **extra) -> dict:
 # POST /patients/{id}/eligibility  — trigger new check
 # ---------------------------------------------------------------------------
 
+
 @router.post("/patients/{patient_id}/eligibility", response_class=HTMLResponse)
 async def trigger_eligibility_check(
     request: Request,
@@ -224,6 +225,7 @@ async def trigger_eligibility_check(
 # GET /patients/{id}/eligibility/latest  — fetch latest result (htmx)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/patients/{patient_id}/eligibility/latest", response_class=HTMLResponse)
 async def get_latest_eligibility(
     request: Request,
@@ -250,6 +252,7 @@ async def get_latest_eligibility(
 # ---------------------------------------------------------------------------
 # POST /referrals/{id}/eligibility  — trigger from referral context (11.C)
 # ---------------------------------------------------------------------------
+
 
 @router.post("/referrals/{referral_id}/eligibility", response_class=HTMLResponse)
 async def trigger_eligibility_from_referral(
@@ -379,14 +382,16 @@ async def trigger_eligibility_from_referral(
     )
     return render(
         "_referral_eligibility_card.html",
-        _ctx(request, current_user, storage, check=updated_check,
-             referral=referral, patient=patient),
+        _ctx(
+            request, current_user, storage, check=updated_check, referral=referral, patient=patient
+        ),
     )
 
 
 # ---------------------------------------------------------------------------
 # GET /referrals/{id}/eligibility/latest  — side-rail card (htmx, 11.C)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/referrals/{referral_id}/eligibility/latest", response_class=HTMLResponse)
 async def get_referral_eligibility_latest(
@@ -410,6 +415,5 @@ async def get_referral_eligibility_latest(
     )
     return render(
         "_referral_eligibility_card.html",
-        _ctx(request, current_user, storage, check=check,
-             referral=referral, patient=patient),
+        _ctx(request, current_user, storage, check=check, referral=referral, patient=patient),
     )

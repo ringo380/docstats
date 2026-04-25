@@ -59,7 +59,7 @@ from docstats.domain.referrals import (
     ReferralMedication,
     ReferralResponse,
 )
-from docstats.domain.eligibility import EligibilityCheck, EligibilityResult
+from docstats.domain.eligibility import AvailityPayer, EligibilityCheck, EligibilityResult
 from docstats.domain.sessions import Session
 from docstats.domain.share_tokens import ShareToken
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
@@ -379,6 +379,7 @@ def _row_to_insurance_plan(row: sqlite3.Row) -> InsurancePlan:
         requires_referral=bool(row["requires_referral"]),
         requires_prior_auth=bool(row["requires_prior_auth"]),
         notes=row["notes"],
+        availity_payer_id=row["availity_payer_id"] if "availity_payer_id" in row.keys() else None,
         created_at=created,
         updated_at=updated,
         deleted_at=_parse_sqlite_utc(row["deleted_at"]),
@@ -586,6 +587,7 @@ class Storage(StorageBase):
         self._migrate_deliveries()
         self._migrate_share_tokens()
         self._migrate_eligibility_checks()
+        self._migrate_availity_payers()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -4725,6 +4727,110 @@ class Storage(StorageBase):
         params.extend([patient_id, int(limit)])
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_eligibility_check(r) for r in rows]
+
+    # --- Availity payer directory ---
+
+    def _migrate_availity_payers(self) -> None:
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS availity_payers (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                availity_id           TEXT NOT NULL UNIQUE,
+                payer_name            TEXT NOT NULL,
+                aliases_json          TEXT NOT NULL DEFAULT '[]',
+                transaction_types_json TEXT NOT NULL DEFAULT '[]',
+                state_codes_json      TEXT NOT NULL DEFAULT '[]',
+                last_synced_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_availity_payers_name ON availity_payers (lower(payer_name))"
+        )
+        # Add availity_payer_id column to insurance_plans if missing
+        cols = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(insurance_plans)").fetchall()
+        }
+        if "availity_payer_id" not in cols:
+            self._conn.execute("ALTER TABLE insurance_plans ADD COLUMN availity_payer_id TEXT")
+        self._conn.commit()
+
+    @staticmethod
+    def _row_to_availity_payer(row: sqlite3.Row) -> AvailityPayer:
+        import json as _json
+
+        return AvailityPayer(
+            id=row["id"],
+            availity_id=row["availity_id"],
+            payer_name=row["payer_name"],
+            aliases=_json.loads(row["aliases_json"] or "[]"),
+            transaction_types=_json.loads(row["transaction_types_json"] or "[]"),
+            state_codes=_json.loads(row["state_codes_json"] or "[]"),
+            last_synced_at=_parse_sqlite_utc(row["last_synced_at"]),
+        )
+
+    def upsert_availity_payers(self, payers: list[AvailityPayer]) -> int:
+        import json as _json
+
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._conn:
+            for p in payers:
+                self._conn.execute(
+                    """INSERT INTO availity_payers
+                       (availity_id, payer_name, aliases_json, transaction_types_json,
+                        state_codes_json, last_synced_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(availity_id) DO UPDATE SET
+                         payer_name = excluded.payer_name,
+                         aliases_json = excluded.aliases_json,
+                         transaction_types_json = excluded.transaction_types_json,
+                         state_codes_json = excluded.state_codes_json,
+                         last_synced_at = excluded.last_synced_at""",
+                    (
+                        p.availity_id,
+                        p.payer_name,
+                        _json.dumps(p.aliases),
+                        _json.dumps(p.transaction_types),
+                        _json.dumps(p.state_codes),
+                        now,
+                    ),
+                )
+        return len(payers)
+
+    def list_availity_payers(
+        self,
+        *,
+        search: str | None = None,
+        limit: int = 500,
+    ) -> list[AvailityPayer]:
+        if search:
+            term = f"%{search.lower()}%"
+            rows = self._conn.execute(
+                "SELECT * FROM availity_payers WHERE lower(payer_name) LIKE ? "
+                "ORDER BY payer_name LIMIT ?",
+                (term, int(limit)),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM availity_payers ORDER BY payer_name LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        return [self._row_to_availity_payer(r) for r in rows]
+
+    def count_availity_payers(self) -> int:
+        row = self._conn.execute("SELECT COUNT(*) FROM availity_payers").fetchone()
+        return int(row[0]) if row else 0
+
+    def get_availity_payer_last_synced(self) -> datetime | None:
+        row = self._conn.execute("SELECT MAX(last_synced_at) FROM availity_payers").fetchone()
+        if not row or not row[0]:
+            return None
+        return _parse_sqlite_utc(row[0])
+
+    def link_insurance_plan_payer(self, plan_id: int, availity_payer_id: str | None) -> None:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE insurance_plans SET availity_payer_id = ? WHERE id = ?",
+                (availity_payer_id, plan_id),
+            )
 
     def close(self) -> None:
         self._conn.close()

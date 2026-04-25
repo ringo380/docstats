@@ -216,8 +216,9 @@ async def patient_detail(
     latest_check = storage.get_latest_eligibility_check(scope, patient_id)
     return render(
         "patient_detail.html",
-        _ctx(request, current_user, storage, patient=patient, errors=None,
-             latest_check=latest_check),
+        _ctx(
+            request, current_user, storage, patient=patient, errors=None, latest_check=latest_check
+        ),
     )
 
 
@@ -293,8 +294,14 @@ async def patient_update(
         latest_check = storage.get_latest_eligibility_check(scope, patient_id)
         return render(
             "patient_detail.html",
-            _ctx(request, current_user, storage, patient=patient,
-                 latest_check=latest_check, errors=[str(e)]),
+            _ctx(
+                request,
+                current_user,
+                storage,
+                patient=patient,
+                latest_check=latest_check,
+                errors=[str(e)],
+            ),
         )
     if updated is None:
         raise HTTPException(status_code=404, detail="Patient not found.")

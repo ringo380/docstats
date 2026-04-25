@@ -11,6 +11,7 @@ deductible status.  Raw response JSON is stored alongside for audit/debug.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Final
 
@@ -25,9 +26,9 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 ELIGIBILITY_CHECK_STATUS_VALUES: Final[tuple[str, ...]] = (
-    "pending",    # enqueued, not yet sent to clearinghouse
-    "complete",   # 271 received and parsed
-    "error",      # clearinghouse or network error
+    "pending",  # enqueued, not yet sent to clearinghouse
+    "complete",  # 271 received and parsed
+    "error",  # clearinghouse or network error
     "unavailable",  # Availity returned an indeterminate / unsupported result
 )
 
@@ -39,6 +40,7 @@ COVERAGE_STATUS_ACTIVE = "4"
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
+
 
 class EligibilityResult(BaseModel):
     """Parsed eligibility data extracted from a 271 coverage response."""
@@ -69,6 +71,18 @@ class EligibilityResult(BaseModel):
     source: str = "availity"  # "availity" | "rules_engine" | "manual"
 
 
+class AvailityPayer(BaseModel):
+    """One entry from the Availity payer directory."""
+
+    id: int | None = None
+    availity_id: str  # e.g. "BCBSM"
+    payer_name: str
+    aliases: list[str] = []
+    transaction_types: list[str] = []
+    state_codes: list[str] = []
+    last_synced_at: datetime | None = None
+
+
 class EligibilityCheck(BaseModel):
     """Storage record for one eligibility inquiry attempt."""
 
@@ -79,11 +93,11 @@ class EligibilityCheck(BaseModel):
     scope_organization_id: int | None = None
 
     patient_id: int
-    availity_payer_id: str       # Availity payer ID string (e.g. "BCBSM")
+    availity_payer_id: str  # Availity payer ID string (e.g. "BCBSM")
     payer_name: str | None = None
-    service_type: str            # e.g. "30" (Health Benefit Plan Coverage)
+    service_type: str  # e.g. "30" (Health Benefit Plan Coverage)
 
-    status: str                  # ELIGIBILITY_CHECK_STATUS_VALUES
+    status: str  # ELIGIBILITY_CHECK_STATUS_VALUES
     error_message: str | None = None
 
     # Parsed result (None until status=complete)
@@ -99,6 +113,7 @@ class EligibilityCheck(BaseModel):
 # ---------------------------------------------------------------------------
 # Response parsing
 # ---------------------------------------------------------------------------
+
 
 def parse_coverage_response(data: dict) -> EligibilityResult:
     """Parse an Availity /coverages response body into an EligibilityResult.
@@ -157,9 +172,54 @@ def parse_coverage_response(data: dict) -> EligibilityResult:
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _extract_benefit_amount(
-    plan: dict, benefit_type: str, service_type: str
-) -> float | None:
+
+def _normalize_payer_name(name: str) -> str:
+    """Normalize a payer name for fuzzy matching: lowercase, strip punctuation/spaces."""
+    name = name.lower()
+    # Remove common suffixes that differ across sources
+    name = re.sub(r"\b(health\s*plan|insurance|inc\.?|llc\.?|corp\.?|co\.?)\b", "", name)
+    name = re.sub(r"[^a-z0-9]", "", name)  # strip all non-alphanumeric
+    return name.strip()
+
+
+def match_payer_to_availity(
+    payer_name: str,
+    availity_payers: list["AvailityPayer"],
+) -> str | None:
+    """Return the `availity_id` of the best-matching payer, or None.
+
+    Matching order:
+    1. Exact case-insensitive match on payer_name or any alias
+    2. Normalized substring match (after stripping common suffixes)
+
+    Returns None when no payer matches with sufficient confidence.
+    """
+    if not payer_name or not availity_payers:
+        return None
+
+    needle_exact = payer_name.strip().lower()
+    needle_norm = _normalize_payer_name(payer_name)
+
+    # Pass 1: exact case-insensitive
+    for p in availity_payers:
+        candidates = [p.payer_name] + list(p.aliases)
+        for c in candidates:
+            if c.strip().lower() == needle_exact:
+                return p.availity_id
+
+    # Pass 2: normalized substring
+    if len(needle_norm) >= 4:  # too-short tokens would over-match
+        for p in availity_payers:
+            candidates = [p.payer_name] + list(p.aliases)
+            for c in candidates:
+                c_norm = _normalize_payer_name(c)
+                if needle_norm in c_norm or c_norm in needle_norm:
+                    return p.availity_id
+
+    return None
+
+
+def _extract_benefit_amount(plan: dict, benefit_type: str, service_type: str) -> float | None:
     """Extract a dollar amount from a plan's benefits list by type."""
     benefits = plan.get("benefits") or []
     for b in benefits:
@@ -220,8 +280,9 @@ def overlay_eligibility(
         new_items.append(
             CompletenessItem(
                 code="elig_referral_not_required",
-                label="No referral required (live verified)" if not r.referral_required
-                      else "Referral required — authorization needed",
+                label="No referral required (live verified)"
+                if not r.referral_required
+                else "Referral required — authorization needed",
                 required=False,
                 satisfied=not r.referral_required,
             )
@@ -232,8 +293,9 @@ def overlay_eligibility(
         new_items.append(
             CompletenessItem(
                 code="elig_prior_auth",
-                label="Prior authorization not required (live verified)" if not r.prior_auth_required
-                      else "Prior authorization required",
+                label="Prior authorization not required (live verified)"
+                if not r.prior_auth_required
+                else "Prior authorization required",
                 required=False,
                 satisfied=not r.prior_auth_required,
             )

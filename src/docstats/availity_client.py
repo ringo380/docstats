@@ -62,6 +62,7 @@ _RATE_LIMIT_SLEEP = 0.25  # seconds between sync calls
 # Exceptions
 # ---------------------------------------------------------------------------
 
+
 class AvailityError(Exception):
     """Unrecoverable Availity API error."""
 
@@ -89,9 +90,7 @@ def _get_credentials() -> tuple[str, str]:
     api_key = os.environ.get("AVAILITY_API_KEY", "")
     api_secret = os.environ.get("AVAILITY_API_SECRET", "")
     if not api_key or not api_secret:
-        raise AvailityDisabledError(
-            "AVAILITY_API_KEY and AVAILITY_API_SECRET must be set"
-        )
+        raise AvailityDisabledError("AVAILITY_API_KEY and AVAILITY_API_SECRET must be set")
     return api_key, api_secret
 
 
@@ -115,6 +114,7 @@ def _store_token(token_data: dict) -> str:
 # ---------------------------------------------------------------------------
 # AvailityClient
 # ---------------------------------------------------------------------------
+
 
 class AvailityClient:
     """Sync + async Availity HIPAA Transactions client.

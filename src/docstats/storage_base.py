@@ -29,7 +29,7 @@ if TYPE_CHECKING:
         ReferralResponse,
     )
     from docstats.domain.sessions import Session
-    from docstats.domain.eligibility import EligibilityCheck
+    from docstats.domain.eligibility import AvailityPayer, EligibilityCheck
     from docstats.scope import Scope
 
 
@@ -1499,3 +1499,34 @@ class StorageBase(ABC):
         limit: int = 20,
     ) -> "list[EligibilityCheck]":
         """Return eligibility checks for a patient, newest-first."""
+
+    # --- Availity payer directory ---
+
+    @abstractmethod
+    def upsert_availity_payers(self, payers: "list[AvailityPayer]") -> int:
+        """Bulk-upsert payer rows from a fresh API sync.  Returns count upserted."""
+
+    @abstractmethod
+    def list_availity_payers(
+        self,
+        *,
+        search: str | None = None,
+        limit: int = 500,
+    ) -> "list[AvailityPayer]":
+        """Return cached payer rows, optionally filtered by name substring."""
+
+    @abstractmethod
+    def count_availity_payers(self) -> int:
+        """Return total number of cached payer rows."""
+
+    @abstractmethod
+    def get_availity_payer_last_synced(self) -> "datetime | None":
+        """Return the most recent last_synced_at across all payer rows, or None."""
+
+    @abstractmethod
+    def link_insurance_plan_payer(
+        self,
+        plan_id: int,
+        availity_payer_id: str | None,
+    ) -> None:
+        """Set or clear insurance_plans.availity_payer_id for one plan."""

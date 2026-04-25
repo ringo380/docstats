@@ -5,7 +5,6 @@ All HTTP calls are mocked — no real network requests.
 
 from __future__ import annotations
 
-import json
 import time
 from unittest.mock import MagicMock, patch
 
@@ -18,13 +17,10 @@ from docstats.availity_client import (
     AvailityError,
     AvailityUnavailableError,
     COVERAGES_URL,
-    PAYERS_URL,
-    TOKEN_URL,
     _token_cache,
     get_availity_client,
 )
 from docstats.domain.eligibility import (
-    EligibilityResult,
     parse_coverage_response,
 )
 
@@ -32,6 +28,7 @@ from docstats.domain.eligibility import (
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def clear_token_cache():
@@ -98,6 +95,7 @@ def _mock_payers_response() -> MagicMock:
 # AvailityDisabledError when creds missing
 # ---------------------------------------------------------------------------
 
+
 def test_get_availity_client_raises_when_creds_missing(monkeypatch):
     monkeypatch.delenv("AVAILITY_API_KEY", raising=False)
     monkeypatch.delenv("AVAILITY_API_SECRET", raising=False)
@@ -108,6 +106,7 @@ def test_get_availity_client_raises_when_creds_missing(monkeypatch):
 # ---------------------------------------------------------------------------
 # Token acquisition
 # ---------------------------------------------------------------------------
+
 
 def test_token_fetched_on_first_call():
     client = AvailityClient()
@@ -203,8 +202,6 @@ def test_check_eligibility_passes_scenario_id():
     client2 = AvailityClient()
     headers_seen: list[dict] = []
 
-    original_request = client2._http.request
-
     def track_headers(method, url, **kwargs):
         headers_seen.append(dict(kwargs.get("headers", {})))
         return _mock_coverages_response()
@@ -233,6 +230,7 @@ def test_check_eligibility_raises_unavailable_on_5xx():
 # ---------------------------------------------------------------------------
 # list_payers
 # ---------------------------------------------------------------------------
+
 
 def test_list_payers_returns_list():
     client = AvailityClient()
@@ -264,6 +262,7 @@ def test_list_payers_handles_bare_list_response():
 # ---------------------------------------------------------------------------
 # parse_coverage_response (domain layer)
 # ---------------------------------------------------------------------------
+
 
 def test_parse_coverage_response_active():
     data = {
