@@ -4835,14 +4835,14 @@ class Storage(StorageBase):
         ).fetchone()
         return self._row_to_staff_access_grant(row) if row else None
 
-    def revoke_staff_access_grant(self, grant_id: int) -> bool:
+    def revoke_staff_access_grant(self, user_id: int) -> int:
         now = datetime.now(tz=timezone.utc).isoformat()
         cur = self._conn.execute(
-            "UPDATE staff_access_grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
-            (now, grant_id),
+            "UPDATE staff_access_grants SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+            (now, user_id),
         )
         self._conn.commit()
-        return cur.rowcount > 0
+        return cur.rowcount
 
     def list_staff_access_grants(self, user_id: int, *, limit: int = 20) -> list[StaffAccessGrant]:
         rows = self._conn.execute(

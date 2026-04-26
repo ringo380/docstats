@@ -33,6 +33,7 @@ async def admin_support(
     storage: StorageBase = Depends(get_storage),
 ):
     """Search form — enter a user's email to look up their support access status."""
+    org = _require_org(scope, storage)
     target_user = None
     active_grant = None
     not_found = False
@@ -42,10 +43,12 @@ async def admin_support(
         target_user = storage.get_user_by_email(normalized)
         if target_user is None:
             not_found = True
+        elif storage.get_membership(org.id, target_user["id"]) is None:
+            # Treat out-of-org users as not found — avoid cross-tenant enumeration
+            not_found = True
+            target_user = None
         else:
             active_grant = storage.get_active_staff_access_grant(target_user["id"])
-
-    org = _require_org(scope, storage)
     return render(
         "admin/support.html",
         {
@@ -69,11 +72,19 @@ async def admin_support_user(
     storage: StorageBase = Depends(get_storage),
 ):
     """View a user's account — requires an active staff access grant from the user."""
-    active_grant = storage.get_active_staff_access_grant(user_id)
-    target_user = storage.get_user_by_id(user_id)
-
     org = _require_org(scope, storage)
+
+    # Check grant before fetching any user data
+    active_grant = storage.get_active_staff_access_grant(user_id)
     if not active_grant or not active_grant.is_active():
+        audit.record(
+            storage,
+            action="staff_access.access_denied",
+            request=request,
+            actor_user_id=scope.user_id,
+            scope_user_id=user_id,
+            scope_organization_id=org.id,
+        )
         return render(
             "admin/support.html",
             {
@@ -81,7 +92,7 @@ async def admin_support_user(
                 "active_section": "support",
                 "org": org,
                 "email_query": "",
-                "target_user": target_user,
+                "target_user": None,
                 "active_grant": None,
                 "not_found": False,
                 "audit_events": [],
@@ -89,17 +100,26 @@ async def admin_support_user(
             },
         )
 
-    # Grant is active — load audit events and record the access.
-    by_actor = storage.list_audit_events(actor_user_id=user_id, limit=50)
-    by_scope = storage.list_audit_events(scope_user_id=user_id, limit=50)
-    seen: set[int] = set()
-    merged: list = []
-    for ev in by_actor + by_scope:
-        if ev.id not in seen:
-            seen.add(ev.id)
-            merged.append(ev)
-    merged.sort(key=lambda e: e.created_at, reverse=True)
-    audit_events = merged[:50]
+    target_user = storage.get_user_by_id(user_id)
+    if target_user is None or storage.get_membership(org.id, user_id) is None:
+        return render(
+            "admin/support.html",
+            {
+                "request": request,
+                "active_section": "support",
+                "org": org,
+                "email_query": "",
+                "target_user": None,
+                "active_grant": None,
+                "not_found": True,
+                "audit_events": [],
+                "access_denied": False,
+            },
+        )
+
+    # Grant is active and user belongs to this org — load account-level audit events only.
+    # We use actor_user_id (not scope_user_id) to avoid surfacing clinical data actions.
+    audit_events = storage.list_audit_events(actor_user_id=user_id, limit=50)
 
     audit.record(
         storage,
@@ -107,6 +127,7 @@ async def admin_support_user(
         request=request,
         actor_user_id=scope.user_id,
         scope_user_id=user_id,
+        scope_organization_id=org.id,
         metadata={"grant_id": active_grant.id, "expires_at": active_grant.expires_at.isoformat()},
     )
 

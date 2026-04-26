@@ -471,8 +471,8 @@ class StorageBase(ABC):
         ...
 
     @abstractmethod
-    def revoke_staff_access_grant(self, grant_id: int) -> bool:
-        """Revoke a grant by id. Returns True if a row was updated."""
+    def revoke_staff_access_grant(self, user_id: int) -> int:
+        """Revoke all active grants for a user. Returns count of rows updated."""
         ...
 
     @abstractmethod

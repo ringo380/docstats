@@ -1428,15 +1428,15 @@ class PostgresStorage(StorageBase):
         )
         return self._row_to_staff_access_grant(result.data[0]) if result.data else None
 
-    def revoke_staff_access_grant(self, grant_id: int) -> bool:
+    def revoke_staff_access_grant(self, user_id: int) -> int:
         result = (
             self._t("staff_access_grants")
             .update({"revoked_at": _now_iso()})
-            .eq("id", grant_id)
+            .eq("user_id", user_id)
             .is_("revoked_at", None)
             .execute()
         )
-        return bool(result.data)
+        return len(result.data)
 
     def list_staff_access_grants(self, user_id: int, *, limit: int = 20) -> list[StaffAccessGrant]:
         result = (

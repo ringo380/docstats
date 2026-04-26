@@ -1263,6 +1263,7 @@ _KNOWN_AUDIT_ACTIONS: tuple[str, ...] = (
     "referral.export",
     "referral.status",
     "referral.update",
+    "staff_access.access_denied",
     "staff_access.accessed",
     "staff_access.granted",
     "staff_access.revoked",

@@ -129,7 +129,7 @@ async def profile_revoke_support_access(
     user_id = current_user["id"]
     active_grant = storage.get_active_staff_access_grant(user_id)
     if active_grant:
-        storage.revoke_staff_access_grant(active_grant.id)
+        storage.revoke_staff_access_grant(user_id)
         audit.record(
             storage,
             action="staff_access.revoked",
