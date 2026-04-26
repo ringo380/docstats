@@ -126,6 +126,16 @@ class StorageBase(ABC):
     @abstractmethod
     def set_active_org(self, user_id: int, organization_id: int | None) -> None: ...
 
+    @abstractmethod
+    def delete_user(self, user_id: int) -> list[str]:
+        """Delete the user and all solo-scoped data.
+
+        Returns storage_refs of any attachment blobs that must be deleted from
+        the file backend by the caller (blob cleanup cannot happen inside the
+        DB transaction).
+        """
+        ...
+
     # --- Organizations & memberships ---
 
     @abstractmethod

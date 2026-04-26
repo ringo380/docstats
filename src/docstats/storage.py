@@ -1392,6 +1392,30 @@ class Storage(StorageBase):
         self._conn.execute("UPDATE users SET pcp_npi=NULL WHERE id=?", (user_id,))
         self._conn.commit()
 
+    def delete_user(self, user_id: int) -> list[str]:
+        with self._conn:
+            # Collect blob refs before the cascade removes the rows.
+            rows = self._conn.execute(
+                """
+                SELECT ra.storage_ref
+                FROM referral_attachments ra
+                JOIN referrals r ON ra.referral_id = r.id
+                WHERE r.scope_user_id = ? AND ra.storage_ref IS NOT NULL
+                """,
+                (user_id,),
+            ).fetchall()
+            storage_refs = [r["storage_ref"] for r in rows]
+
+            # Explicit ordering: referrals first (has CASCADE from patients via
+            # ON DELETE RESTRICT — deleting patients before referrals would fail).
+            self._conn.execute("DELETE FROM search_history WHERE user_id = ?", (user_id,))
+            self._conn.execute("DELETE FROM referrals WHERE scope_user_id = ?", (user_id,))
+            self._conn.execute("DELETE FROM patients WHERE scope_user_id = ?", (user_id,))
+            # CASCADE covers: sessions, memberships, saved_providers,
+            # insurance_plans, csv_imports, deliveries (SET NULL), etc.
+            self._conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return storage_refs
+
     def update_user_profile(
         self,
         user_id: int,

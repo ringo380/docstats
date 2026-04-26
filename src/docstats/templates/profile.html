@@ -18,12 +18,72 @@
     </div>
   </div>
 
-  <div class="card" style="padding:1.25rem;">
+  <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
     <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.75rem; color:var(--text-dim);">Primary Care Provider</h2>
     <div id="pcp-section">
       {% include "_pcp_section.html" %}
     </div>
   </div>
+
+  {# ── Data & Account ── #}
+  <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
+    <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.75rem; color:var(--text-dim);">Data &amp; Account</h2>
+
+    <div style="font-size:0.88rem; margin-bottom:1rem;">
+      <p style="color:var(--text-muted); margin-bottom:0.5rem;">
+        Download a machine-readable copy of your profile, saved providers, search history, and referral data.
+      </p>
+      <a href="/profile/export-data.json" class="btn btn-secondary" style="font-size:0.82rem; padding:6px 14px;">
+        Download my data
+      </a>
+    </div>
+
+    <hr style="border:none; border-top:1px solid var(--border); margin:1rem 0;">
+
+    {# Danger zone #}
+    <div>
+      <h3 style="font-size:0.85rem; font-weight:600; color:var(--red); margin-bottom:0.5rem;">Danger Zone</h3>
+      <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">
+        Permanently delete your account and all associated data. This cannot be undone.
+        Anonymized audit log entries are retained per HIPAA requirements.
+      </p>
+
+      {% if delete_error %}
+      <div class="alert alert-error" style="margin-bottom:0.75rem; font-size:0.82rem; padding:8px 12px; background:rgba(220,38,38,0.1); border:1px solid rgba(220,38,38,0.3); border-radius:var(--radius-sm); color:var(--red);">
+        {{ delete_error }}
+      </div>
+      {% endif %}
+
+      <details id="delete-account-details">
+        <summary style="cursor:pointer; font-size:0.85rem; color:var(--red); font-weight:500; list-style:none; display:inline-flex; align-items:center; gap:6px;">
+          <span>&#9658;</span> Delete my account
+        </summary>
+        <div style="margin-top:0.75rem; padding:1rem; background:rgba(220,38,38,0.05); border:1px solid rgba(220,38,38,0.2); border-radius:var(--radius-sm);">
+          <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">
+            Type <strong style="font-family:var(--font-mono); color:var(--text);">DELETE MY ACCOUNT</strong> to confirm:
+          </p>
+          <form method="post" action="/profile/account/delete" id="delete-account-form">
+            <input type="text" name="confirm" placeholder="DELETE MY ACCOUNT"
+                   autocomplete="off" spellcheck="false"
+                   style="width:100%; margin-bottom:0.6rem; font-family:var(--font-mono); font-size:0.85rem;"
+                   id="delete-confirm-input">
+            <button type="submit" class="btn" id="delete-account-btn" disabled
+                    style="background:var(--red); color:#fff; font-size:0.82rem; padding:6px 16px; opacity:0.5; cursor:not-allowed;">
+              Delete Account
+            </button>
+          </form>
+        </div>
+      </details>
+
+      {% if delete_error %}
+      <script>
+        var d = document.getElementById('delete-account-details');
+        if (d) d.open = true;
+      </script>
+      {% endif %}
+    </div>
+  </div>
+
 </div>
 
 {% include "_search_js.html" %}
@@ -45,5 +105,17 @@
     if (typeof initLocationAutocomplete === 'function') initLocationAutocomplete();
     if (typeof initGeolocation === 'function') initGeolocation();
   });
+
+  // Enable delete button only when confirmation phrase matches exactly.
+  var confirmInput = document.getElementById('delete-confirm-input');
+  var deleteBtn = document.getElementById('delete-account-btn');
+  if (confirmInput && deleteBtn) {
+    confirmInput.addEventListener('input', function() {
+      var match = confirmInput.value === 'DELETE MY ACCOUNT';
+      deleteBtn.disabled = !match;
+      deleteBtn.style.opacity = match ? '1' : '0.5';
+      deleteBtn.style.cursor = match ? 'pointer' : 'not-allowed';
+    });
+  }
 </script>
 {% endblock %}
