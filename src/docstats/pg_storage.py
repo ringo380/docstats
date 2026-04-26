@@ -597,8 +597,31 @@ class PostgresStorage(StorageBase):
     def clear_user_pcp(self, user_id: int) -> None:
         self._t("users").update({"pcp_npi": None}).eq("id", user_id).execute()
 
-    def delete_user(self, user_id: int) -> None:
+    def delete_user(self, user_id: int) -> list[str]:
+        # Collect blob refs before cascade removes the rows.
+        ref_result = (
+            self._t("referrals").select("id").eq("scope_user_id", user_id).execute()
+        )
+        referral_ids = [r["id"] for r in ref_result.data]
+        storage_refs: list[str] = []
+        if referral_ids:
+            att_result = (
+                self._t("referral_attachments")
+                .select("storage_ref")
+                .in_("referral_id", referral_ids)
+                .not_.is_("storage_ref", "null")
+                .execute()
+            )
+            storage_refs = [r["storage_ref"] for r in att_result.data]
+
+        # Explicit ordering: referrals before patients (ON DELETE RESTRICT).
+        self._t("search_history").delete().eq("user_id", user_id).execute()
+        self._t("referrals").delete().eq("scope_user_id", user_id).execute()
+        self._t("patients").delete().eq("scope_user_id", user_id).execute()
+        # CASCADE covers: sessions, memberships, saved_providers,
+        # insurance_plans, csv_imports, deliveries (SET NULL), etc.
         self._t("users").delete().eq("id", user_id).execute()
+        return storage_refs
 
     def update_user_profile(
         self,

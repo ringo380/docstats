@@ -13,10 +13,12 @@ from docstats.auth import require_user
 from docstats.client import NPPESClient, NPPESError
 from docstats.domain import audit
 from docstats.domain.orgs import has_role_at_least
+from docstats.phi import require_phi_consent
 from docstats.routes._common import MAPBOX_TOKEN, get_client, render, saved_count
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
+from docstats.storage_files import StorageFileBackend, get_file_backend
 from docstats.validators import require_valid_npi
 
 logger = logging.getLogger(__name__)
@@ -89,7 +91,7 @@ async def profile_clear_pcp(
 @router.get("/profile/export-data.json")
 async def profile_export_data(
     request: Request,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_phi_consent),
     storage: StorageBase = Depends(get_storage),
 ):
     """Machine-readable export of all data associated with this user account."""
@@ -146,10 +148,12 @@ async def profile_export_data(
         "referrals": [r.model_dump() for r in referrals],
     }
 
+    # Serialize before auditing so a json.dumps failure doesn't log a phantom export.
+    body = json.dumps(payload, default=_ser, indent=2)
+
     audit.record(storage, action="user.data_export", request=request, actor_user_id=user_id)
 
-    export_date = date.today().isoformat()
-    body = json.dumps(payload, default=_ser, indent=2)
+    export_date = datetime.now(tz=timezone.utc).date().isoformat()
     return Response(
         content=body,
         media_type="application/json",
@@ -164,15 +168,16 @@ async def profile_export_data(
 @router.post("/profile/account/delete", response_class=HTMLResponse)
 async def profile_delete_account(
     request: Request,
-    confirm: str = Form(default=""),
+    confirm: str = Form(default="", max_length=50),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
+    file_backend: StorageFileBackend = Depends(get_file_backend),
 ):
     """Self-service account deletion with confirmation phrase."""
     user_id = current_user["id"]
 
-    if confirm.strip() != _CONFIRM_PHRASE:
+    if confirm != _CONFIRM_PHRASE:
         pcp_provider = None
         pcp_npi = current_user.get("pcp_npi")
         if pcp_npi:
@@ -198,14 +203,16 @@ async def profile_delete_account(
     for m in memberships:
         if not m.is_active or not has_role_at_least(m.role, "owner"):
             continue
+        org = storage.get_organization(m.organization_id)
+        if org is None or org.deleted_at is not None:
+            continue
         peers = storage.list_memberships_for_org(m.organization_id)
         other_owners = [
             p for p in peers
             if p.is_active and p.user_id != user_id and has_role_at_least(p.role, "owner")
         ]
         if not other_owners:
-            org = storage.get_organization(m.organization_id)
-            org_name = org.name if org else f"org {m.organization_id}"
+            org_name = org.name
             pcp_provider = None
             pcp_npi = current_user.get("pcp_npi")
             if pcp_npi:
@@ -229,25 +236,40 @@ async def profile_delete_account(
                 },
             )
 
-    # Audit BEFORE deletion so the row exists when the FK is set.
+    # Audit BEFORE deletion so actor_user_id FK still resolves.
+    # Omit entity_type/entity_id — the actor_user_id row gets SET NULL on delete,
+    # which is the correct anonymization; storing entity_id as plain text would
+    # preserve the user ID in the audit log after deletion.
     audit.record(
         storage,
         action="user.account_deleted",
         request=request,
         actor_user_id=user_id,
-        entity_type="user",
-        entity_id=str(user_id),
     )
 
-    storage.delete_user(user_id)
-
-    # Clear server-side session and cookie.
+    # Revoke the session row BEFORE deleting the user so the explicit revoke
+    # succeeds (CASCADE would remove it anyway, but being explicit is safer and
+    # prevents any race where a concurrent request re-creates the session).
     prior_session_id = request.session.get("session_id")
     request.session.clear()
     if prior_session_id:
         try:
             storage.revoke_session(prior_session_id)
         except Exception:
-            pass  # session row already gone via CASCADE
+            pass
 
+    storage_refs = storage.delete_user(user_id)
+
+    # Best-effort blob cleanup — orphaned objects are recoverable via the
+    # retention sweep, so we don't abort if this fails.
+    for ref in storage_refs:
+        try:
+            await file_backend.delete(ref)
+        except Exception:
+            logger.exception("Failed to delete blob %s for deleted user %d", ref, user_id)
+
+    if request.headers.get("HX-Request"):
+        resp = Response(status_code=200)
+        resp.headers["HX-Redirect"] = "/?deleted=1"
+        return resp
     return RedirectResponse("/?deleted=1", status_code=303)
