@@ -120,6 +120,19 @@ async def profile_export_data(
     patients = storage.list_patients(solo_scope, limit=10000)
     referrals = storage.list_referrals(solo_scope, limit=10000)
 
+    # Audit log: all events where this user was the actor, plus all events on
+    # their solo-scoped data (covers any admin or system access to their records).
+    # Merge and deduplicate by id, sort newest-first.
+    by_actor = storage.list_audit_events(actor_user_id=user_id, limit=10000)
+    by_scope = storage.list_audit_events(scope_user_id=user_id, limit=10000)
+    seen: set[int] = set()
+    merged_events = []
+    for ev in by_actor + by_scope:
+        if ev.id not in seen:
+            seen.add(ev.id)
+            merged_events.append(ev)
+    merged_events.sort(key=lambda e: e.created_at, reverse=True)
+
     def _ser(obj: object) -> str:
         if isinstance(obj, (datetime, date)):
             return obj.isoformat()
@@ -145,6 +158,17 @@ async def profile_export_data(
         ],
         "patients": [p.model_dump() for p in patients],
         "referrals": [r.model_dump() for r in referrals],
+        "audit_log": [
+            {
+                "id": ev.id,
+                "action": ev.action,
+                "actor_user_id": ev.actor_user_id,
+                "entity_type": ev.entity_type,
+                "entity_id": ev.entity_id,
+                "created_at": ev.created_at,
+            }
+            for ev in merged_events
+        ],
     }
 
     # Serialize before auditing so a json.dumps failure doesn't log a phantom export.
