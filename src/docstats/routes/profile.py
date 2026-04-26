@@ -141,8 +141,7 @@ async def profile_export_data(
         "organizations": orgs_data,
         "saved_providers": [p.model_dump() for p in providers],
         "search_history": [
-            {"query_params": h.query_params, "searched_at": h.searched_at}
-            for h in history
+            {"query_params": h.query_params, "searched_at": h.searched_at} for h in history
         ],
         "patients": [p.model_dump() for p in patients],
         "referrals": [r.model_dump() for r in referrals],
@@ -208,7 +207,8 @@ async def profile_delete_account(
             continue
         peers = storage.list_memberships_for_org(m.organization_id)
         other_owners = [
-            p for p in peers
+            p
+            for p in peers
             if p.is_active and p.user_id != user_id and has_role_at_least(p.role, "owner")
         ]
         if not other_owners:

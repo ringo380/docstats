@@ -599,9 +599,7 @@ class PostgresStorage(StorageBase):
 
     def delete_user(self, user_id: int) -> list[str]:
         # Collect blob refs before cascade removes the rows.
-        ref_result = (
-            self._t("referrals").select("id").eq("scope_user_id", user_id).execute()
-        )
+        ref_result = self._t("referrals").select("id").eq("scope_user_id", user_id).execute()
         referral_ids = [r["id"] for r in ref_result.data]
         storage_refs: list[str] = []
         if referral_ids:

@@ -1408,15 +1408,9 @@ class Storage(StorageBase):
 
             # Explicit ordering: referrals first (has CASCADE from patients via
             # ON DELETE RESTRICT — deleting patients before referrals would fail).
-            self._conn.execute(
-                "DELETE FROM search_history WHERE user_id = ?", (user_id,)
-            )
-            self._conn.execute(
-                "DELETE FROM referrals WHERE scope_user_id = ?", (user_id,)
-            )
-            self._conn.execute(
-                "DELETE FROM patients WHERE scope_user_id = ?", (user_id,)
-            )
+            self._conn.execute("DELETE FROM search_history WHERE user_id = ?", (user_id,))
+            self._conn.execute("DELETE FROM referrals WHERE scope_user_id = ?", (user_id,))
+            self._conn.execute("DELETE FROM patients WHERE scope_user_id = ?", (user_id,))
             # CASCADE covers: sessions, memberships, saved_providers,
             # insurance_plans, csv_imports, deliveries (SET NULL), etc.
             self._conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
