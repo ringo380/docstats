@@ -1,0 +1,605 @@
+{% extends "base.html" %}
+{% block title %}Privacy Policy & HIPAA Notice — referme.help{% endblock %}
+
+{% block content %}
+<div style="max-width:780px;margin:0 auto;padding:32px 16px;line-height:1.75;">
+
+  <h1>Privacy Policy &amp; HIPAA Notice of Privacy Practices</h1>
+  <p class="sub">Effective date: April 25, 2026 &nbsp;·&nbsp; Last updated: April 25, 2026</p>
+  <p style="margin-top:16px;">
+    <strong>Important:</strong> This document serves as both our general Privacy Policy and our
+    HIPAA Notice of Privacy Practices. Please read it carefully. If you have questions, contact
+    <a href="mailto:privacy@referme.help">privacy@referme.help</a>.
+  </p>
+
+  <hr style="margin:32px 0;">
+
+  <!-- TABLE OF CONTENTS -->
+  <nav style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:20px 24px;margin-bottom:32px;">
+    <strong>Contents</strong>
+    <ol style="margin:8px 0 0 20px;padding:0;line-height:2;">
+      <li><a href="#who-we-are">Who We Are</a></li>
+      <li><a href="#information-we-collect">Information We Collect</a></li>
+      <li><a href="#how-we-use">How We Use Your Information</a></li>
+      <li><a href="#hipaa">HIPAA — Protected Health Information</a></li>
+      <li><a href="#ehr-integration">EHR &amp; SMART on FHIR Integration</a></li>
+      <li><a href="#sharing">How We Share Information</a></li>
+      <li><a href="#your-rights">Your Rights</a></li>
+      <li><a href="#security">Security Measures</a></li>
+      <li><a href="#data-retention">Data Retention</a></li>
+      <li><a href="#cookies">Cookies &amp; Tracking</a></li>
+      <li><a href="#third-parties">Third-Party Sub-Processors</a></li>
+      <li><a href="#children">Children's Privacy</a></li>
+      <li><a href="#state-laws">State-Specific Rights</a></li>
+      <li><a href="#breach">Breach Notification</a></li>
+      <li><a href="#changes">Changes to This Policy</a></li>
+      <li><a href="#contact">Contact Us</a></li>
+    </ol>
+  </nav>
+
+  <!-- 1. WHO WE ARE -->
+  <section id="who-we-are" style="margin-bottom:36px;">
+    <h2>1. Who We Are</h2>
+    <p>
+      referme.help is operated by Robworks Software ("<strong>we</strong>," "<strong>us</strong>,"
+      "<strong>our</strong>"). We provide a HIPAA-compliant referral management platform that
+      connects patients, referring providers, and specialist practices to streamline the medical
+      referral process.
+    </p>
+    <p style="margin-top:12px;">
+      Depending on context, we operate as either a <strong>Covered Entity</strong> or a
+      <strong>Business Associate</strong> under HIPAA:
+    </p>
+    <ul style="padding-left:24px;margin-top:8px;">
+      <li>
+        <strong>Business Associate</strong> — when a healthcare provider (a Covered Entity) uses
+        referme.help to manage referrals on behalf of their patients. In this context, we process
+        Protected Health Information (PHI) under a Business Associate Agreement (BAA).
+      </li>
+      <li>
+        <strong>Third-Party Application</strong> — when patients directly authorize referme.help
+        to access their health data via SMART on FHIR (e.g., connecting a MyChart account). In
+        this context, the patient's explicit authorization governs the disclosure per 45 CFR
+        §164.502(a)(1)(iv) and ONC's Information Blocking regulations (21st Century Cures Act).
+      </li>
+    </ul>
+  </section>
+
+  <!-- 2. INFORMATION WE COLLECT -->
+  <section id="information-we-collect" style="margin-bottom:36px;">
+    <h2>2. Information We Collect</h2>
+
+    <h3 style="margin-top:20px;">2.1 Account Information</h3>
+    <p>
+      Name, email address, password (bcrypt-hashed — never stored in plaintext), professional
+      role, and organization affiliation. For GitHub OAuth users: GitHub username and
+      publicly-scoped email.
+    </p>
+
+    <h3 style="margin-top:20px;">2.2 Patient Information (PHI)</h3>
+    <p>
+      When you create or manage referrals, we collect and store:
+    </p>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2;">
+      <li>Patient name, date of birth, contact information, and Medical Record Number (MRN)</li>
+      <li>Diagnoses (ICD-10 codes and descriptions)</li>
+      <li>Current medications and dosages</li>
+      <li>Allergies and adverse reactions</li>
+      <li>Insurance plan and payer information</li>
+      <li>Clinical notes, referral reason, and clinical questions</li>
+      <li>Authorization numbers and prior authorization status</li>
+      <li>Referral documents and file attachments</li>
+    </ul>
+    <p style="margin-top:12px;">
+      All of the above constitutes <strong>Protected Health Information (PHI)</strong> under HIPAA
+      and is handled accordingly.
+    </p>
+
+    <h3 style="margin-top:20px;">2.3 EHR-Imported Information</h3>
+    <p>
+      When you authorize referme.help to connect to your Electronic Health Record via SMART on
+      FHIR, we may import: patient demographics, problem list / active diagnoses, medication
+      requests, and allergy records. All imported data is subject to the same PHI protections
+      as manually-entered data and is used exclusively to pre-populate your referral record.
+    </p>
+
+    <h3 style="margin-top:20px;">2.4 Usage &amp; Technical Information</h3>
+    <p>
+      IP address (truncated to /24 for analytics), browser user-agent (truncated at 500
+      characters), session identifiers, page views, and referral workflow events. We use Google
+      Analytics 4 (property ID G-7LGDP4Z19X) for aggregate, anonymized usage analytics. GA4
+      data is not linked to individual patient records.
+    </p>
+  </section>
+
+  <!-- 3. HOW WE USE -->
+  <section id="how-we-use" style="margin-bottom:36px;">
+    <h2>3. How We Use Your Information</h2>
+    <p>We use information collected for the following purposes:</p>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2;">
+      <li>Providing, operating, and improving the referme.help platform</li>
+      <li>Processing and tracking medical referrals on your behalf</li>
+      <li>Sending referral packets via fax or secure email to specialist practices</li>
+      <li>Running real-time insurance eligibility verification (via Availity)</li>
+      <li>Generating and delivering referral documents (PDF, FHIR)</li>
+      <li>Maintaining audit logs for compliance and accountability</li>
+      <li>Communicating with you about your account and referrals</li>
+      <li>Detecting and preventing fraud, abuse, and security incidents</li>
+      <li>Complying with applicable law, including HIPAA</li>
+    </ul>
+    <p style="margin-top:12px;">
+      We do <strong>not</strong> sell, rent, or trade your personal information or PHI to any
+      third party for marketing purposes. We do not use PHI for advertising.
+    </p>
+  </section>
+
+  <!-- 4. HIPAA -->
+  <section id="hipaa" style="margin-bottom:36px;">
+    <h2>4. HIPAA — Protected Health Information</h2>
+
+    <h3 style="margin-top:20px;">4.1 Minimum Necessary Standard</h3>
+    <p>
+      We apply the HIPAA Minimum Necessary standard (45 CFR §164.502(b)) to all PHI access,
+      use, and disclosure. Workforce members and automated systems access only the PHI necessary
+      for their specific role or function.
+    </p>
+
+    <h3 style="margin-top:20px;">4.2 Permitted Uses and Disclosures of PHI</h3>
+    <p>We may use or disclose PHI without patient authorization only as permitted by HIPAA:</p>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2;">
+      <li><strong>Treatment:</strong> transmitting referral packets to receiving specialists</li>
+      <li><strong>Operations:</strong> internal quality improvement, audit, and staff training</li>
+      <li><strong>Payment:</strong> eligibility verification and authorization coordination</li>
+      <li><strong>As required by law:</strong> court orders, subpoenas, public health reporting</li>
+      <li><strong>Business Associates:</strong> sub-processors under BAA (see Section 11)</li>
+    </ul>
+
+    <h3 style="margin-top:20px;">4.3 Uses Requiring Authorization</h3>
+    <p>
+      We will not use or disclose PHI for marketing, sale of PHI, or any purpose not described
+      above without your explicit written authorization. You may revoke any authorization at any
+      time by contacting <a href="mailto:privacy@referme.help">privacy@referme.help</a>.
+    </p>
+
+    <h3 style="margin-top:20px;">4.4 Business Associate Agreements</h3>
+    <p>
+      Healthcare providers and organizations using referme.help to manage patient referrals must
+      execute a BAA with Robworks Software before processing PHI. To request a BAA, contact
+      <a href="mailto:privacy@referme.help">privacy@referme.help</a>. We maintain executed BAAs
+      with all sub-processors who handle PHI (listed in Section 11).
+    </p>
+
+    <h3 style="margin-top:20px;">4.5 HIPAA Privacy Officer</h3>
+    <p>
+      Our designated HIPAA Privacy Officer can be reached at
+      <a href="mailto:privacy@referme.help">privacy@referme.help</a>.
+    </p>
+  </section>
+
+  <!-- 5. EHR INTEGRATION -->
+  <section id="ehr-integration" style="margin-bottom:36px;">
+    <h2>5. EHR &amp; SMART on FHIR Integration</h2>
+
+    <h3 style="margin-top:20px;">5.1 Patient-Authorized Data Access</h3>
+    <p>
+      referme.help supports connecting to your Electronic Health Record (e.g., Epic MyChart) via
+      the SMART App Launch Framework (v2.0). When you initiate this connection:
+    </p>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2;">
+      <li>You are redirected to your EHR provider's login and consent screen</li>
+      <li>You explicitly authorize which data referme.help may access</li>
+      <li>We receive only the FHIR resources you approved (Patient, Condition, MedicationRequest, AllergyIntolerance)</li>
+      <li>This authorization constitutes a patient-directed disclosure under 45 CFR §164.502(a)(1)(iv)</li>
+    </ul>
+
+    <h3 style="margin-top:20px;">5.2 Token Storage</h3>
+    <p>
+      OAuth 2.0 access tokens from your EHR are encrypted at rest using AES-256 (Fernet
+      symmetric encryption) before storage in our database. Tokens are automatically invalidated
+      when you disconnect your EHR from the Settings page or upon account deletion.
+    </p>
+
+    <h3 style="margin-top:20px;">5.3 PKCE Security</h3>
+    <p>
+      All EHR OAuth flows use Proof Key for Code Exchange (PKCE, RFC 7636). No client secret is
+      transmitted or stored. This prevents authorization code interception attacks.
+    </p>
+
+    <h3 style="margin-top:20px;">5.4 Data Use After Import</h3>
+    <p>
+      Health data imported from your EHR is used solely to pre-populate referral forms on your
+      behalf. It is not shared with third parties beyond what is necessary to deliver your
+      referral (e.g., the receiving specialist practice). You may delete imported data at any
+      time from within the platform.
+    </p>
+
+    <h3 style="margin-top:20px;">5.5 Information Blocking</h3>
+    <p>
+      In accordance with the 21st Century Cures Act and ONC Information Blocking regulations
+      (45 CFR Part 171), referme.help does not engage in information blocking. We support
+      patients' right to access their own health information through standardized APIs.
+    </p>
+  </section>
+
+  <!-- 6. SHARING -->
+  <section id="sharing" style="margin-bottom:36px;">
+    <h2>6. How We Share Information</h2>
+    <p>We share information only in the following circumstances:</p>
+
+    <h3 style="margin-top:20px;">6.1 Referral Delivery</h3>
+    <p>
+      Referral packets (containing PHI) are transmitted to the receiving specialist practice
+      via fax (Documo), secure email (Resend), or direct messaging as directed by you. Each
+      transmission is logged in the audit trail.
+    </p>
+
+    <h3 style="margin-top:20px;">6.2 Sub-Processors (Business Associates)</h3>
+    <p>See Section 11 for the full list of sub-processors and their functions.</p>
+
+    <h3 style="margin-top:20px;">6.3 Legal Requirements</h3>
+    <p>
+      We may disclose information if required by law, subpoena, or court order, or to protect
+      the rights, property, or safety of referme.help, our users, or the public.
+    </p>
+
+    <h3 style="margin-top:20px;">6.4 Business Transfers</h3>
+    <p>
+      In the event of a merger, acquisition, or sale of assets, PHI will be transferred only
+      subject to equivalent privacy protections and applicable HIPAA requirements. We will
+      notify affected users and update this policy.
+    </p>
+
+    <h3 style="margin-top:20px;">6.5 No Sale of PHI</h3>
+    <p>
+      We <strong>never</strong> sell, rent, or trade Protected Health Information. This
+      prohibition is absolute.
+    </p>
+  </section>
+
+  <!-- 7. YOUR RIGHTS -->
+  <section id="your-rights" style="margin-bottom:36px;">
+    <h2>7. Your Rights</h2>
+
+    <h3 style="margin-top:20px;">7.1 HIPAA Rights (for patients whose PHI we hold)</h3>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2.2;">
+      <li>
+        <strong>Right to Access:</strong> Request a copy of your PHI we hold (45 CFR §164.524).
+        We will respond within 30 days.
+      </li>
+      <li>
+        <strong>Right to Amend:</strong> Request correction of inaccurate PHI
+        (45 CFR §164.526). We will respond within 60 days.
+      </li>
+      <li>
+        <strong>Right to Accounting of Disclosures:</strong> Request a list of disclosures of
+        your PHI made outside of treatment, payment, and operations (45 CFR §164.528), covering
+        up to 6 years.
+      </li>
+      <li>
+        <strong>Right to Restrict:</strong> Request restrictions on certain uses or disclosures
+        (45 CFR §164.522). We will consider all requests in good faith.
+      </li>
+      <li>
+        <strong>Right to Confidential Communications:</strong> Request PHI be communicated via
+        alternative means or locations.
+      </li>
+      <li>
+        <strong>Right to Complain:</strong> File a complaint with us or with the U.S. Department
+        of Health &amp; Human Services Office for Civil Rights (OCR) at
+        <a href="https://www.hhs.gov/hipaa/filing-a-complaint" target="_blank" rel="noopener">hhs.gov/hipaa/filing-a-complaint</a>.
+        We will not retaliate against you for filing a complaint.
+      </li>
+    </ul>
+
+    <h3 style="margin-top:20px;">7.2 Account Rights (all users)</h3>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2.2;">
+      <li><strong>Access &amp; Correction:</strong> View and update your account information at any time from your profile page.</li>
+      <li><strong>Data Export:</strong> Request a machine-readable export of your account data by contacting <a href="mailto:privacy@referme.help">privacy@referme.help</a>.</li>
+      <li><strong>Account Deletion:</strong> Request deletion of your account and associated data. PHI required to be retained for legal or regulatory purposes will be retained only for the minimum required period.</li>
+      <li><strong>EHR Disconnect:</strong> Revoke referme.help's access to your EHR at any time from Settings → EHR Connections, or by revoking access directly in your EHR's patient portal.</li>
+    </ul>
+
+    <p style="margin-top:16px;">
+      To exercise any of these rights, contact
+      <a href="mailto:privacy@referme.help">privacy@referme.help</a>. We will verify your
+      identity before processing requests involving PHI.
+    </p>
+  </section>
+
+  <!-- 8. SECURITY -->
+  <section id="security" style="margin-bottom:36px;">
+    <h2>8. Security Measures</h2>
+    <p>
+      We implement administrative, physical, and technical safeguards consistent with HIPAA
+      Security Rule requirements (45 CFR Part 164, Subpart C):
+    </p>
+
+    <h3 style="margin-top:20px;">8.1 Technical Safeguards</h3>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2;">
+      <li>All data transmitted over TLS 1.2 or higher (TLS 1.3 preferred)</li>
+      <li>Passwords hashed with bcrypt (cost factor ≥12)</li>
+      <li>EHR OAuth tokens encrypted at rest with AES-256 (Fernet)</li>
+      <li>Server-side session management with cryptographically random session tokens</li>
+      <li>Role-based access control (RBAC) with a six-level permission ladder</li>
+      <li>Append-only audit log for all PHI access and modification events</li>
+      <li>File attachments virus-scanned before storage (Cloudmersive)</li>
+      <li>Private object storage with signed URLs (15-minute expiry) for attachment access</li>
+      <li>Rate limiting on authentication and eligibility endpoints</li>
+      <li>Webhook signatures verified via HMAC-SHA256 before processing</li>
+    </ul>
+
+    <h3 style="margin-top:20px;">8.2 Administrative Safeguards</h3>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2;">
+      <li>Designated HIPAA Privacy Officer and Security Officer</li>
+      <li>Workforce access limited to minimum necessary for job function</li>
+      <li>Business Associate Agreements with all sub-processors handling PHI</li>
+      <li>Regular security reviews and vulnerability assessments</li>
+    </ul>
+
+    <h3 style="margin-top:20px;">8.3 Physical Safeguards</h3>
+    <p>
+      referme.help is hosted on cloud infrastructure (Railway / Supabase) with SOC 2
+      Type II certification. We do not operate our own physical data centers. Physical
+      access controls are maintained by our infrastructure providers.
+    </p>
+
+    <h3 style="margin-top:20px;">8.4 Reporting Security Issues</h3>
+    <p>
+      To report a security vulnerability, contact
+      <a href="mailto:security@referme.help">security@referme.help</a>. We will acknowledge
+      receipt within 24 hours and provide updates on remediation.
+    </p>
+  </section>
+
+  <!-- 9. DATA RETENTION -->
+  <section id="data-retention" style="margin-bottom:36px;">
+    <h2>9. Data Retention</h2>
+    <p>
+      We retain PHI for a minimum of <strong>7 years</strong> from the date of creation
+      (the default for medical records under most state laws and CMS Conditions of
+      Participation), unless a longer retention period is required by applicable law or
+      your organization's policy. Organizations may configure retention up to 30 years
+      for pediatric or other specialized records.
+    </p>
+    <p style="margin-top:12px;">
+      Non-PHI account data (name, email, login history) is retained for the duration of
+      your account and for 90 days after deletion to allow recovery.
+    </p>
+    <p style="margin-top:12px;">
+      Audit log entries are retained for a minimum of 6 years per HIPAA requirements
+      (45 CFR §164.530(j)).
+    </p>
+    <p style="margin-top:12px;">
+      After expiry, data is soft-deleted (marked deleted in the database) and then
+      permanently purged in a nightly automated sweep.
+    </p>
+  </section>
+
+  <!-- 10. COOKIES -->
+  <section id="cookies" style="margin-bottom:36px;">
+    <h2>10. Cookies &amp; Tracking</h2>
+    <p>We use a minimal set of cookies:</p>
+    <table style="width:100%;border-collapse:collapse;font-size:0.9rem;margin-top:8px;">
+      <thead>
+        <tr style="border-bottom:2px solid #e5e7eb;">
+          <th style="text-align:left;padding:8px 12px;">Cookie</th>
+          <th style="text-align:left;padding:8px 12px;">Purpose</th>
+          <th style="text-align:left;padding:8px 12px;">Duration</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:8px 12px;"><code>session</code></td>
+          <td style="padding:8px 12px;">Authenticated session (server-side; cookie holds only an opaque token)</td>
+          <td style="padding:8px 12px;">7 days</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 12px;">GA4 (<code>_ga</code>, <code>_ga_*</code>)</td>
+          <td style="padding:8px 12px;">Aggregate, anonymized usage analytics. No PHI linked.</td>
+          <td style="padding:8px 12px;">2 years</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="margin-top:12px;">
+      We do not use advertising cookies, cross-site tracking cookies, or third-party
+      behavioral analytics linked to individual identities.
+    </p>
+  </section>
+
+  <!-- 11. THIRD PARTIES -->
+  <section id="third-parties" style="margin-bottom:36px;">
+    <h2>11. Third-Party Sub-Processors</h2>
+    <p>
+      The following sub-processors may handle PHI on our behalf under executed Business
+      Associate Agreements or equivalent data protection agreements:
+    </p>
+    <table style="width:100%;border-collapse:collapse;font-size:0.9rem;margin-top:8px;">
+      <thead>
+        <tr style="border-bottom:2px solid #e5e7eb;">
+          <th style="text-align:left;padding:8px 12px;">Sub-Processor</th>
+          <th style="text-align:left;padding:8px 12px;">Function</th>
+          <th style="text-align:left;padding:8px 12px;">Data Handled</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:8px 12px;"><strong>Supabase</strong></td>
+          <td style="padding:8px 12px;">Primary database &amp; file storage</td>
+          <td style="padding:8px 12px;">All PHI, account data</td>
+        </tr>
+        <tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:8px 12px;"><strong>Railway</strong></td>
+          <td style="padding:8px 12px;">Application hosting &amp; compute</td>
+          <td style="padding:8px 12px;">In-memory PHI during request processing</td>
+        </tr>
+        <tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:8px 12px;"><strong>Availity</strong></td>
+          <td style="padding:8px 12px;">Insurance eligibility verification (X12 270/271)</td>
+          <td style="padding:8px 12px;">Patient name, DOB, member ID, payer ID</td>
+        </tr>
+        <tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:8px 12px;"><strong>Resend</strong></td>
+          <td style="padding:8px 12px;">Transactional email delivery</td>
+          <td style="padding:8px 12px;">Email address, referral notification content</td>
+        </tr>
+        <tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:8px 12px;"><strong>Documo</strong></td>
+          <td style="padding:8px 12px;">Fax delivery of referral packets</td>
+          <td style="padding:8px 12px;">Referral packet PDF (may contain full PHI)</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 12px;"><strong>Cloudmersive</strong></td>
+          <td style="padding:8px 12px;">Virus scanning of uploaded attachments</td>
+          <td style="padding:8px 12px;">File bytes (scanned in transit, not retained)</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="margin-top:12px;">
+      The following processors handle non-PHI data only:
+    </p>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2;">
+      <li><strong>Google Analytics 4</strong> — anonymized usage analytics (no PHI)</li>
+      <li><strong>GitHub</strong> — OAuth sign-in (email address only)</li>
+      <li><strong>Mapbox</strong> — provider location geocoding (no PHI)</li>
+      <li><strong>CMS NPPES</strong> — provider NPI lookup (public data, no PHI)</li>
+    </ul>
+  </section>
+
+  <!-- 12. CHILDREN -->
+  <section id="children" style="margin-bottom:36px;">
+    <h2>12. Children's Privacy</h2>
+    <p>
+      referme.help accounts may only be created by individuals 18 years of age or older.
+      We do not knowingly collect account information from minors.
+    </p>
+    <p style="margin-top:12px;">
+      Referrals involving pediatric patients (under 18) are treated as PHI and handled
+      under standard HIPAA protections. Where applicable, special protections for
+      minor patient records under state law are honored. Some states grant minors
+      independent privacy rights for certain categories of care (e.g., mental health,
+      reproductive health) — providers are responsible for complying with applicable
+      state minor consent laws when submitting referrals.
+    </p>
+    <p style="margin-top:12px;">
+      If you believe we have inadvertently collected account information from a minor,
+      contact <a href="mailto:privacy@referme.help">privacy@referme.help</a> immediately.
+    </p>
+  </section>
+
+  <!-- 13. STATE LAWS -->
+  <section id="state-laws" style="margin-bottom:36px;">
+    <h2>13. State-Specific Rights</h2>
+
+    <h3 style="margin-top:20px;">13.1 California (CCPA / CPRA)</h3>
+    <p>
+      California residents have the following rights under the California Consumer Privacy Act
+      (CCPA) as amended by the California Privacy Rights Act (CPRA):
+    </p>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2;">
+      <li><strong>Right to Know:</strong> Request disclosure of the categories and specific pieces of personal information we collect about you.</li>
+      <li><strong>Right to Delete:</strong> Request deletion of personal information, subject to certain exceptions (e.g., legal compliance, HIPAA retention requirements).</li>
+      <li><strong>Right to Correct:</strong> Request correction of inaccurate personal information.</li>
+      <li><strong>Right to Opt Out of Sale/Sharing:</strong> We do not sell or share personal information for cross-context behavioral advertising.</li>
+      <li><strong>Right to Non-Discrimination:</strong> We will not discriminate against you for exercising your privacy rights.</li>
+    </ul>
+    <p style="margin-top:12px;">
+      Note: PHI subject to HIPAA is exempt from CCPA per Civil Code §1798.145(c)(1)(A).
+      The rights above apply to non-PHI personal information.
+    </p>
+    <p style="margin-top:8px;">
+      To submit a CCPA request, contact <a href="mailto:privacy@referme.help">privacy@referme.help</a>
+      with subject line "CCPA Request." We will respond within 45 days.
+    </p>
+
+    <h3 style="margin-top:20px;">13.2 Other States</h3>
+    <p>
+      Various other states have enacted or are enacting comprehensive privacy laws (Virginia
+      VCDPA, Colorado CPA, Connecticut CTDPA, Texas TDPSA, and others). Where applicable,
+      residents of those states may exercise similar rights by contacting
+      <a href="mailto:privacy@referme.help">privacy@referme.help</a>. We will honor applicable
+      state law rights to the extent they apply to non-PHI personal information.
+    </p>
+  </section>
+
+  <!-- 14. BREACH -->
+  <section id="breach" style="margin-bottom:36px;">
+    <h2>14. Breach Notification</h2>
+    <p>
+      In the event of a breach of unsecured PHI, we will comply with the HIPAA Breach
+      Notification Rule (45 CFR Part 164, Subpart D):
+    </p>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2;">
+      <li>Notify affected individuals without unreasonable delay and within <strong>60 days</strong> of discovery</li>
+      <li>Notify the U.S. Department of Health &amp; Human Services (HHS) within 60 days for breaches affecting 500 or more individuals, or annually for smaller breaches</li>
+      <li>Notify prominent media outlets in affected states for breaches of 500 or more residents of that state</li>
+      <li>Notify our Business Associate counterparts (Covered Entities) within 30 days of discovery</li>
+    </ul>
+    <p style="margin-top:12px;">
+      To report a suspected breach or security incident, contact
+      <a href="mailto:security@referme.help">security@referme.help</a> immediately.
+    </p>
+  </section>
+
+  <!-- 15. CHANGES -->
+  <section id="changes" style="margin-bottom:36px;">
+    <h2>15. Changes to This Policy</h2>
+    <p>
+      We may update this Privacy Policy and HIPAA Notice from time to time. Material changes
+      will be communicated via:
+    </p>
+    <ul style="padding-left:24px;margin-top:8px;line-height:2;">
+      <li>Email notification to account holders</li>
+      <li>A prominent notice on this page for at least 30 days</li>
+      <li>Updated "Last updated" date at the top of this document</li>
+    </ul>
+    <p style="margin-top:12px;">
+      Continued use of referme.help after the effective date of changes constitutes
+      acceptance of the updated policy. If you do not agree, you must discontinue use
+      and may request deletion of your data.
+    </p>
+  </section>
+
+  <!-- 16. CONTACT -->
+  <section id="contact" style="margin-bottom:36px;">
+    <h2>16. Contact Us</h2>
+    <table style="font-size:0.95rem;border-collapse:collapse;margin-top:8px;">
+      <tr>
+        <td style="padding:8px 16px 8px 0;font-weight:600;white-space:nowrap;">General privacy inquiries</td>
+        <td style="padding:8px 0;"><a href="mailto:privacy@referme.help">privacy@referme.help</a></td>
+      </tr>
+      <tr>
+        <td style="padding:8px 16px 8px 0;font-weight:600;white-space:nowrap;">Security disclosures</td>
+        <td style="padding:8px 0;"><a href="mailto:security@referme.help">security@referme.help</a></td>
+      </tr>
+      <tr>
+        <td style="padding:8px 16px 8px 0;font-weight:600;white-space:nowrap;">BAA requests</td>
+        <td style="padding:8px 0;"><a href="mailto:privacy@referme.help">privacy@referme.help</a></td>
+      </tr>
+      <tr>
+        <td style="padding:8px 16px 8px 0;font-weight:600;white-space:nowrap;">HIPAA complaints</td>
+        <td style="padding:8px 0;"><a href="mailto:privacy@referme.help">privacy@referme.help</a> or HHS OCR at <a href="https://www.hhs.gov/hipaa/filing-a-complaint" target="_blank" rel="noopener">hhs.gov/hipaa/filing-a-complaint</a></td>
+      </tr>
+      <tr>
+        <td style="padding:8px 16px 8px 0;font-weight:600;white-space:nowrap;">Mailing address</td>
+        <td style="padding:8px 0;">Robworks Software &nbsp;·&nbsp; referme.help &nbsp;·&nbsp; United States</td>
+      </tr>
+    </table>
+  </section>
+
+  <hr style="margin:32px 0;">
+  <p class="muted" style="font-size:0.85rem;">
+    <strong>Legal disclaimer:</strong> This document is provided for informational purposes and
+    reflects our good-faith compliance posture. It does not constitute legal advice. Healthcare
+    organizations should consult qualified healthcare counsel to confirm compliance obligations
+    applicable to their specific situation. Nothing in this policy creates a contractual
+    obligation beyond what is expressly stated.
+  </p>
+
+  <p style="margin-top:24px;">
+    <a href="/terms">Terms of Service →</a>
+    &nbsp;&nbsp;·&nbsp;&nbsp;
+    <a href="/docs">Technical Documentation →</a>
+  </p>
+
+</div>
+{% endblock %}
