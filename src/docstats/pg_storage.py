@@ -597,6 +597,9 @@ class PostgresStorage(StorageBase):
     def clear_user_pcp(self, user_id: int) -> None:
         self._t("users").update({"pcp_npi": None}).eq("id", user_id).execute()
 
+    def delete_user(self, user_id: int) -> None:
+        self._t("users").delete().eq("id", user_id).execute()
+
     def update_user_profile(
         self,
         user_id: int,

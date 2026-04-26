@@ -126,6 +126,9 @@ class StorageBase(ABC):
     @abstractmethod
     def set_active_org(self, user_id: int, organization_id: int | None) -> None: ...
 
+    @abstractmethod
+    def delete_user(self, user_id: int) -> None: ...
+
     # --- Organizations & memberships ---
 
     @abstractmethod

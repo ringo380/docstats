@@ -1263,6 +1263,8 @@ _KNOWN_AUDIT_ACTIONS: tuple[str, ...] = (
     "referral.export",
     "referral.status",
     "referral.update",
+    "user.account_deleted",
+    "user.data_export",
     "user.login",
     "user.login_failed",
     "user.login_github",

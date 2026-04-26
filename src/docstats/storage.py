@@ -1392,6 +1392,10 @@ class Storage(StorageBase):
         self._conn.execute("UPDATE users SET pcp_npi=NULL WHERE id=?", (user_id,))
         self._conn.commit()
 
+    def delete_user(self, user_id: int) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+
     def update_user_profile(
         self,
         user_id: int,
