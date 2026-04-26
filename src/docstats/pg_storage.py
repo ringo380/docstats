@@ -63,6 +63,7 @@ from docstats.domain.referrals import (
 )
 from docstats.domain.eligibility import AvailityPayer, EligibilityCheck, EligibilityResult
 from docstats.domain.sessions import Session
+from docstats.domain.staff_access import StaffAccessGrant
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.scope import Scope, ScopeRequired
 from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
@@ -1383,6 +1384,70 @@ class PostgresStorage(StorageBase):
             return 0
         self._t("sessions").delete().in_("id", ids).execute()
         return len(ids)
+
+    # --- Staff access grants ---
+
+    @staticmethod
+    def _row_to_staff_access_grant(row: dict) -> StaffAccessGrant:
+        created = _parse_ts(row.get("created_at"))
+        expires = _parse_ts(row.get("expires_at"))
+        assert created is not None and expires is not None
+        return StaffAccessGrant(
+            id=row["id"],
+            user_id=row["user_id"],
+            expires_at=expires,
+            revoked_at=_parse_ts(row.get("revoked_at")),
+            created_at=created,
+        )
+
+    def create_staff_access_grant(self, *, user_id: int, ttl_seconds: int) -> StaffAccessGrant:
+        now = _now_iso()
+        expires = (datetime.now(tz=timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
+        # Revoke any existing active grant first
+        self._t("staff_access_grants").update({"revoked_at": now}).eq("user_id", user_id).is_(
+            "revoked_at", None
+        ).execute()
+        result = (
+            self._t("staff_access_grants")
+            .insert({"user_id": user_id, "expires_at": expires})
+            .execute()
+        )
+        return self._row_to_staff_access_grant(result.data[0])
+
+    def get_active_staff_access_grant(self, user_id: int) -> StaffAccessGrant | None:
+        now = _now_iso()
+        result = (
+            self._t("staff_access_grants")
+            .select("*")
+            .eq("user_id", user_id)
+            .is_("revoked_at", None)
+            .gt("expires_at", now)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return self._row_to_staff_access_grant(result.data[0]) if result.data else None
+
+    def revoke_staff_access_grant(self, user_id: int) -> int:
+        result = (
+            self._t("staff_access_grants")
+            .update({"revoked_at": _now_iso()})
+            .eq("user_id", user_id)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        return len(result.data)
+
+    def list_staff_access_grants(self, user_id: int, *, limit: int = 20) -> list[StaffAccessGrant]:
+        result = (
+            self._t("staff_access_grants")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("id", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [self._row_to_staff_access_grant(r) for r in result.data]
 
     # --- Patients (scope-enforced) ---
 

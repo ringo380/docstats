@@ -13,6 +13,7 @@ from docstats.auth import require_user
 from docstats.client import NPPESClient, NPPESError
 from docstats.domain import audit
 from docstats.domain.orgs import has_role_at_least
+from docstats.domain.staff_access import DEFAULT_TTL_SECONDS, TTL_OPTIONS
 from docstats.phi import require_phi_consent
 from docstats.routes._common import MAPBOX_TOKEN, get_client, render, saved_count
 from docstats.scope import Scope
@@ -43,6 +44,7 @@ async def profile(
             pcp_provider = await client.async_lookup(pcp_npi)
         except NPPESError:
             pass
+    active_grant = storage.get_active_staff_access_grant(user_id)
     return render(
         "profile.html",
         {
@@ -53,6 +55,8 @@ async def profile(
             "pcp_provider": pcp_provider,
             "mapbox_token": MAPBOX_TOKEN,
             "delete_error": None,
+            "active_grant": active_grant,
+            "ttl_options": TTL_OPTIONS,
         },
     )
 
@@ -85,6 +89,58 @@ async def profile_clear_pcp(
             "pcp_provider": None,
             "mapbox_token": MAPBOX_TOKEN,
         },
+    )
+
+
+@router.post("/profile/support-access", response_class=HTMLResponse)
+async def profile_grant_support_access(
+    request: Request,
+    ttl_seconds: int = Form(default=DEFAULT_TTL_SECONDS),
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Create (or replace) a time-limited staff access grant for this user."""
+    user_id = current_user["id"]
+    valid_ttls = set(TTL_OPTIONS.values())
+    if ttl_seconds not in valid_ttls:
+        ttl_seconds = DEFAULT_TTL_SECONDS
+    grant = storage.create_staff_access_grant(user_id=user_id, ttl_seconds=ttl_seconds)
+    audit.record(
+        storage,
+        action="staff_access.granted",
+        request=request,
+        actor_user_id=user_id,
+        scope_user_id=user_id,
+        metadata={"grant_id": grant.id, "expires_at": grant.expires_at.isoformat()},
+    )
+    return render(
+        "_support_access.html",
+        {"request": request, "active_grant": grant, "ttl_options": TTL_OPTIONS},
+    )
+
+
+@router.delete("/profile/support-access", response_class=HTMLResponse)
+async def profile_revoke_support_access(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Revoke the active staff access grant for this user."""
+    user_id = current_user["id"]
+    active_grant = storage.get_active_staff_access_grant(user_id)
+    if active_grant:
+        storage.revoke_staff_access_grant(user_id)
+        audit.record(
+            storage,
+            action="staff_access.revoked",
+            request=request,
+            actor_user_id=user_id,
+            scope_user_id=user_id,
+            metadata={"grant_id": active_grant.id},
+        )
+    return render(
+        "_support_access.html",
+        {"request": request, "active_grant": None, "ttl_options": TTL_OPTIONS},
     )
 
 

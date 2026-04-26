@@ -28,6 +28,7 @@ from docstats.domain.seed import seed_platform_defaults
 from docstats.routes._common import MAPBOX_TOKEN, US_STATES, get_client, render, saved_count  # noqa: F401 — get_client re-exported for test compatibility
 from docstats.routes.admin import router as admin_router
 from docstats.routes.admin_deliveries import router as admin_deliveries_router
+from docstats.routes.admin_support import router as admin_support_router
 from docstats.routes.api import router as api_router
 from docstats.routes.api_v2 import (
     http_exception_handler as api_v2_http_exception_handler,
@@ -293,6 +294,7 @@ app.include_router(api_router)
 app.include_router(api_v2_router)
 app.include_router(admin_router)
 app.include_router(admin_deliveries_router)
+app.include_router(admin_support_router)
 app.include_router(invite_router)
 app.include_router(eligibility_router)
 app.include_router(patients_router)

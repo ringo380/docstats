@@ -1,0 +1,106 @@
+{% extends "admin/_admin_layout.html" %}
+{% block admin_content %}
+<div class="saved-header">
+  <div>
+    <h1>Support access</h1>
+    <div class="sub">View a user's account only when they have granted you access.</div>
+  </div>
+</div>
+
+<form method="get" action="/admin/support" class="filter-bar" style="margin-bottom:1.5rem;">
+  <label>User email
+    <input type="email" name="email" value="{{ email_query }}"
+           maxlength="254" autocomplete="off" placeholder="user@example.com"
+           style="min-width:260px;">
+  </label>
+  <button type="submit" class="btn btn-secondary" style="font-size:0.85rem; padding:6px 16px;">Look up</button>
+</form>
+
+{% if not_found %}
+<div class="alert alert-error" style="margin-bottom:1rem;">No user found with that email.</div>
+{% endif %}
+
+{% if target_user %}
+<div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
+  <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.75rem; color:var(--text-dim);">
+    {{ target_user.email }}
+    <span style="font-weight:400; color:var(--text-muted); font-size:0.82rem;">
+      (id {{ target_user.id }})
+    </span>
+  </h2>
+
+  {% if access_denied %}
+  <div style="padding:1rem; background:rgba(220,38,38,0.05); border:1px solid rgba(220,38,38,0.2); border-radius:var(--radius-sm); font-size:0.88rem; color:var(--red);">
+    No active staff access grant. Ask the user to grant access from their Profile page.
+  </div>
+  {% elif active_grant %}
+  <div style="font-size:0.82rem; color:var(--text-muted); margin-bottom:1rem;">
+    Access granted until <strong>{{ active_grant.expires_at.strftime('%b %d, %Y at %H:%M UTC') }}</strong>
+    &mdash; <a href="/admin/support/user/{{ target_user.id }}" style="color:var(--accent);">View account &rarr;</a>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if audit_events is defined and audit_events %}
+<div class="card" style="padding:1.25rem;">
+  <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.75rem; color:var(--text-dim);">
+    Account info
+  </h2>
+  <table style="width:100%; font-size:0.85rem; border-collapse:collapse;">
+    <tbody>
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 8px; color:var(--text-dim); width:120px;">Email</td>
+        <td style="padding:6px 8px;">{{ target_user.email }}</td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 8px; color:var(--text-dim);">Name</td>
+        <td style="padding:6px 8px;">
+          {% if target_user.first_name or target_user.last_name %}
+            {{ target_user.first_name or '' }} {{ target_user.last_name or '' }}
+          {% elif target_user.display_name %}
+            {{ target_user.display_name }}
+          {% else %}
+            &mdash;
+          {% endif %}
+        </td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 8px; color:var(--text-dim);">Joined</td>
+        <td style="padding:6px 8px;">{{ target_user.created_at[:10] }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 style="font-size:0.95rem; font-weight:600; margin:1.5rem 0 0.75rem; color:var(--text-dim);">
+    Recent audit events (last 50)
+  </h2>
+  <table style="width:100%; font-size:0.82rem; border-collapse:collapse;">
+    <thead>
+      <tr style="border-bottom:1px solid var(--border); color:var(--text-dim);">
+        <th style="padding:6px 8px; text-align:left; font-weight:500;">Time</th>
+        <th style="padding:6px 8px; text-align:left; font-weight:500;">Action</th>
+        <th style="padding:6px 8px; text-align:left; font-weight:500;">Actor</th>
+        <th style="padding:6px 8px; text-align:left; font-weight:500;">Entity</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ev in audit_events %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 8px; color:var(--text-muted); white-space:nowrap;">
+          {{ ev.created_at.strftime('%Y-%m-%d %H:%M') }}
+        </td>
+        <td style="padding:6px 8px; font-family:var(--font-mono); font-size:0.78rem;">{{ ev.action }}</td>
+        <td style="padding:6px 8px; color:var(--text-muted);">{{ ev.actor_user_id or '—' }}</td>
+        <td style="padding:6px 8px; color:var(--text-muted);">
+          {% if ev.entity_type %}{{ ev.entity_type }} {{ ev.entity_id or '' }}{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" style="padding:1rem; color:var(--text-muted); text-align:center;">No events.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

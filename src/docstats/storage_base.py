@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     )
     from docstats.domain.sessions import Session
     from docstats.domain.eligibility import AvailityPayer, EligibilityCheck
+    from docstats.domain.staff_access import StaffAccessGrant
     from docstats.scope import Scope
 
 
@@ -456,6 +457,30 @@ class StorageBase(ABC):
 
     @abstractmethod
     def purge_expired_sessions(self) -> int: ...
+
+    # --- Staff access grants ---
+
+    @abstractmethod
+    def create_staff_access_grant(self, *, user_id: int, ttl_seconds: int) -> "StaffAccessGrant":
+        """Create a new grant, revoking any existing active grant first."""
+        ...
+
+    @abstractmethod
+    def get_active_staff_access_grant(self, user_id: int) -> "StaffAccessGrant | None":
+        """Return the active (not revoked, not expired) grant for this user, or None."""
+        ...
+
+    @abstractmethod
+    def revoke_staff_access_grant(self, user_id: int) -> int:
+        """Revoke all active grants for a user. Returns count of rows updated."""
+        ...
+
+    @abstractmethod
+    def list_staff_access_grants(
+        self, user_id: int, *, limit: int = 20
+    ) -> "list[StaffAccessGrant]":
+        """Return grants for a user, newest first."""
+        ...
 
     # --- Patients (scope-enforced) ---
 
