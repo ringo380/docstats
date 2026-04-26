@@ -172,29 +172,34 @@
   <!-- 5. EHR INTEGRATION -->
   <section id="ehr-integration" style="margin-bottom:36px;">
     <h2>5. EHR / SMART on FHIR Integration</h2>
+    <p style="background:#fef9c3;border:1px solid #fde68a;border-radius:4px;padding:10px 14px;font-size:0.9rem;">
+      <strong>Feature status:</strong> EHR / SMART on FHIR integration is currently in development.
+      The provisions in this section take effect when the feature is generally available.
+    </p>
 
-    <h3>5.1 Patient-Authorized Access</h3>
+    <h3 style="margin-top:20px;">5.1 Patient-Authorized Access</h3>
     <p>
-      The SMART on FHIR standalone launch flow allows patients to authorize referme.help to
-      read a limited set of health data from their EHR (Epic MyChart and similar). By
-      initiating this flow, you (as a patient) explicitly authorize Robworks to retrieve and
-      temporarily store the data described in our <a href="/privacy">Privacy Policy</a>
+      When the EHR integration feature is available, patients may authorize referme.help to
+      read a limited set of health data from their EHR (Epic MyChart and similar) via the SMART
+      App Launch Framework (v2.0). By initiating this flow, you explicitly authorize Robworks to
+      retrieve and temporarily store the data described in our <a href="/privacy">Privacy Policy</a>
       solely for the purpose of pre-populating your referral record.
     </p>
 
     <h3 style="margin-top:20px;">5.2 Scope of EHR Data Use</h3>
     <p>
-      EHR-imported data (demographics, diagnoses, allergies, medications, insurance) is
+      EHR-imported data (demographics, diagnoses, allergies, medications, insurance) will be
       used exclusively to populate referral records within your account. It is never sold,
       shared with third parties for marketing purposes, or used for model training.
     </p>
 
     <h3 style="margin-top:20px;">5.3 Token Storage and Revocation</h3>
     <p>
-      OAuth access and refresh tokens are encrypted at rest (AES-256). You may disconnect
-      your EHR connection at any time from your account settings. Disconnecting revokes
-      stored tokens and prevents further data retrieval. It does not automatically delete
-      data already imported.
+      OAuth access and refresh tokens will be encrypted at rest before storage. You may
+      disconnect your EHR connection at any time by contacting
+      <a href="mailto:privacy@referme.help">privacy@referme.help</a> or by revoking access
+      directly in your EHR's patient portal. Disconnecting revokes stored tokens and prevents
+      further data retrieval. It does not automatically delete data already imported.
     </p>
 
     <h3 style="margin-top:20px;">5.4 EHR Platform Terms</h3>
