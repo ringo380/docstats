@@ -62,6 +62,7 @@ from docstats.domain.referrals import (
 from docstats.domain.eligibility import AvailityPayer, EligibilityCheck, EligibilityResult
 from docstats.domain.sessions import Session
 from docstats.domain.share_tokens import ShareToken
+from docstats.domain.staff_access import StaffAccessGrant
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.scope import Scope, scope_sql_clause
 from docstats.storage_base import StorageBase, fuzzy_score, normalize_email
@@ -588,6 +589,7 @@ class Storage(StorageBase):
         self._migrate_share_tokens()
         self._migrate_eligibility_checks()
         self._migrate_availity_payers()
+        self._migrate_staff_access_grants()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -4776,6 +4778,78 @@ class Storage(StorageBase):
         if "availity_payer_id" not in cols:
             self._conn.execute("ALTER TABLE insurance_plans ADD COLUMN availity_payer_id TEXT")
         self._conn.commit()
+
+    def _migrate_staff_access_grants(self) -> None:
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS staff_access_grants (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                expires_at   TEXT NOT NULL,
+                revoked_at   TEXT,
+                created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_staff_access_grants_user_id"
+            " ON staff_access_grants (user_id)"
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def _row_to_staff_access_grant(row: sqlite3.Row) -> StaffAccessGrant:
+        return StaffAccessGrant(
+            id=row["id"],
+            user_id=row["user_id"],
+            expires_at=_parse_sqlite_utc(row["expires_at"]),  # type: ignore[arg-type]
+            revoked_at=_parse_sqlite_utc(row["revoked_at"]) if row["revoked_at"] else None,
+            created_at=_parse_sqlite_utc(row["created_at"]),  # type: ignore[arg-type]
+        )
+
+    def create_staff_access_grant(self, *, user_id: int, ttl_seconds: int) -> StaffAccessGrant:
+        now = datetime.now(tz=timezone.utc)
+        expires = now + timedelta(seconds=ttl_seconds)
+        with self._conn:
+            # Revoke any existing active grant first
+            self._conn.execute(
+                "UPDATE staff_access_grants SET revoked_at = ?"
+                " WHERE user_id = ? AND revoked_at IS NULL",
+                (now.isoformat(), user_id),
+            )
+            cur = self._conn.execute(
+                "INSERT INTO staff_access_grants (user_id, expires_at, created_at)"
+                " VALUES (?, ?, ?)",
+                (user_id, expires.isoformat(), now.isoformat()),
+            )
+        row = self._conn.execute(
+            "SELECT * FROM staff_access_grants WHERE id = ?", (cur.lastrowid,)
+        ).fetchone()
+        return self._row_to_staff_access_grant(row)
+
+    def get_active_staff_access_grant(self, user_id: int) -> StaffAccessGrant | None:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        row = self._conn.execute(
+            "SELECT * FROM staff_access_grants"
+            " WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?"
+            " ORDER BY id DESC LIMIT 1",
+            (user_id, now),
+        ).fetchone()
+        return self._row_to_staff_access_grant(row) if row else None
+
+    def revoke_staff_access_grant(self, grant_id: int) -> bool:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        cur = self._conn.execute(
+            "UPDATE staff_access_grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+            (now, grant_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def list_staff_access_grants(self, user_id: int, *, limit: int = 20) -> list[StaffAccessGrant]:
+        rows = self._conn.execute(
+            "SELECT * FROM staff_access_grants WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+        return [self._row_to_staff_access_grant(r) for r in rows]
 
     @staticmethod
     def _row_to_availity_payer(row: sqlite3.Row) -> AvailityPayer:
