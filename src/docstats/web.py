@@ -229,6 +229,20 @@ async def public_docs(request: Request):
     return render("docs.html", {"request": request, "active_page": ""})
 
 
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_policy(request: Request):
+    """Privacy Policy & HIPAA Notice of Privacy Practices."""
+    from docstats.routes._common import render
+    return render("privacy.html", {"request": request, "active_page": ""})
+
+
+@app.get("/terms", response_class=HTMLResponse)
+async def terms_of_service(request: Request):
+    """Terms of Service."""
+    from docstats.routes._common import render
+    return render("terms.html", {"request": request, "active_page": ""})
+
+
 
 # --- /saved → /rolodex legacy redirects (Phase 2.E).
 # Users bookmarked the old paths pre-rename; 301-redirect permanently so the
