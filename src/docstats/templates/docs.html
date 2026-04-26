@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Documentation — referme.help{% endblock %}
+
+{% block content %}
+<div style="max-width:780px;margin:0 auto;padding:32px 16px;">
+
+  <h1>referme.help — App Documentation</h1>
+  <p class="sub" style="margin-bottom:32px;">
+    Technical documentation for EHR integration partners, reviewers, and developers.
+  </p>
+
+  <section style="margin-bottom:36px;">
+    <h2>About referme.help</h2>
+    <p>
+      referme.help is a HIPAA-compliant referral management platform designed for clinical
+      staff at physician practices, specialty groups, and health systems. It streamlines
+      the creation, tracking, and delivery of patient referrals — including prior
+      authorization coordination, specialist scheduling, and closed-loop response capture.
+    </p>
+    <p style="margin-top:12px;">
+      <strong>Intended users:</strong> physicians, nurses, medical assistants, referral
+      coordinators, and administrative staff who create and manage outbound referrals on
+      behalf of patients.
+    </p>
+    <p style="margin-top:12px;">
+      <strong>Intended setting:</strong> ambulatory care, primary care, and specialty
+      practices operating in the United States.
+    </p>
+  </section>
+
+  <section style="margin-bottom:36px;">
+    <h2>SMART on FHIR Integration</h2>
+    <p>
+      referme.help supports a <strong>SMART on FHIR standalone launch</strong> (SMART App
+      Launch Framework v2.0). Clinicians authenticate against their EHR and authorize
+      referme.help to read a limited set of patient data in order to pre-populate a new
+      referral without manual re-entry.
+    </p>
+    <p style="margin-top:12px;">
+      The integration is <strong>read-only by default</strong>. No data is written back to
+      the EHR unless the user explicitly enables the optional ServiceRequest write-back
+      feature (future roadmap).
+    </p>
+
+    <h3 style="margin-top:24px;">FHIR Scopes Requested</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:0.9rem;margin-top:8px;">
+      <thead>
+        <tr style="border-bottom:2px solid #e5e7eb;">
+          <th style="text-align:left;padding:8px 12px;">Scope</th>
+          <th style="text-align:left;padding:8px 12px;">Purpose</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:8px 12px;"><code>patient/Patient.read</code></td>
+          <td style="padding:8px 12px;">Demographics (name, DOB, MRN) to identify and pre-populate the patient record</td>
+        </tr>
+        <tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:8px 12px;"><code>patient/Condition.read</code></td>
+          <td style="padding:8px 12px;">Active diagnoses to pre-fill referral ICD-10 codes</td>
+        </tr>
+        <tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:8px 12px;"><code>patient/MedicationRequest.read</code></td>
+          <td style="padding:8px 12px;">Current medications to populate the referral medication list</td>
+        </tr>
+        <tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:8px 12px;"><code>patient/AllergyIntolerance.read</code></td>
+          <td style="padding:8px 12px;">Documented allergies to populate the referral allergy list</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 12px;"><code>openid fhirUser</code></td>
+          <td style="padding:8px 12px;">Identify the launching clinician for audit trail</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin-top:24px;">OAuth 2.0 / PKCE Flow</h3>
+    <p>
+      referme.help uses the <strong>Authorization Code flow with PKCE</strong> (Proof Key
+      for Code Exchange). No client secret is stored or transmitted. Tokens are encrypted
+      at rest using AES-256 (Fernet) before storage in our database.
+    </p>
+    <ul style="margin-top:8px;padding-left:24px;line-height:1.8;">
+      <li><strong>Authorization endpoint:</strong> provided by EHR SMART metadata discovery</li>
+      <li><strong>Token endpoint:</strong> provided by EHR SMART metadata discovery</li>
+      <li><strong>Redirect URI:</strong> <code>https://referme.help/ehr/callback</code></li>
+      <li><strong>SMART version:</strong> SMART App Launch Framework v2.0 (HL7)</li>
+    </ul>
+
+    <h3 style="margin-top:24px;">Data Retention</h3>
+    <p>
+      Patient data imported via SMART is stored within referme.help's database under the
+      same HIPAA-compliant data retention policy as all other patient data (configurable
+      per organization, default 7 years). Imported fields are tagged with source
+      <code>imported_ehr</code> for audit traceability.
+    </p>
+    <p style="margin-top:8px;">
+      EHR OAuth tokens are stored encrypted and are automatically revoked on user
+      sign-out or on explicit disconnect from the EHR connection settings page.
+    </p>
+  </section>
+
+  <section style="margin-bottom:36px;">
+    <h2>Privacy &amp; Security</h2>
+    <ul style="padding-left:24px;line-height:1.9;">
+      <li>All data transmitted over TLS 1.2+</li>
+      <li>Database hosted on Supabase (SOC 2 Type II certified)</li>
+      <li>OAuth tokens encrypted at rest (AES-256/Fernet)</li>
+      <li>Per-organization audit log for all PHI access events</li>
+      <li>Role-based access control (read_only → staff → clinician → coordinator → admin → owner)</li>
+      <li>Session revocation on sign-out; server-side session management</li>
+      <li>Attachment virus scanning (Cloudmersive) before storage</li>
+    </ul>
+    <p style="margin-top:12px;">
+      referme.help operates as a HIPAA Business Associate and offers BAAs to covered entities.
+      Contact <a href="mailto:support@referme.help">support@referme.help</a> for BAA requests.
+    </p>
+  </section>
+
+  <section style="margin-bottom:36px;">
+    <h2>Supported EHR Systems</h2>
+    <p>Phase 12 (current): Epic (SMART on FHIR standalone launch, sandbox).</p>
+    <p style="margin-top:8px;">Planned: Oracle Health (Cerner), Athenahealth, Meditech.</p>
+  </section>
+
+  <section style="margin-bottom:36px;">
+    <h2>Support &amp; Contact</h2>
+    <ul style="padding-left:24px;line-height:1.9;">
+      <li><strong>Support:</strong> <a href="mailto:support@referme.help">support@referme.help</a></li>
+      <li><strong>Privacy:</strong> <a href="mailto:privacy@referme.help">privacy@referme.help</a></li>
+      <li><strong>Security disclosures:</strong> <a href="mailto:security@referme.help">security@referme.help</a></li>
+      <li><strong>Website:</strong> <a href="https://referme.help">referme.help</a></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Version History</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+      <thead>
+        <tr style="border-bottom:2px solid #e5e7eb;">
+          <th style="text-align:left;padding:8px 12px;">Date</th>
+          <th style="text-align:left;padding:8px 12px;">Change</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="padding:8px 12px;">2026-04-25</td>
+          <td style="padding:8px 12px;">Initial documentation published. Epic SMART standalone launch (Phase 12.A).</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+</div>
+{% endblock %}

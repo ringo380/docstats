@@ -222,6 +222,14 @@ async def robots_txt():
     return "User-agent: *\nDisallow: /\n"
 
 
+@app.get("/docs", response_class=HTMLResponse)
+async def public_docs(request: Request):
+    """Public documentation page — EHR integration partners and Epic App review."""
+    from docstats.routes._common import render
+    return render("docs.html", {"request": request, "active_page": ""})
+
+
+
 # --- /saved → /rolodex legacy redirects (Phase 2.E).
 # Users bookmarked the old paths pre-rename; 301-redirect permanently so the
 # browser and search engines update their cache. Keeping these as dedicated
