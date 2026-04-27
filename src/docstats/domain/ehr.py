@@ -11,7 +11,14 @@ EHR_VENDORS: set[str] = {"epic_sandbox"}
 # Default scope set for Phase 12.A — Patient-only standalone launch.
 # offline_access is needed for refresh_token. fhirUser + openid identify the
 # launching user; launch/patient narrows to the patient context picked at auth.
-EPIC_SCOPES: str = "openid fhirUser launch/patient patient/Patient.read offline_access"
+# Epic patient-facing standalone launch:
+# - `launch/patient` is an EHR-LAUNCH scope (sidebar in Epic) and breaks
+#   MyChart's standalone OAuth — Epic forwards it to MyChart with no actual
+#   data scope, MyChart returns "request is invalid".
+# - `offline_access` is silently stripped unless the Epic app has "Requires
+#   Persistent Access" checked. Re-add it when 12.E ships refresh-token
+#   rotation alongside the matching app-config flip.
+EPIC_SCOPES: str = "openid fhirUser patient/Patient.read"
 
 
 class EHRConnection(BaseModel):
