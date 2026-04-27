@@ -23,12 +23,31 @@ from urllib.parse import urlencode
 import httpx
 
 from docstats.http_retry import (
-    get_default_max_retries,
     get_default_timeout,
     request_with_retry,
 )
 
 logger = logging.getLogger(__name__)
+
+# Fields we never want to surface in exception messages or logs.
+_TOKEN_FIELDS: frozenset[str] = frozenset(
+    {"access_token", "refresh_token", "id_token", "code", "client_secret"}
+)
+
+
+def _redact(payload: object) -> object:
+    """Return a copy of ``payload`` with token-shaped fields redacted.
+
+    Used before formatting an Epic response into an EpicError message so a
+    500 / log line never carries token plaintext, even when the response is
+    only "missing access_token" — the rest of the body might still hold a
+    refresh_token or id_token that an attacker could pivot from.
+    """
+    if isinstance(payload, dict):
+        return {k: ("***" if k in _TOKEN_FIELDS else _redact(v)) for k, v in payload.items()}
+    if isinstance(payload, list):
+        return [_redact(v) for v in payload]
+    return payload
 
 
 class EpicError(RuntimeError):
@@ -172,19 +191,23 @@ def exchange_code(*, code: str, code_verifier: str) -> TokenResponse:
         "Content-Type": "application/x-www-form-urlencoded",
     }
     with httpx.Client(timeout=get_default_timeout()) as http:
+        # max_retries=0 because the authorization code is single-use:
+        # if Epic processed the first request but the response timed out,
+        # retrying replays the same code and Epic returns invalid_grant
+        # while the user has no recourse. Token-exchange must be one-shot.
         resp = request_with_retry(
             http,
             "POST",
             endpoints.token_endpoint,
             label="Epic token exchange",
             error_class=EpicError,
-            max_retries=get_default_max_retries(),
+            max_retries=0,
             data=data,
             headers=headers,
         )
     payload = resp.json()
     if "access_token" not in payload:
-        raise EpicError(f"Epic token response missing access_token: {payload!r}")
+        raise EpicError(f"Epic token response missing access_token: {_redact(payload)!r}")
     return TokenResponse(
         access_token=payload["access_token"],
         refresh_token=payload.get("refresh_token"),
@@ -219,7 +242,7 @@ def refresh(refresh_token: str) -> TokenResponse:
         )
     payload = resp.json()
     if "access_token" not in payload:
-        raise EpicError(f"Epic refresh response missing access_token: {payload!r}")
+        raise EpicError(f"Epic refresh response missing access_token: {_redact(payload)!r}")
     return TokenResponse(
         access_token=payload["access_token"],
         refresh_token=payload.get("refresh_token") or refresh_token,

@@ -4872,8 +4872,12 @@ class Storage(StorageBase):
                 updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
             )"""
         )
+        # Drop any pre-existing non-UNIQUE form (migration 022 created the
+        # index without UNIQUE; 023 promotes it). The CREATE UNIQUE INDEX IF
+        # NOT EXISTS on its own won't upgrade an existing non-unique index.
+        self._conn.execute("DROP INDEX IF EXISTS idx_ehr_connections_user_active")
         self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ehr_connections_user_active"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ehr_connections_user_active"
             " ON ehr_connections (user_id, ehr_vendor)"
             " WHERE revoked_at IS NULL"
         )

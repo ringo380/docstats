@@ -5,6 +5,12 @@ Tokens are Fernet-encrypted at rest; plaintext never touches logs / audit
 metadata / session storage. PKCE (S256) is used alongside the confidential
 client_secret for defense in depth.
 
+PHI is NOT cached in the session cookie. The OAuth callback persists the
+encrypted access token + ``patient_fhir_id`` on ``ehr_connections``; the
+review and confirm routes then re-fetch the Patient resource from Epic on
+demand and discard the parsed dict at the end of the request. The cookie
+only carries opaque OAuth state (PKCE verifier + state token).
+
 Feature flagged on ``EHR_EPIC_SANDBOX_ENABLED=1`` — every route returns 404
 when the flag is off so accidental Railway misconfig doesn't expose a
 half-built integration.
@@ -17,17 +23,19 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
+from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from docstats.auth import require_user
 from docstats.domain import audit
-from docstats.domain.ehr import EPIC_SCOPES, ImportedPatient
+from docstats.domain.ehr import EHRConnection, EPIC_SCOPES, ImportedPatient
 from docstats.ehr import epic
-from docstats.ehr.crypto import EHRConfigError, encrypt_token
+from docstats.ehr.crypto import EHRConfigError, decrypt_token, encrypt_token
 from docstats.ehr.epic import EpicError
 from docstats.ehr.mappers import parse_fhir_patient
-from docstats.routes._common import render
+from docstats.phi import require_phi_consent
+from docstats.routes._common import get_scope, render
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
@@ -39,7 +47,27 @@ router = APIRouter(prefix="/ehr", tags=["ehr"])
 EHR_VENDOR = "epic_sandbox"
 SESSION_STATE_KEY = "ehr_epic_state"
 SESSION_VERIFIER_KEY = "ehr_epic_pkce_verifier"
-SESSION_PENDING_KEY = "ehr_pending_patient"
+
+# Closed set of error reasons we may echo into ``/profile?ehr_error=...``.
+# Never pass an upstream-controlled string through — Epic could return
+# attacker-shaped ``error`` query params, and even though the profile
+# template auto-escapes, an allowlist is cleaner.
+_ALLOWED_ERROR_REASONS: frozenset[str] = frozenset(
+    {
+        "state_mismatch",
+        "token_exchange",
+        "no_patient_context",
+        "server_config",
+        "patient_fetch",
+        "no_pending_import",
+        "no_active_connection",
+        "missing_patient_name",
+        "merge_requires_patient_id",
+        "patient_not_found",
+        "invalid_action",
+        "oauth_error",
+    }
+)
 
 
 def _enabled() -> bool:
@@ -51,6 +79,12 @@ def _require_enabled() -> None:
         raise HTTPException(status_code=404)
 
 
+def _err_redirect(reason: str) -> RedirectResponse:
+    """Redirect to /profile with a sanitized error reason."""
+    safe = reason if reason in _ALLOWED_ERROR_REASONS else "oauth_error"
+    return RedirectResponse(f"/profile?ehr_error={safe}", status_code=303)
+
+
 def _audit_failure(storage: StorageBase, request: Request, user_id: int, reason: str) -> None:
     audit.record(
         storage,
@@ -59,6 +93,38 @@ def _audit_failure(storage: StorageBase, request: Request, user_id: int, reason:
         actor_user_id=user_id,
         metadata={"ehr_vendor": EHR_VENDOR, "reason": reason},
     )
+
+
+async def _load_pending_patient(
+    storage: StorageBase, user_id: int
+) -> tuple[EHRConnection, ImportedPatient] | None:
+    """Re-fetch the FHIR Patient associated with the user's active connection.
+
+    Returns ``(connection, imported)`` on success or ``None`` if there is no
+    active connection, the stored token can't be decrypted, or Epic refuses
+    the read. Never raises — callers branch on ``None``.
+    """
+    conn = storage.get_active_ehr_connection(user_id, EHR_VENDOR)
+    if conn is None or not conn.patient_fhir_id:
+        return None
+    try:
+        access_token = decrypt_token(conn.access_token_enc)
+    except (EHRConfigError, InvalidToken):
+        logger.exception("Failed to decrypt EHR access token for user_id=%d", user_id)
+        return None
+
+    fhir_id = conn.patient_fhir_id
+    loop = asyncio.get_running_loop()
+    try:
+        patient_resource = await loop.run_in_executor(
+            None,
+            lambda: epic.fetch_patient(access_token=access_token, patient_fhir_id=fhir_id),
+        )
+        imported = parse_fhir_patient(patient_resource)
+    except (EpicError, ValueError):
+        logger.exception("Epic Patient fetch/parse failed for user_id=%d", user_id)
+        return None
+    return conn, imported
 
 
 @router.get("/connect/epic")
@@ -74,8 +140,8 @@ async def connect_epic(
     try:
         verifier, challenge = epic.make_pkce_pair()
         state = epic.make_state()
-        # Discovery + URL build are sync httpx; wrap in executor to avoid
-        # blocking the event loop on cold cache.
+        # Discovery + URL build do sync httpx on cold cache; wrap in executor
+        # so the event loop never blocks on the .well-known fetch.
         loop = asyncio.get_running_loop()
         url = await loop.run_in_executor(
             None,
@@ -103,7 +169,12 @@ async def callback_epic(
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ) -> Response:
-    """Token exchange + Patient fetch + redirect to review page."""
+    """Token exchange + redirect to review page.
+
+    The Patient resource itself is NOT fetched here — review and confirm
+    re-fetch on demand from the persisted connection so PHI never lives in
+    the session cookie.
+    """
     _require_enabled()
     user_id = current_user["id"]
 
@@ -112,10 +183,10 @@ async def callback_epic(
 
     if error:
         _audit_failure(storage, request, user_id, f"oauth_error:{error}")
-        return RedirectResponse(f"/profile?ehr_error={error}", status_code=303)
+        return _err_redirect("oauth_error")
     if not code or not state or state != expected_state or not verifier:
         _audit_failure(storage, request, user_id, "state_mismatch")
-        return RedirectResponse("/profile?ehr_error=state_mismatch", status_code=303)
+        return _err_redirect("state_mismatch")
 
     loop = asyncio.get_running_loop()
     try:
@@ -125,13 +196,13 @@ async def callback_epic(
     except (EpicError, EHRConfigError) as e:
         logger.exception("Epic token exchange failed")
         _audit_failure(storage, request, user_id, f"token_exchange:{type(e).__name__}")
-        return RedirectResponse("/profile?ehr_error=token_exchange", status_code=303)
+        return _err_redirect("token_exchange")
 
     if not token.patient_fhir_id:
         # Without a patient context we can't import — Epic should always return
         # one when the launch/patient scope is granted, but fail loud if not.
         _audit_failure(storage, request, user_id, "no_patient_context")
-        return RedirectResponse("/profile?ehr_error=no_patient_context", status_code=303)
+        return _err_redirect("no_patient_context")
     patient_fhir_id: str = token.patient_fhir_id
 
     try:
@@ -140,15 +211,18 @@ async def callback_epic(
     except EHRConfigError:
         logger.exception("EHR_TOKEN_KEY missing or malformed")
         _audit_failure(storage, request, user_id, "ehr_token_key_missing")
-        return RedirectResponse("/profile?ehr_error=server_config", status_code=303)
+        return _err_redirect("server_config")
 
     expires_at = datetime.now(tz=timezone.utc) + timedelta(seconds=token.expires_in)
-    endpoints = epic.discover()  # cached
+    endpoints = await loop.run_in_executor(None, epic.discover)
 
+    # `iss` is normalised — fetch_patient rstrips the same value, so we
+    # store the canonical form to keep audit / lookup paths consistent.
+    iss = endpoints.fhir_base.rstrip("/")
     storage.create_ehr_connection(
         user_id=user_id,
         ehr_vendor=EHR_VENDOR,
-        iss=endpoints.fhir_base,
+        iss=iss,
         access_token_enc=access_enc,
         refresh_token_enc=refresh_enc,
         expires_at=expires_at,
@@ -162,21 +236,6 @@ async def callback_epic(
         actor_user_id=user_id,
         metadata={"ehr_vendor": EHR_VENDOR, "fhir_patient_id": patient_fhir_id},
     )
-
-    # Fetch + parse the Patient, stash parsed dict (NOT tokens) in session.
-    try:
-        patient_resource = await loop.run_in_executor(
-            None,
-            lambda: epic.fetch_patient(
-                access_token=token.access_token, patient_fhir_id=patient_fhir_id
-            ),
-        )
-        imported = parse_fhir_patient(patient_resource)
-    except (EpicError, ValueError):
-        logger.exception("Epic Patient fetch/parse failed")
-        return RedirectResponse("/profile?ehr_error=patient_fetch", status_code=303)
-
-    request.session[SESSION_PENDING_KEY] = imported.model_dump()
     return RedirectResponse("/ehr/import/review", status_code=303)
 
 
@@ -219,15 +278,15 @@ def _candidate_matches(storage: StorageBase, scope: Scope, imported: ImportedPat
 @router.get("/import/review", response_class=HTMLResponse)
 async def import_review(
     request: Request,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_phi_consent),
     storage: StorageBase = Depends(get_storage),
+    scope: Scope = Depends(get_scope),
 ) -> Response:
     _require_enabled()
-    pending = request.session.get(SESSION_PENDING_KEY)
-    if not pending:
-        return RedirectResponse("/profile?ehr_error=no_pending_import", status_code=303)
-    imported = ImportedPatient(**pending)
-    scope = Scope(user_id=current_user["id"])
+    loaded = await _load_pending_patient(storage, current_user["id"])
+    if loaded is None:
+        return _err_redirect("no_active_connection")
+    _, imported = loaded
     candidates = _candidate_matches(storage, scope, imported)
     return render(
         "ehr_review.html",
@@ -246,21 +305,21 @@ async def import_confirm(
     request: Request,
     action: str = Form(..., max_length=20),
     patient_id: int | None = Form(None),
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_phi_consent),
     storage: StorageBase = Depends(get_storage),
+    scope: Scope = Depends(get_scope),
 ) -> Response:
     _require_enabled()
     user_id = current_user["id"]
-    pending = request.session.get(SESSION_PENDING_KEY)
-    if not pending:
-        return RedirectResponse("/profile?ehr_error=no_pending_import", status_code=303)
-    imported = ImportedPatient(**pending)
-    scope = Scope(user_id=user_id)
+    loaded = await _load_pending_patient(storage, user_id)
+    if loaded is None:
+        return _err_redirect("no_active_connection")
+    _, imported = loaded
 
     if action == "create_new":
         if not imported.first_name or not imported.last_name:
             # FHIR Patient lacked a usable name; we don't auto-fabricate one.
-            return RedirectResponse("/profile?ehr_error=missing_patient_name", status_code=303)
+            return _err_redirect("missing_patient_name")
         patient = storage.create_patient(
             scope,
             first_name=imported.first_name,
@@ -280,10 +339,10 @@ async def import_confirm(
         new_id = patient.id
     elif action == "merge":
         if patient_id is None:
-            return RedirectResponse("/profile?ehr_error=merge_requires_patient_id", status_code=303)
+            return _err_redirect("merge_requires_patient_id")
         existing = storage.get_patient(scope, patient_id)
         if existing is None:
-            return RedirectResponse("/profile?ehr_error=patient_not_found", status_code=303)
+            return _err_redirect("patient_not_found")
         # None-means-leave-alone semantics: only fill blank target fields so we
         # never silently overwrite user-curated data.
         update_kwargs = {}
@@ -307,14 +366,15 @@ async def import_confirm(
             storage.update_patient(scope, patient_id, **update_kwargs)
         new_id = patient_id
     else:
-        return RedirectResponse("/profile?ehr_error=invalid_action", status_code=303)
+        return _err_redirect("invalid_action")
 
     audit.record(
         storage,
         action="patient.imported_from_ehr",
         request=request,
         actor_user_id=user_id,
-        scope_user_id=user_id,
+        scope_user_id=scope.user_id,
+        scope_organization_id=scope.organization_id,
         entity_type="patient",
         entity_id=str(new_id),
         metadata={
@@ -323,7 +383,6 @@ async def import_confirm(
             "action": action,
         },
     )
-    request.session.pop(SESSION_PENDING_KEY, None)
     return RedirectResponse(f"/patients/{new_id}", status_code=303)
 
 
@@ -344,11 +403,15 @@ async def disconnect_epic(
             actor_user_id=user_id,
             metadata={"ehr_vendor": EHR_VENDOR},
         )
-    return render(
-        "_connected_ehrs.html",
-        {
-            "request": request,
-            "epic_connection": None,
-            "ehr_enabled": True,
-        },
-    )
+    # htmx callers swap the partial inline; non-htmx (curl, missing JS) gets
+    # a normal redirect back to /profile so the page is sensibly re-rendered.
+    if request.headers.get("HX-Request"):
+        return render(
+            "_connected_ehrs.html",
+            {
+                "request": request,
+                "epic_connection": None,
+                "ehr_enabled": True,
+            },
+        )
+    return RedirectResponse("/profile", status_code=303)
