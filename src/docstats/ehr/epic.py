@@ -54,7 +54,13 @@ class EpicError(RuntimeError):
     """Epic SMART-on-FHIR call failed."""
 
 
-DEFAULT_BASE_URL = "https://fhir.epic.com/interconnect-fhir-oauth"
+# `EPIC_SANDBOX_BASE_URL` is the FHIR R4 root, not the OAuth root. SMART
+# discovery lives at `{fhir_base}/.well-known/smart-configuration` per the
+# SMART App Launch v2 spec. Epic's well-known returns `fhir_base: null` and
+# its `issuer` field is the OAuth issuer (`.../oauth2`) — neither can be
+# trusted as the FHIR base for Patient.read, so we keep the configured
+# base authoritative.
+DEFAULT_BASE_URL = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
 DISCOVERY_PATH = "/.well-known/smart-configuration"
 DISCOVERY_TTL_SECONDS = 24 * 3600
 
@@ -132,10 +138,11 @@ def discover(*, force_refresh: bool = False) -> EpicEndpoints:
         endpoints = EpicEndpoints(
             authorize_endpoint=payload["authorization_endpoint"],
             token_endpoint=payload["token_endpoint"],
-            # SMART discovery exposes capabilities + endpoints; FHIR base is
-            # advertised under "fhir_base" or derivable from the iss path. Epic
-            # consistently exposes it as "issuer" pointing at fhir-root.
-            fhir_base=payload.get("issuer") or payload.get("fhir_base") or base,
+            # The configured base IS the FHIR base (we discovered from it).
+            # Don't trust payload["issuer"] — Epic's `issuer` is the OAuth
+            # issuer (`.../oauth2`), not the FHIR root, and Epic returns
+            # `fhir_base: null`.  Using either for Patient.read would 404.
+            fhir_base=base,
         )
     except KeyError as e:
         raise EpicError(f"Epic discovery missing field: {e}") from e

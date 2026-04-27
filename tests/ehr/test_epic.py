@@ -53,6 +53,10 @@ def test_discover_caches_endpoints(monkeypatch, epic_env):
     assert calls["n"] == 1
     assert a is b
     assert a.token_endpoint == "https://fake-epic.test/oauth2/token"
+    # Regression-pin: discovery payload's `issuer` is the OAuth issuer, not
+    # the FHIR base. fhir_base must come from the configured base URL so
+    # Patient.read calls hit the right place.
+    assert a.fhir_base == "https://fake-epic.test"
 
 
 def test_authorize_url_includes_pkce_and_aud(monkeypatch, epic_env):
