@@ -62,6 +62,7 @@ from docstats.domain.referrals import (
 from docstats.domain.eligibility import AvailityPayer, EligibilityCheck, EligibilityResult
 from docstats.domain.sessions import Session
 from docstats.domain.share_tokens import ShareToken
+from docstats.domain.ehr import EHRConnection
 from docstats.domain.staff_access import StaffAccessGrant
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.scope import Scope, scope_sql_clause
@@ -590,6 +591,7 @@ class Storage(StorageBase):
         self._migrate_eligibility_checks()
         self._migrate_availity_payers()
         self._migrate_staff_access_grants()
+        self._migrate_ehr_connections()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -4850,6 +4852,139 @@ class Storage(StorageBase):
             (user_id, limit),
         ).fetchall()
         return [self._row_to_staff_access_grant(r) for r in rows]
+
+    # --- EHR connections (Phase 12) ---
+
+    def _migrate_ehr_connections(self) -> None:
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS ehr_connections (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                ehr_vendor          TEXT NOT NULL CHECK (ehr_vendor IN ('epic_sandbox')),
+                iss                 TEXT NOT NULL,
+                patient_fhir_id     TEXT,
+                access_token_enc    TEXT NOT NULL,
+                refresh_token_enc   TEXT,
+                expires_at          TEXT NOT NULL,
+                scope               TEXT NOT NULL,
+                revoked_at          TEXT,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        # Drop any pre-existing non-UNIQUE form (migration 022 created the
+        # index without UNIQUE; 023 promotes it). The CREATE UNIQUE INDEX IF
+        # NOT EXISTS on its own won't upgrade an existing non-unique index.
+        self._conn.execute("DROP INDEX IF EXISTS idx_ehr_connections_user_active")
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ehr_connections_user_active"
+            " ON ehr_connections (user_id, ehr_vendor)"
+            " WHERE revoked_at IS NULL"
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def _row_to_ehr_connection(row: sqlite3.Row) -> EHRConnection:
+        return EHRConnection(
+            id=row["id"],
+            user_id=row["user_id"],
+            ehr_vendor=row["ehr_vendor"],
+            iss=row["iss"],
+            patient_fhir_id=row["patient_fhir_id"],
+            access_token_enc=row["access_token_enc"],
+            refresh_token_enc=row["refresh_token_enc"],
+            expires_at=_parse_sqlite_utc(row["expires_at"]),  # type: ignore[arg-type]
+            scope=row["scope"],
+            revoked_at=_parse_sqlite_utc(row["revoked_at"]) if row["revoked_at"] else None,
+            created_at=_parse_sqlite_utc(row["created_at"]),  # type: ignore[arg-type]
+            updated_at=_parse_sqlite_utc(row["updated_at"]),  # type: ignore[arg-type]
+        )
+
+    def create_ehr_connection(
+        self,
+        *,
+        user_id: int,
+        ehr_vendor: str,
+        iss: str,
+        access_token_enc: str,
+        refresh_token_enc: str | None,
+        expires_at: datetime,
+        scope: str,
+        patient_fhir_id: str | None,
+    ) -> EHRConnection:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._conn:
+            # Race-safe: revoke ALL active rows for (user, vendor) before insert.
+            self._conn.execute(
+                "UPDATE ehr_connections SET revoked_at = ?, updated_at = ?"
+                " WHERE user_id = ? AND ehr_vendor = ? AND revoked_at IS NULL",
+                (now, now, user_id, ehr_vendor),
+            )
+            cur = self._conn.execute(
+                "INSERT INTO ehr_connections"
+                " (user_id, ehr_vendor, iss, patient_fhir_id, access_token_enc,"
+                "  refresh_token_enc, expires_at, scope, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    ehr_vendor,
+                    iss,
+                    patient_fhir_id,
+                    access_token_enc,
+                    refresh_token_enc,
+                    expires_at.isoformat(),
+                    scope,
+                    now,
+                    now,
+                ),
+            )
+        row = self._conn.execute(
+            "SELECT * FROM ehr_connections WHERE id = ?", (cur.lastrowid,)
+        ).fetchone()
+        return self._row_to_ehr_connection(row)
+
+    def get_active_ehr_connection(self, user_id: int, ehr_vendor: str) -> EHRConnection | None:
+        row = self._conn.execute(
+            "SELECT * FROM ehr_connections"
+            " WHERE user_id = ? AND ehr_vendor = ? AND revoked_at IS NULL"
+            " ORDER BY id DESC LIMIT 1",
+            (user_id, ehr_vendor),
+        ).fetchone()
+        return self._row_to_ehr_connection(row) if row else None
+
+    def update_ehr_connection_tokens(
+        self,
+        connection_id: int,
+        *,
+        access_token_enc: str,
+        refresh_token_enc: str | None,
+        expires_at: datetime,
+    ) -> EHRConnection:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._conn:
+            self._conn.execute(
+                "UPDATE ehr_connections"
+                " SET access_token_enc = ?, refresh_token_enc = ?,"
+                "     expires_at = ?, updated_at = ?"
+                " WHERE id = ?",
+                (access_token_enc, refresh_token_enc, expires_at.isoformat(), now, connection_id),
+            )
+        row = self._conn.execute(
+            "SELECT * FROM ehr_connections WHERE id = ?", (connection_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"ehr_connection {connection_id} not found")
+        return self._row_to_ehr_connection(row)
+
+    def revoke_ehr_connection(self, user_id: int, ehr_vendor: str) -> int:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        cur = self._conn.execute(
+            "UPDATE ehr_connections SET revoked_at = ?, updated_at = ?"
+            " WHERE user_id = ? AND ehr_vendor = ? AND revoked_at IS NULL",
+            (now, now, user_id, ehr_vendor),
+        )
+        self._conn.commit()
+        return cur.rowcount
 
     @staticmethod
     def _row_to_availity_payer(row: sqlite3.Row) -> AvailityPayer:

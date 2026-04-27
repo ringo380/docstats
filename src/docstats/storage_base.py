@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     )
     from docstats.domain.sessions import Session
     from docstats.domain.eligibility import AvailityPayer, EligibilityCheck
+    from docstats.domain.ehr import EHRConnection
     from docstats.domain.staff_access import StaffAccessGrant
     from docstats.scope import Scope
 
@@ -480,6 +481,46 @@ class StorageBase(ABC):
         self, user_id: int, *, limit: int = 20
     ) -> "list[StaffAccessGrant]":
         """Return grants for a user, newest first."""
+        ...
+
+    # --- EHR connections (SMART-on-FHIR; Phase 12) ---
+
+    @abstractmethod
+    def create_ehr_connection(
+        self,
+        *,
+        user_id: int,
+        ehr_vendor: str,
+        iss: str,
+        access_token_enc: str,
+        refresh_token_enc: str | None,
+        expires_at: "datetime",
+        scope: str,
+        patient_fhir_id: str | None,
+    ) -> "EHRConnection":
+        """Create a new EHR connection, revoking prior active rows for the same vendor."""
+        ...
+
+    @abstractmethod
+    def get_active_ehr_connection(self, user_id: int, ehr_vendor: str) -> "EHRConnection | None":
+        """Return the latest non-revoked connection for (user, vendor), or None."""
+        ...
+
+    @abstractmethod
+    def update_ehr_connection_tokens(
+        self,
+        connection_id: int,
+        *,
+        access_token_enc: str,
+        refresh_token_enc: str | None,
+        expires_at: "datetime",
+    ) -> "EHRConnection":
+        """Replace tokens after a refresh. Bumps updated_at."""
+        ...
+
+    @abstractmethod
+    def revoke_ehr_connection(self, user_id: int, ehr_vendor: str) -> int:
+        """Revoke all active connections for (user, vendor). Returns count updated."""
         ...
 
     # --- Patients (scope-enforced) ---

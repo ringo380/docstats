@@ -25,6 +25,24 @@
     </div>
   </div>
 
+  {# ── Connected EHRs (SMART-on-FHIR) ── #}
+  {% if ehr_enabled %}
+  <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
+    <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.5rem; color:var(--text-dim);">Connected EHRs</h2>
+    <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">
+      Connect your Epic patient portal to import demographics and clinical data into your referrals.
+    </p>
+    {% if ehr_error %}
+      <div style="font-size:0.78rem; color:var(--red); margin-bottom:0.5rem;">
+        Could not complete EHR connect: <code>{{ ehr_error }}</code>. Please try again.
+      </div>
+    {% endif %}
+    <div id="connected-ehrs">
+      {% include "_connected_ehrs.html" %}
+    </div>
+  </div>
+  {% endif %}
+
   {# ── Support Access ── #}
   <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
     <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.5rem; color:var(--text-dim);">Support access</h2>

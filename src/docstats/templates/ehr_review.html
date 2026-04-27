@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Review EHR Import — referme.help{% endblock %}
+{% block content %}
+<div style="max-width: 720px; margin: 0 auto; padding-top: 2rem;">
+  <h1 style="font-size:1.4rem; font-weight:700; margin-bottom:0.5rem;">Review EHR Import</h1>
+  <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1.5rem;">
+    We pulled this patient from Epic. Review the fields and either create a new patient
+    record in your workspace or merge into an existing one.
+  </p>
+
+  <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
+    <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.75rem;">Imported from Epic</h2>
+    <div style="display:grid; grid-template-columns: 110px 1fr; gap:0.4rem 0.9rem; font-size:0.85rem;">
+      <div style="color:var(--text-dim);">Name</div>
+      <div>{{ imported.first_name or '—' }}{% if imported.middle_name %} {{ imported.middle_name }}{% endif %} {{ imported.last_name or '' }}</div>
+
+      <div style="color:var(--text-dim);">DOB</div>
+      <div>{{ imported.date_of_birth or '—' }}</div>
+
+      <div style="color:var(--text-dim);">MRN</div>
+      <div>{{ imported.mrn or '—' }}</div>
+
+      <div style="color:var(--text-dim);">Phone</div>
+      <div>{{ imported.phone or '—' }}</div>
+
+      <div style="color:var(--text-dim);">Email</div>
+      <div>{{ imported.email or '—' }}</div>
+
+      <div style="color:var(--text-dim);">Address</div>
+      <div>
+        {% if imported.address_line1 %}{{ imported.address_line1 }}{% endif %}
+        {% if imported.address_line2 %}<br>{{ imported.address_line2 }}{% endif %}
+        {% if imported.address_city or imported.address_state or imported.address_zip %}
+          <br>{{ imported.address_city or '' }}{% if imported.address_state %}, {{ imported.address_state }}{% endif %} {{ imported.address_zip or '' }}
+        {% endif %}
+        {% if not imported.address_line1 %}—{% endif %}
+      </div>
+    </div>
+  </div>
+
+  {% if candidates %}
+  <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
+    <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.5rem;">Existing patient matches</h2>
+    <p style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.75rem;">
+      Pick one to merge into. Only blank fields on the existing record will be filled —
+      we never overwrite data you've already curated.
+    </p>
+    <form method="post" action="/ehr/import/confirm">
+      <input type="hidden" name="action" value="merge">
+      <div style="display:flex; flex-direction:column; gap:0.4rem;">
+        {% for c in candidates %}
+        <label style="display:flex; align-items:flex-start; gap:0.6rem; padding:0.5rem 0.75rem; border:1px solid var(--border); border-radius:6px; cursor:pointer;">
+          <input type="radio" name="patient_id" value="{{ c.id }}" {% if loop.first %}checked{% endif %} style="margin-top:0.2rem;">
+          <div>
+            <div style="font-size:0.85rem; font-weight:600;">
+              {{ c.first_name }}{% if c.middle_name %} {{ c.middle_name }}{% endif %} {{ c.last_name }}
+            </div>
+            <div style="font-size:0.75rem; color:var(--text-muted);">
+              {% if c.date_of_birth %}DOB {{ c.date_of_birth }}{% endif %}
+              {% if c.mrn %} · MRN {{ c.mrn }}{% endif %}
+            </div>
+          </div>
+        </label>
+        {% endfor %}
+      </div>
+      <button type="submit" class="btn btn-primary" style="margin-top:0.75rem; font-size:0.85rem;">
+        Merge into selected patient
+      </button>
+    </form>
+  </div>
+  {% endif %}
+
+  <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
+    <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.5rem;">Create a new patient</h2>
+    <p style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.75rem;">
+      Add the imported demographics as a fresh patient in your workspace.
+    </p>
+    <form method="post" action="/ehr/import/confirm">
+      <input type="hidden" name="action" value="create_new">
+      <button type="submit" class="btn btn-primary" style="font-size:0.85rem;">
+        Create new patient
+      </button>
+    </form>
+  </div>
+
+  <div style="font-size:0.78rem; color:var(--text-muted); text-align:center;">
+    <a href="/profile" style="color:var(--text-muted);">Cancel and return to profile</a>
+  </div>
+</div>
+{% endblock %}

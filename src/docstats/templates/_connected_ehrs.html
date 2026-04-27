@@ -1,0 +1,22 @@
+{% if epic_connection %}
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem; padding:0.6rem 0.75rem; border:1px solid var(--border); border-radius:6px; background:var(--bg-subtle);">
+    <div>
+      <div style="font-size:0.85rem; font-weight:600;">Epic Sandbox</div>
+      <div style="font-size:0.75rem; color:var(--text-muted);">
+        Connected {{ epic_connection.created_at.strftime('%b %d, %Y') if epic_connection.created_at else '' }}
+        {% if epic_connection.patient_fhir_id %}
+          · Patient ref <code style="font-size:0.7rem;">{{ epic_connection.patient_fhir_id[:12] }}…</code>
+        {% endif %}
+      </div>
+    </div>
+    <form hx-post="/ehr/disconnect/epic" hx-target="#connected-ehrs" hx-swap="innerHTML">
+      <button type="submit" class="btn btn-secondary" style="font-size:0.78rem; padding:5px 10px;">
+        Disconnect
+      </button>
+    </form>
+  </div>
+{% else %}
+  <a href="/ehr/connect/epic" class="btn btn-secondary" style="font-size:0.82rem; padding:6px 14px;">
+    Connect Epic Sandbox
+  </a>
+{% endif %}
