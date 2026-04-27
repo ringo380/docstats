@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, Request, Response
@@ -32,6 +33,7 @@ _CONFIRM_PHRASE = "DELETE MY ACCOUNT"
 @router.get("/profile", response_class=HTMLResponse)
 async def profile(
     request: Request,
+    ehr_error: str | None = None,
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
@@ -45,6 +47,12 @@ async def profile(
         except NPPESError:
             pass
     active_grant = storage.get_active_staff_access_grant(user_id)
+
+    ehr_enabled = os.getenv("EHR_EPIC_SANDBOX_ENABLED", "").strip() == "1"
+    epic_connection = (
+        storage.get_active_ehr_connection(user_id, "epic_sandbox") if ehr_enabled else None
+    )
+
     return render(
         "profile.html",
         {
@@ -57,6 +65,9 @@ async def profile(
             "delete_error": None,
             "active_grant": active_grant,
             "ttl_options": TTL_OPTIONS,
+            "ehr_enabled": ehr_enabled,
+            "ehr_error": ehr_error,
+            "epic_connection": epic_connection,
         },
     )
 

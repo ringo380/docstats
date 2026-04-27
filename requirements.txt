@@ -12,3 +12,4 @@ python-multipart>=0.0.9
 supabase>=2.0,<3
 weasyprint>=62
 pypdf>=6.0
+cryptography>=42.0

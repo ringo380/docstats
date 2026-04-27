@@ -63,6 +63,7 @@ from docstats.domain.referrals import (
 )
 from docstats.domain.eligibility import AvailityPayer, EligibilityCheck, EligibilityResult
 from docstats.domain.sessions import Session
+from docstats.domain.ehr import EHRConnection
 from docstats.domain.staff_access import StaffAccessGrant
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.scope import Scope, ScopeRequired
@@ -1448,6 +1449,114 @@ class PostgresStorage(StorageBase):
             .execute()
         )
         return [self._row_to_staff_access_grant(r) for r in result.data]
+
+    # --- EHR connections (Phase 12) ---
+
+    @staticmethod
+    def _row_to_ehr_connection(row: dict) -> EHRConnection:
+        created = _parse_ts(row.get("created_at"))
+        updated = _parse_ts(row.get("updated_at"))
+        expires = _parse_ts(row.get("expires_at"))
+        assert created is not None and updated is not None and expires is not None
+        return EHRConnection(
+            id=row["id"],
+            user_id=row["user_id"],
+            ehr_vendor=row["ehr_vendor"],
+            iss=row["iss"],
+            patient_fhir_id=row.get("patient_fhir_id"),
+            access_token_enc=row["access_token_enc"],
+            refresh_token_enc=row.get("refresh_token_enc"),
+            expires_at=expires,
+            scope=row["scope"],
+            revoked_at=_parse_ts(row.get("revoked_at")),
+            created_at=created,
+            updated_at=updated,
+        )
+
+    def create_ehr_connection(
+        self,
+        *,
+        user_id: int,
+        ehr_vendor: str,
+        iss: str,
+        access_token_enc: str,
+        refresh_token_enc: str | None,
+        expires_at: datetime,
+        scope: str,
+        patient_fhir_id: str | None,
+    ) -> EHRConnection:
+        now = _now_iso()
+        # Race-safe: revoke ALL active rows for (user, vendor) first.
+        self._t("ehr_connections").update({"revoked_at": now, "updated_at": now}).eq(
+            "user_id", user_id
+        ).eq("ehr_vendor", ehr_vendor).is_("revoked_at", None).execute()
+        result = (
+            self._t("ehr_connections")
+            .insert(
+                {
+                    "user_id": user_id,
+                    "ehr_vendor": ehr_vendor,
+                    "iss": iss,
+                    "patient_fhir_id": patient_fhir_id,
+                    "access_token_enc": access_token_enc,
+                    "refresh_token_enc": refresh_token_enc,
+                    "expires_at": expires_at.isoformat(),
+                    "scope": scope,
+                }
+            )
+            .execute()
+        )
+        return self._row_to_ehr_connection(result.data[0])
+
+    def get_active_ehr_connection(self, user_id: int, ehr_vendor: str) -> EHRConnection | None:
+        result = (
+            self._t("ehr_connections")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("ehr_vendor", ehr_vendor)
+            .is_("revoked_at", None)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return self._row_to_ehr_connection(result.data[0]) if result.data else None
+
+    def update_ehr_connection_tokens(
+        self,
+        connection_id: int,
+        *,
+        access_token_enc: str,
+        refresh_token_enc: str | None,
+        expires_at: datetime,
+    ) -> EHRConnection:
+        result = (
+            self._t("ehr_connections")
+            .update(
+                {
+                    "access_token_enc": access_token_enc,
+                    "refresh_token_enc": refresh_token_enc,
+                    "expires_at": expires_at.isoformat(),
+                    "updated_at": _now_iso(),
+                }
+            )
+            .eq("id", connection_id)
+            .execute()
+        )
+        if not result.data:
+            raise ValueError(f"ehr_connection {connection_id} not found")
+        return self._row_to_ehr_connection(result.data[0])
+
+    def revoke_ehr_connection(self, user_id: int, ehr_vendor: str) -> int:
+        now = _now_iso()
+        result = (
+            self._t("ehr_connections")
+            .update({"revoked_at": now, "updated_at": now})
+            .eq("user_id", user_id)
+            .eq("ehr_vendor", ehr_vendor)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        return len(result.data)
 
     # --- Patients (scope-enforced) ---
 
