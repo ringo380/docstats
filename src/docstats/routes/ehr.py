@@ -138,9 +138,23 @@ def _maybe_refresh(conn: EHRConnection, storage: StorageBase) -> str:
             expires_at=new_expires_at,
         )
         logger.info("Refreshed EHR token for connection_id=%d", conn.id)
+        audit.record(
+            storage,
+            action="ehr.token_refreshed",
+            request=None,
+            actor_user_id=conn.user_id,
+            metadata={"ehr_vendor": EHR_VENDOR},
+        )
         return token.access_token
     except Exception:
         logger.exception("EHR token refresh failed for connection_id=%d", conn.id)
+        audit.record(
+            storage,
+            action="ehr.token_refresh_failed",
+            request=None,
+            actor_user_id=conn.user_id,
+            metadata={"ehr_vendor": EHR_VENDOR},
+        )
         return access_token
 
 
@@ -282,9 +296,9 @@ async def callback_epic(
 
     expected_state = request.session.pop(SESSION_STATE_KEY, None)
     verifier = request.session.pop(SESSION_VERIFIER_KEY, None)
-    # EHR-launch keys — pop regardless of mode so they don't linger.
-    request.session.pop(SESSION_EHR_ISS, None)
-    request.session.pop(SESSION_LAUNCH_MODE, None)
+    # EHR-launch keys — pop and capture so they inform discovery + scope below.
+    launch_iss: str | None = request.session.pop(SESSION_EHR_ISS, None)
+    launch_mode: str | None = request.session.pop(SESSION_LAUNCH_MODE, None)
 
     if error:
         _audit_failure(storage, request, user_id, f"oauth_error:{error}")
@@ -296,7 +310,8 @@ async def callback_epic(
     loop = asyncio.get_running_loop()
     try:
         token = await loop.run_in_executor(
-            None, lambda: epic.exchange_code(code=code, code_verifier=verifier)
+            None,
+            lambda: epic.exchange_code(code=code, code_verifier=verifier, iss_override=launch_iss),
         )
     except (EpicError, EHRConfigError) as e:
         logger.exception("Epic token exchange failed")
@@ -319,11 +334,15 @@ async def callback_epic(
         return _err_redirect("server_config")
 
     expires_at = datetime.now(tz=timezone.utc) + timedelta(seconds=token.expires_in)
-    endpoints = await loop.run_in_executor(None, epic.discover)
+    endpoints = await loop.run_in_executor(
+        None, lambda: epic.discover(base_url_override=launch_iss)
+    )
 
     # `iss` is normalised — fetch_patient rstrips the same value, so we
     # store the canonical form to keep audit / lookup paths consistent.
     iss = endpoints.fhir_base.rstrip("/")
+    # Fall back to the correct scope set for the flow that initiated the session.
+    scope_fallback = EPIC_SCOPES_EHR_LAUNCH if launch_mode == "ehr" else EPIC_SCOPES
     storage.create_ehr_connection(
         user_id=user_id,
         ehr_vendor=EHR_VENDOR,
@@ -331,7 +350,7 @@ async def callback_epic(
         access_token_enc=access_enc,
         refresh_token_enc=refresh_enc,
         expires_at=expires_at,
-        scope=token.scope or EPIC_SCOPES,
+        scope=token.scope or scope_fallback,
         patient_fhir_id=patient_fhir_id,
     )
     audit.record(

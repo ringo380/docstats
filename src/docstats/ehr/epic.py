@@ -213,9 +213,11 @@ def build_ehr_launch_authorize_url(
     return f"{endpoints.authorize_endpoint}?{urlencode(params)}"
 
 
-def exchange_code(*, code: str, code_verifier: str) -> TokenResponse:
+def exchange_code(
+    *, code: str, code_verifier: str, iss_override: str | None = None
+) -> TokenResponse:
     """POST authorization code → access token."""
-    endpoints = discover()
+    endpoints = discover(base_url_override=iss_override)
     data = {
         "grant_type": "authorization_code",
         "code": code,
@@ -268,12 +270,17 @@ def refresh(refresh_token: str) -> TokenResponse:
         "Content-Type": "application/x-www-form-urlencoded",
     }
     with httpx.Client(timeout=get_default_timeout()) as http:
+        # max_retries=0: Epic uses rotating refresh tokens (offline_access) so
+        # each token is single-use. A retry after a timeout would send the
+        # already-consumed token and receive invalid_grant, logging the user
+        # out with no recourse. Refresh must be one-shot, same as code exchange.
         resp = request_with_retry(
             http,
             "POST",
             endpoints.token_endpoint,
             label="Epic token refresh",
             error_class=EpicError,
+            max_retries=0,
             data=data,
             headers=headers,
         )
@@ -306,14 +313,19 @@ def fetch_patient(*, access_token: str, patient_fhir_id: str) -> dict:
 
 
 def _fetch_fhir_bundle_entries(
-    *, access_token: str, resource_type: str, params: dict[str, str], label: str
+    *,
+    access_token: str,
+    resource_type: str,
+    params: dict[str, str],
+    label: str,
+    iss_override: str | None = None,
 ) -> list[dict]:
     """GET a FHIR search bundle and return the resource list from entries.
 
     Returns an empty list when the bundle has no entries. Raises EpicError on
     network/HTTP failure. Callers are responsible for per-entry parsing.
     """
-    endpoints = discover()
+    endpoints = discover(base_url_override=iss_override)
     query = urlencode(params)
     url = f"{endpoints.fhir_base.rstrip('/')}/{resource_type}?{query}"
     headers = {
@@ -328,43 +340,55 @@ def _fetch_fhir_bundle_entries(
     return [entry["resource"] for entry in bundle.get("entry") or [] if "resource" in entry]
 
 
-def fetch_conditions(*, access_token: str, patient_fhir_id: str) -> list[dict]:
+def fetch_conditions(
+    *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
+) -> list[dict]:
     """GET active Condition resources for a patient."""
     return _fetch_fhir_bundle_entries(
         access_token=access_token,
         resource_type="Condition",
         params={"patient": patient_fhir_id, "clinical-status": "active"},
         label="Epic Condition.search",
+        iss_override=iss_override,
     )
 
 
-def fetch_medications(*, access_token: str, patient_fhir_id: str) -> list[dict]:
+def fetch_medications(
+    *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
+) -> list[dict]:
     """GET active MedicationStatement resources for a patient."""
     return _fetch_fhir_bundle_entries(
         access_token=access_token,
         resource_type="MedicationStatement",
         params={"patient": patient_fhir_id, "status": "active"},
         label="Epic MedicationStatement.search",
+        iss_override=iss_override,
     )
 
 
-def fetch_allergies(*, access_token: str, patient_fhir_id: str) -> list[dict]:
+def fetch_allergies(
+    *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
+) -> list[dict]:
     """GET AllergyIntolerance resources for a patient."""
     return _fetch_fhir_bundle_entries(
         access_token=access_token,
         resource_type="AllergyIntolerance",
         params={"patient": patient_fhir_id},
         label="Epic AllergyIntolerance.search",
+        iss_override=iss_override,
     )
 
 
-def fetch_document_references(*, access_token: str, patient_fhir_id: str) -> list[dict]:
+def fetch_document_references(
+    *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
+) -> list[dict]:
     """GET current DocumentReference resources for a patient."""
     return _fetch_fhir_bundle_entries(
         access_token=access_token,
         resource_type="DocumentReference",
         params={"patient": patient_fhir_id, "status": "current"},
         label="Epic DocumentReference.search",
+        iss_override=iss_override,
     )
 
 
@@ -376,6 +400,7 @@ def write_service_request(
     specialty_desc: str | None,
     reason: str | None,
     requesting_provider_name: str | None,
+    iss_override: str | None = None,
 ) -> str:
     """POST a minimal FHIR R4 ServiceRequest to Epic. Returns the resource id.
 
@@ -384,7 +409,7 @@ def write_service_request(
     """
     import json as _json
 
-    endpoints = discover()
+    endpoints = discover(base_url_override=iss_override)
     url = f"{endpoints.fhir_base.rstrip('/')}/ServiceRequest"
 
     resource: dict = {

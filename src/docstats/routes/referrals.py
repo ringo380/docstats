@@ -291,6 +291,9 @@ async def _ehr_post_create_hook(
             return
 
         fhir_id: str = patient.ehr_fhir_id
+        # Use the iss stored on the connection so EHR-launch flows hit the
+        # correct FHIR base, not the env-configured sandbox default.
+        conn_iss: str | None = conn.iss or None
 
         async def _fetch(fn, **kwargs):
             try:
@@ -302,11 +305,29 @@ async def _ehr_post_create_hook(
                 return []
 
         conds, meds, allergies, docs = await asyncio.gather(
-            _fetch(_epic.fetch_conditions, access_token=access_token, patient_fhir_id=fhir_id),
-            _fetch(_epic.fetch_medications, access_token=access_token, patient_fhir_id=fhir_id),
-            _fetch(_epic.fetch_allergies, access_token=access_token, patient_fhir_id=fhir_id),
             _fetch(
-                _epic.fetch_document_references, access_token=access_token, patient_fhir_id=fhir_id
+                _epic.fetch_conditions,
+                access_token=access_token,
+                patient_fhir_id=fhir_id,
+                iss_override=conn_iss,
+            ),
+            _fetch(
+                _epic.fetch_medications,
+                access_token=access_token,
+                patient_fhir_id=fhir_id,
+                iss_override=conn_iss,
+            ),
+            _fetch(
+                _epic.fetch_allergies,
+                access_token=access_token,
+                patient_fhir_id=fhir_id,
+                iss_override=conn_iss,
+            ),
+            _fetch(
+                _epic.fetch_document_references,
+                access_token=access_token,
+                patient_fhir_id=fhir_id,
+                iss_override=conn_iss,
             ),
         )
 
@@ -364,7 +385,7 @@ async def _ehr_post_create_hook(
                 storage.add_referral_attachment(
                     scope,
                     referral.id,
-                    kind="clinical_note",
+                    kind="note",
                     label=entry.get("label", "Imported document"),
                     date_of_service=entry.get("date_of_service"),
                     storage_ref=None,
@@ -403,6 +424,7 @@ async def _ehr_post_create_hook(
                     specialty_desc=getattr(referral, "specialty_desc", None),
                     reason=getattr(referral, "reason", None),
                     requesting_provider_name=getattr(referral, "referring_provider_name", None),
+                    iss_override=conn_iss,
                 ),
             )
             storage.update_referral_ehr_service_request_id(referral.id, sr_id)
