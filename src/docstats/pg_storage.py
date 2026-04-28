@@ -167,6 +167,7 @@ def _row_to_patient(row: dict) -> Patient:
         emergency_contact_name=row.get("emergency_contact_name"),
         emergency_contact_phone=row.get("emergency_contact_phone"),
         notes=row.get("notes"),
+        ehr_fhir_id=row.get("ehr_fhir_id"),
         created_by_user_id=row.get("created_by_user_id"),
         created_at=created,
         updated_at=updated,
@@ -204,6 +205,7 @@ def _row_to_referral(row: dict) -> Referral:
         assigned_to_user_id=row.get("assigned_to_user_id"),
         external_reference_id=row.get("external_reference_id"),
         external_source=row["external_source"],
+        ehr_service_request_id=row.get("ehr_service_request_id"),
         created_by_user_id=row.get("created_by_user_id"),
         created_at=created,
         updated_at=updated,
@@ -1558,6 +1560,16 @@ class PostgresStorage(StorageBase):
         )
         return len(result.data)
 
+    def update_referral_ehr_service_request_id(
+        self, referral_id: int, ehr_service_request_id: str
+    ) -> None:
+        (
+            self._t("referrals")
+            .update({"ehr_service_request_id": ehr_service_request_id, "updated_at": _now_iso()})
+            .eq("id", referral_id)
+            .execute()
+        )
+
     # --- Patients (scope-enforced) ---
 
     def _apply_scope(self, query, scope: "Scope | None"):
@@ -1608,6 +1620,7 @@ class PostgresStorage(StorageBase):
         emergency_contact_name: str | None = None,
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
+        ehr_fhir_id: str | None = None,
         created_by_user_id: int | None = None,
     ) -> Patient:
         self._require_scoped(scope)
@@ -1632,6 +1645,7 @@ class PostgresStorage(StorageBase):
             "emergency_contact_name": emergency_contact_name,
             "emergency_contact_phone": emergency_contact_phone,
             "notes": notes,
+            "ehr_fhir_id": ehr_fhir_id,
             "created_by_user_id": created_by_user_id,
             "created_at": _now_iso(),
             "updated_at": _now_iso(),
@@ -1707,6 +1721,7 @@ class PostgresStorage(StorageBase):
         emergency_contact_name: str | None = None,
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
+        ehr_fhir_id: str | None = None,
     ) -> Patient | None:
         fields: dict[str, Any] = {
             k: v
@@ -1729,6 +1744,7 @@ class PostgresStorage(StorageBase):
                 "emergency_contact_name": emergency_contact_name,
                 "emergency_contact_phone": emergency_contact_phone,
                 "notes": notes,
+                "ehr_fhir_id": ehr_fhir_id,
             }.items()
             if v is not None
         }

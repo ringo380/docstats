@@ -259,6 +259,9 @@ class Referral(BaseModel):
     external_reference_id: str | None = None
     external_source: str = "manual"  # must be in EXTERNAL_SOURCE_VALUES
 
+    # EHR write-back: Epic FHIR ServiceRequest.id written on referral creation.
+    ehr_service_request_id: str | None = None
+
     created_by_user_id: int | None = None
     created_at: datetime
     updated_at: datetime

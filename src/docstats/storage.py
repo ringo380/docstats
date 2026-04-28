@@ -192,6 +192,7 @@ def _row_to_patient(row: sqlite3.Row) -> Patient:
         emergency_contact_name=row["emergency_contact_name"],
         emergency_contact_phone=row["emergency_contact_phone"],
         notes=row["notes"],
+        ehr_fhir_id=row["ehr_fhir_id"] if "ehr_fhir_id" in row.keys() else None,
         created_by_user_id=row["created_by_user_id"],
         created_at=created,
         updated_at=updated,
@@ -229,6 +230,9 @@ def _row_to_referral(row: sqlite3.Row) -> Referral:
         assigned_to_user_id=row["assigned_to_user_id"],
         external_reference_id=row["external_reference_id"],
         external_source=row["external_source"],
+        ehr_service_request_id=row["ehr_service_request_id"]
+        if "ehr_service_request_id" in row.keys()
+        else None,
         created_by_user_id=row["created_by_user_id"],
         created_at=created,
         updated_at=updated,
@@ -875,6 +879,10 @@ class Storage(StorageBase):
                   AND mrn IS NOT NULL
                   AND deleted_at IS NULL;
         """)
+        try:
+            self._conn.execute("ALTER TABLE patients ADD COLUMN ehr_fhir_id TEXT")
+        except Exception:
+            pass
         self._conn.commit()
 
     def _migrate_referrals(self) -> None:
@@ -947,6 +955,10 @@ class Storage(StorageBase):
             CREATE INDEX IF NOT EXISTS idx_referral_events_referral
                 ON referral_events(referral_id, created_at DESC, id DESC);
         """)
+        try:
+            self._conn.execute("ALTER TABLE referrals ADD COLUMN ehr_service_request_id TEXT")
+        except Exception:
+            pass
         self._conn.commit()
 
     def _migrate_referral_clinical(self) -> None:
@@ -2240,6 +2252,7 @@ class Storage(StorageBase):
         emergency_contact_name: str | None = None,
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
+        ehr_fhir_id: str | None = None,
         created_by_user_id: int | None = None,
     ) -> Patient:
         # scope_sql_clause raises ScopeRequired on anonymous — the explicit
@@ -2253,8 +2266,8 @@ class Storage(StorageBase):
                 pronouns, phone, email, address_line1, address_line2,
                 address_city, address_state, address_zip,
                 emergency_contact_name, emergency_contact_phone, notes,
-                created_by_user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ehr_fhir_id, created_by_user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 scope.user_id if scope.is_solo else None,
                 scope.organization_id if scope.is_org else None,
@@ -2276,6 +2289,7 @@ class Storage(StorageBase):
                 emergency_contact_name,
                 emergency_contact_phone,
                 notes,
+                ehr_fhir_id,
                 created_by_user_id,
             ),
         )
@@ -2355,6 +2369,7 @@ class Storage(StorageBase):
         emergency_contact_name: str | None = None,
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
+        ehr_fhir_id: str | None = None,
     ) -> Patient | None:
         # Only pass-through the fields the caller actually set. None means
         # "don't touch" — the "clear a field" use case goes through a
@@ -2380,6 +2395,7 @@ class Storage(StorageBase):
                 "emergency_contact_name": emergency_contact_name,
                 "emergency_contact_phone": emergency_contact_phone,
                 "notes": notes,
+                "ehr_fhir_id": ehr_fhir_id,
             }.items()
             if v is not None
         }
@@ -4985,6 +5001,16 @@ class Storage(StorageBase):
         )
         self._conn.commit()
         return cur.rowcount
+
+    def update_referral_ehr_service_request_id(
+        self, referral_id: int, ehr_service_request_id: str
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE referrals SET ehr_service_request_id = ?, updated_at = datetime('now')"
+                " WHERE id = ?",
+                (ehr_service_request_id, referral_id),
+            )
 
     @staticmethod
     def _row_to_availity_payer(row: sqlite3.Row) -> AvailityPayer:

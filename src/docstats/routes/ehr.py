@@ -1,6 +1,5 @@
-"""SMART-on-FHIR routes — Phase 12.A standalone launch + Patient import.
+"""SMART-on-FHIR routes — Phase 12.A/12.B standalone + EHR-launch + Patient import.
 
-Standalone launch only (user clicks "Connect Epic Sandbox" on /profile).
 Tokens are Fernet-encrypted at rest; plaintext never touches logs / audit
 metadata / session storage. PKCE (S256) is used alongside the confidential
 client_secret for defense in depth.
@@ -24,12 +23,12 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from cryptography.fernet import InvalidToken
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from docstats.auth import require_user
 from docstats.domain import audit
-from docstats.domain.ehr import EHRConnection, EPIC_SCOPES, ImportedPatient
+from docstats.domain.ehr import EHRConnection, EPIC_SCOPES, EPIC_SCOPES_EHR_LAUNCH, ImportedPatient
 from docstats.ehr import epic
 from docstats.ehr.crypto import EHRConfigError, decrypt_token, encrypt_token
 from docstats.ehr.epic import EpicError
@@ -47,6 +46,10 @@ router = APIRouter(prefix="/ehr", tags=["ehr"])
 EHR_VENDOR = "epic_sandbox"
 SESSION_STATE_KEY = "ehr_epic_state"
 SESSION_VERIFIER_KEY = "ehr_epic_pkce_verifier"
+SESSION_EHR_ISS = "ehr_epic_launch_iss"
+SESSION_LAUNCH_MODE = "ehr_epic_launch_mode"
+
+_REFRESH_LEAD_SECONDS = 60  # refresh if token expires within this window
 
 # Closed set of error reasons we may echo into ``/profile?ehr_error=...``.
 # Never pass an upstream-controlled string through — Epic could return
@@ -95,6 +98,52 @@ def _audit_failure(storage: StorageBase, request: Request, user_id: int, reason:
     )
 
 
+def _iss_allowlist() -> frozenset[str]:
+    """Return the allowlist of valid EHR-launch iss values from env, or empty."""
+    raw = os.getenv("EPIC_EHR_LAUNCH_ISS_ALLOWLIST", "").strip()
+    return frozenset(v.strip().rstrip("/") for v in raw.split(",") if v.strip())
+
+
+def _maybe_refresh(conn: EHRConnection, storage: StorageBase) -> str:
+    """Return a fresh plaintext access token, refreshing if needed.
+
+    Refreshes when the token expires within ``_REFRESH_LEAD_SECONDS``. On
+    refresh failure, returns the stale access token so callers can proceed
+    (Epic will return 401, which the caller catches as EpicError). Never
+    raises — refresh is best-effort.
+    """
+    try:
+        access_token = decrypt_token(conn.access_token_enc)
+    except (EHRConfigError, InvalidToken):
+        logger.exception("Failed to decrypt EHR access token for connection_id=%d", conn.id)
+        return ""
+
+    if conn.refresh_token_enc is None:
+        return access_token
+
+    now = datetime.now(tz=timezone.utc)
+    if (conn.expires_at - now).total_seconds() > _REFRESH_LEAD_SECONDS:
+        return access_token
+
+    try:
+        refresh_token = decrypt_token(conn.refresh_token_enc)
+        token = epic.refresh(refresh_token)
+        new_access_enc = encrypt_token(token.access_token)
+        new_refresh_enc = encrypt_token(token.refresh_token) if token.refresh_token else None
+        new_expires_at = now + timedelta(seconds=token.expires_in)
+        storage.update_ehr_connection_tokens(
+            conn.id,
+            access_token_enc=new_access_enc,
+            refresh_token_enc=new_refresh_enc,
+            expires_at=new_expires_at,
+        )
+        logger.info("Refreshed EHR token for connection_id=%d", conn.id)
+        return token.access_token
+    except Exception:
+        logger.exception("EHR token refresh failed for connection_id=%d", conn.id)
+        return access_token
+
+
 async def _load_pending_patient(
     storage: StorageBase, user_id: int
 ) -> tuple[EHRConnection, ImportedPatient] | None:
@@ -107,14 +156,17 @@ async def _load_pending_patient(
     conn = storage.get_active_ehr_connection(user_id, EHR_VENDOR)
     if conn is None or not conn.patient_fhir_id:
         return None
+
+    loop = asyncio.get_running_loop()
     try:
-        access_token = decrypt_token(conn.access_token_enc)
-    except (EHRConfigError, InvalidToken):
-        logger.exception("Failed to decrypt EHR access token for user_id=%d", user_id)
+        access_token = await loop.run_in_executor(None, lambda: _maybe_refresh(conn, storage))
+    except Exception:
+        logger.exception("Failed to obtain EHR access token for user_id=%d", user_id)
+        return None
+    if not access_token:
         return None
 
     fhir_id = conn.patient_fhir_id
-    loop = asyncio.get_running_loop()
     try:
         patient_resource = await loop.run_in_executor(
             None,
@@ -125,6 +177,56 @@ async def _load_pending_patient(
         logger.exception("Epic Patient fetch/parse failed for user_id=%d", user_id)
         return None
     return conn, imported
+
+
+@router.get("/launch/epic")
+async def launch_epic(
+    request: Request,
+    iss: str | None = Query(None),
+    launch: str | None = Query(None),
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+) -> Response:
+    """EHR-launch entry point — Epic opens this URL with iss + launch params.
+
+    Validates iss against the allowlist, then builds an Epic authorize URL
+    with the EHR-launch scope set and ``launch=<token>`` param. The callback
+    route handles both standalone and EHR-launch flows identically.
+    """
+    _require_enabled()
+    if not iss or not launch:
+        raise HTTPException(status_code=400, detail="Missing iss or launch parameter")
+
+    allowlist = _iss_allowlist()
+    if not allowlist or iss.rstrip("/") not in allowlist:
+        raise HTTPException(status_code=400, detail="iss not in EHR launch allowlist")
+
+    user_id = current_user["id"]
+    try:
+        verifier, challenge = epic.make_pkce_pair()
+        state = epic.make_state()
+        iss_norm = iss.rstrip("/")
+        loop = asyncio.get_running_loop()
+        url = await loop.run_in_executor(
+            None,
+            lambda: epic.build_ehr_launch_authorize_url(
+                state=state,
+                code_challenge=challenge,
+                scope=EPIC_SCOPES_EHR_LAUNCH,
+                launch_token=launch,
+                iss_override=iss_norm,
+            ),
+        )
+    except EpicError as e:
+        logger.exception("Epic EHR-launch URL build failed")
+        _audit_failure(storage, request, user_id, f"epic_error:{type(e).__name__}")
+        raise HTTPException(status_code=502, detail="Epic sandbox unavailable") from e
+
+    request.session[SESSION_STATE_KEY] = state
+    request.session[SESSION_VERIFIER_KEY] = verifier
+    request.session[SESSION_EHR_ISS] = iss_norm
+    request.session[SESSION_LAUNCH_MODE] = "ehr"
+    return RedirectResponse(url, status_code=303)
 
 
 @router.get("/connect/epic")
@@ -180,6 +282,9 @@ async def callback_epic(
 
     expected_state = request.session.pop(SESSION_STATE_KEY, None)
     verifier = request.session.pop(SESSION_VERIFIER_KEY, None)
+    # EHR-launch keys — pop regardless of mode so they don't linger.
+    request.session.pop(SESSION_EHR_ISS, None)
+    request.session.pop(SESSION_LAUNCH_MODE, None)
 
     if error:
         _audit_failure(storage, request, user_id, f"oauth_error:{error}")
@@ -334,6 +439,7 @@ async def import_confirm(
             address_city=imported.address_city,
             address_state=imported.address_state,
             address_zip=imported.address_zip,
+            ehr_fhir_id=imported.fhir_id,
             created_by_user_id=user_id,
         )
         new_id = patient.id
@@ -362,6 +468,8 @@ async def import_confirm(
             imported_val = getattr(imported, field, None)
             if not existing_val and imported_val:
                 update_kwargs[field] = imported_val
+        if not existing.ehr_fhir_id and imported.fhir_id:
+            update_kwargs["ehr_fhir_id"] = imported.fhir_id
         if update_kwargs:
             storage.update_patient(scope, patient_id, **update_kwargs)
         new_id = patient_id

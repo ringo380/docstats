@@ -1,8 +1,8 @@
-"""FHIR Patient resource → ImportedPatient mapper.
+"""FHIR resource mappers for EHR import.
 
-Manual JSON parsing — `fhir.resources` is overkill for the single-resource
-Phase 12.A. Tolerant of missing fields (FHIR Patient marks most elements 0..1
-or 0..*); never raises on missing data, only on a non-Patient resourceType.
+Manual JSON parsing — tolerant of missing fields; never raises on missing
+data. Only raises ValueError on wrong resourceType (for Patient) or skips
+the resource silently (for clinical resources).
 """
 
 from __future__ import annotations
@@ -107,3 +107,128 @@ def parse_fhir_patient(resource: dict[str, Any]) -> ImportedPatient:
         email=email,
         **addr,
     )
+
+
+# ---------------------------------------------------------------------------
+# Clinical resource mappers (Phase 12.B)
+# All tolerate missing fields; skip resources with wrong resourceType silently.
+# ---------------------------------------------------------------------------
+
+
+def parse_fhir_conditions(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map FHIR R4 Condition resources to add_referral_diagnosis kwargs.
+
+    Returns a list of dicts with keys: icd10_code, icd10_desc, is_primary.
+    The first entry gets is_primary=True; remaining entries is_primary=False.
+    Resources with wrong resourceType or no usable coding are skipped.
+    """
+    out: list[dict[str, Any]] = []
+    for resource in resources:
+        if resource.get("resourceType") != "Condition":
+            continue
+        icd10_code: str | None = None
+        icd10_desc: str | None = resource.get("code", {}).get("text")
+        for coding in (resource.get("code") or {}).get("coding") or []:
+            system: str = coding.get("system", "")
+            if "icd-10" in system.lower() or "icd10" in system.lower():
+                icd10_code = coding.get("code")
+                icd10_desc = coding.get("display") or icd10_desc
+                break
+            # Fall back to SNOMED if no ICD found yet
+            if not icd10_code and ("snomed" in system.lower() or "sct" in system):
+                icd10_code = coding.get("code")
+                icd10_desc = coding.get("display") or icd10_desc
+        if not icd10_code and not icd10_desc:
+            continue
+        out.append(
+            {
+                "icd10_code": icd10_code,
+                "icd10_desc": icd10_desc,
+                "is_primary": len(out) == 0,
+            }
+        )
+    return out
+
+
+def parse_fhir_medications(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map FHIR R4 MedicationStatement resources to add_referral_medication kwargs.
+
+    Returns a list of dicts with keys: name, dose, route, frequency.
+    Resources with wrong resourceType or no usable name are skipped.
+    """
+    out: list[dict[str, Any]] = []
+    for resource in resources:
+        if resource.get("resourceType") != "MedicationStatement":
+            continue
+        med_ref = resource.get("medicationCodeableConcept") or {}
+        name: str | None = med_ref.get("text")
+        for coding in med_ref.get("coding") or []:
+            name = name or coding.get("display") or coding.get("code")
+        if not name:
+            continue
+        dosage_list = resource.get("dosage") or []
+        dosage = dosage_list[0] if dosage_list else {}
+        dose_qty = (dosage.get("doseAndRate") or [{}])[0].get("doseQuantity") or {}
+        dose = f"{dose_qty.get('value', '')} {dose_qty.get('unit', '')}".strip() or None
+        route_cc = dosage.get("route") or {}
+        route: str | None = route_cc.get("text") or next(
+            (c.get("display") for c in route_cc.get("coding") or []), None
+        )
+        timing = (dosage.get("timing") or {}).get("repeat") or {}
+        frequency: str | None = None
+        if timing.get("frequency") and timing.get("period") and timing.get("periodUnit"):
+            frequency = f"{timing['frequency']} per {timing['period']}{timing['periodUnit']}"
+        else:
+            frequency = (dosage.get("timing") or {}).get("code", {}).get("text")
+        out.append({"name": name, "dose": dose, "route": route, "frequency": frequency})
+    return out
+
+
+def parse_fhir_allergies(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map FHIR R4 AllergyIntolerance resources to add_referral_allergy kwargs.
+
+    Returns a list of dicts with keys: substance, reaction, severity.
+    Resources with wrong resourceType or no usable substance are skipped.
+    """
+    out: list[dict[str, Any]] = []
+    for resource in resources:
+        if resource.get("resourceType") != "AllergyIntolerance":
+            continue
+        substance_cc = resource.get("code") or {}
+        substance: str | None = substance_cc.get("text") or next(
+            (c.get("display") or c.get("code") for c in substance_cc.get("coding") or []), None
+        )
+        if not substance:
+            continue
+        reactions = resource.get("reaction") or []
+        first_reaction = reactions[0] if reactions else {}
+        manifestations = first_reaction.get("manifestation") or [{}]
+        reaction_text: str | None = (manifestations[0].get("text") or None) or next(
+            (c.get("display") or c.get("code") for c in manifestations[0].get("coding") or []),
+            None,
+        )
+        severity: str | None = first_reaction.get("severity")
+        out.append({"substance": substance, "reaction": reaction_text, "severity": severity})
+    return out
+
+
+def parse_fhir_document_references(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map FHIR R4 DocumentReference resources to add_referral_attachment kwargs.
+
+    Returns a list of dicts with keys: label, date_of_service.
+    Content download is deferred to a later phase — checklist_only is always
+    True here (records the document exists but doesn't embed it).
+    Resources with wrong resourceType are skipped.
+    """
+    out: list[dict[str, Any]] = []
+    for resource in resources:
+        if resource.get("resourceType") != "DocumentReference":
+            continue
+        type_cc = resource.get("type") or {}
+        label: str | None = type_cc.get("text") or next(
+            (c.get("display") or c.get("code") for c in type_cc.get("coding") or []), None
+        )
+        label = label or "Imported document"
+        date_of_service: str | None = (resource.get("date") or "")[:10] or None
+        out.append({"label": label, "date_of_service": date_of_service})
+    return out

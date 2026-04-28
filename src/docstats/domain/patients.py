@@ -52,6 +52,8 @@ class Patient(BaseModel):
 
     notes: str | None = None
 
+    ehr_fhir_id: str | None = None  # Epic FHIR Patient.id from SMART import
+
     created_by_user_id: int | None = None
     created_at: datetime
     updated_at: datetime

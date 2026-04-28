@@ -12,6 +12,7 @@ medications, allergies, attachments) are still a follow-up slice.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -249,6 +250,187 @@ async def referral_new_form(
     )
 
 
+async def _ehr_post_create_hook(
+    *,
+    referral: Any,
+    patient_id: int,
+    user_id: int,
+    scope: Scope,
+    storage: StorageBase,
+    request: Request,
+) -> None:
+    """Fetch clinical resources from Epic + write ServiceRequest after referral creation.
+
+    Entirely soft-fail — any exception is logged and swallowed so it can
+    never break referral creation. Only runs when:
+    - The patient has an ehr_fhir_id (set during EHR Patient import)
+    - The user has an active EHR connection
+    """
+    from docstats.domain.audit import record as _audit
+    from docstats.ehr import epic as _epic
+    from docstats.ehr.epic import EpicError as _EpicError
+    from docstats.ehr.mappers import (
+        parse_fhir_conditions as _conditions,
+        parse_fhir_medications as _medications,
+        parse_fhir_allergies as _allergies,
+        parse_fhir_document_references as _doc_refs,
+    )
+    from docstats.routes.ehr import _maybe_refresh, EHR_VENDOR
+
+    try:
+        patient = storage.get_patient(scope, patient_id)
+        if patient is None or not patient.ehr_fhir_id:
+            return
+        conn = storage.get_active_ehr_connection(user_id, EHR_VENDOR)
+        if conn is None:
+            return
+
+        loop = asyncio.get_running_loop()
+        access_token: str = await loop.run_in_executor(None, lambda: _maybe_refresh(conn, storage))
+        if not access_token:
+            return
+
+        fhir_id: str = patient.ehr_fhir_id
+
+        async def _fetch(fn, **kwargs):
+            try:
+                return await loop.run_in_executor(None, lambda: fn(**kwargs))
+            except _EpicError:
+                logger.exception(
+                    "EHR clinical fetch failed (%s) for referral %s", fn.__name__, referral.id
+                )
+                return []
+
+        conds, meds, allergies, docs = await asyncio.gather(
+            _fetch(_epic.fetch_conditions, access_token=access_token, patient_fhir_id=fhir_id),
+            _fetch(_epic.fetch_medications, access_token=access_token, patient_fhir_id=fhir_id),
+            _fetch(_epic.fetch_allergies, access_token=access_token, patient_fhir_id=fhir_id),
+            _fetch(
+                _epic.fetch_document_references, access_token=access_token, patient_fhir_id=fhir_id
+            ),
+        )
+
+        diag_count = med_count = allergy_count = doc_count = 0
+
+        for entry in _conditions(conds):
+            try:
+                icd = entry.get("icd10_code") or ""
+                desc = entry.get("icd10_desc") or ""
+                if not icd and not desc:
+                    continue
+                storage.add_referral_diagnosis(
+                    scope,
+                    referral.id,
+                    icd10_code=icd or "UNKNOWN",
+                    icd10_desc=desc,
+                    is_primary=entry.get("is_primary", False),
+                    source="ehr_import",
+                )
+                diag_count += 1
+            except Exception:
+                logger.exception("Failed to insert EHR diagnosis for referral %s", referral.id)
+
+        for entry in _medications(meds):
+            try:
+                storage.add_referral_medication(
+                    scope,
+                    referral.id,
+                    name=entry["name"],
+                    dose=entry.get("dose"),
+                    route=entry.get("route"),
+                    frequency=entry.get("frequency"),
+                    source="ehr_import",
+                )
+                med_count += 1
+            except Exception:
+                logger.exception("Failed to insert EHR medication for referral %s", referral.id)
+
+        for entry in _allergies(allergies):
+            try:
+                storage.add_referral_allergy(
+                    scope,
+                    referral.id,
+                    substance=entry["substance"],
+                    reaction=entry.get("reaction"),
+                    severity=entry.get("severity"),
+                    source="ehr_import",
+                )
+                allergy_count += 1
+            except Exception:
+                logger.exception("Failed to insert EHR allergy for referral %s", referral.id)
+
+        for entry in _doc_refs(docs):
+            try:
+                storage.add_referral_attachment(
+                    scope,
+                    referral.id,
+                    kind="clinical_note",
+                    label=entry.get("label", "Imported document"),
+                    date_of_service=entry.get("date_of_service"),
+                    storage_ref=None,
+                    checklist_only=True,
+                    source="ehr_import",
+                )
+                doc_count += 1
+            except Exception:
+                logger.exception("Failed to insert EHR document ref for referral %s", referral.id)
+
+        _audit(
+            storage,
+            action="ehr.clinical_import",
+            request=request,
+            actor_user_id=user_id,
+            entity_type="referral",
+            entity_id=str(referral.id),
+            metadata={
+                "ehr_vendor": EHR_VENDOR,
+                "fhir_patient_id": fhir_id,
+                "diagnoses": diag_count,
+                "medications": med_count,
+                "allergies": allergy_count,
+                "documents": doc_count,
+            },
+        )
+
+        # ServiceRequest write-back
+        try:
+            sr_id = await loop.run_in_executor(
+                None,
+                lambda: _epic.write_service_request(
+                    access_token=access_token,
+                    patient_fhir_id=fhir_id,
+                    referral_id=referral.id,
+                    specialty_desc=getattr(referral, "specialty_desc", None),
+                    reason=getattr(referral, "reason", None),
+                    requesting_provider_name=getattr(referral, "referring_provider_name", None),
+                ),
+            )
+            storage.update_referral_ehr_service_request_id(referral.id, sr_id)
+            _audit(
+                storage,
+                action="ehr.service_request_written",
+                request=request,
+                actor_user_id=user_id,
+                entity_type="referral",
+                entity_id=str(referral.id),
+                metadata={"ehr_vendor": EHR_VENDOR, "service_request_id": sr_id},
+            )
+        except _EpicError as sr_err:
+            logger.exception("EHR ServiceRequest write failed for referral %s", referral.id)
+            _audit(
+                storage,
+                action="ehr.service_request_write_failed",
+                request=request,
+                actor_user_id=user_id,
+                entity_type="referral",
+                entity_id=str(referral.id),
+                metadata={"ehr_vendor": EHR_VENDOR, "reason": str(sr_err)},
+            )
+
+    except Exception:
+        logger.exception("EHR post-create hook failed for referral %s", referral.id)
+
+
 @router.post("", response_class=HTMLResponse)
 async def referral_create(
     request: Request,
@@ -374,6 +556,18 @@ async def referral_create(
             "red_flags": red_flag_hits,
         },
     )
+
+    # EHR clinical import + ServiceRequest write-back (soft-fail — never
+    # break referral creation on EHR errors).
+    await _ehr_post_create_hook(
+        referral=referral,
+        patient_id=patient_id,
+        user_id=current_user["id"],
+        scope=scope,
+        storage=storage,
+        request=request,
+    )
+
     dest = f"/referrals/{referral.id}"
     if request.headers.get("HX-Request"):
         return Response(status_code=200, headers={"HX-Redirect": dest})
