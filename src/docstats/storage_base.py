@@ -523,6 +523,13 @@ class StorageBase(ABC):
         """Revoke all active connections for (user, vendor). Returns count updated."""
         ...
 
+    @abstractmethod
+    def update_referral_ehr_service_request_id(
+        self, referral_id: int, ehr_service_request_id: str
+    ) -> None:
+        """Store the Epic FHIR ServiceRequest.id written back on referral creation."""
+        ...
+
     # --- Patients (scope-enforced) ---
 
     @abstractmethod
@@ -548,6 +555,7 @@ class StorageBase(ABC):
         emergency_contact_name: str | None = None,
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
+        ehr_fhir_id: str | None = None,
         created_by_user_id: int | None = None,
     ) -> "Patient": ...
 
@@ -590,6 +598,7 @@ class StorageBase(ABC):
         emergency_contact_name: str | None = None,
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
+        ehr_fhir_id: str | None = None,
     ) -> "Patient | None": ...
 
     @abstractmethod

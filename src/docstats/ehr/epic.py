@@ -118,13 +118,18 @@ def _basic_auth_header() -> str:
     return "Basic " + base64.b64encode(raw).decode("ascii")
 
 
-def discover(*, force_refresh: bool = False) -> EpicEndpoints:
+def discover(*, force_refresh: bool = False, base_url_override: str | None = None) -> EpicEndpoints:
     """Fetch + cache `.well-known/smart-configuration`.
 
     The fhir_base returned by Epic discovery points at the FHIR R4 root.
     Cached for 24h in-process; force_refresh bypasses the cache.
+
+    ``base_url_override`` is used by EHR-launch where the FHIR base is
+    supplied dynamically by the EHR via the ``iss`` query param rather than
+    read from the configured env var. The override URL is validated against
+    an allowlist by the caller before being passed here.
     """
-    base = _base_url()
+    base = base_url_override.rstrip("/") if base_url_override else _base_url()
     if not force_refresh:
         cached = _DISCOVERY_CACHE.get(base)
         if cached and (time.time() - cached[1]) < DISCOVERY_TTL_SECONDS:
@@ -183,9 +188,36 @@ def build_authorize_url(*, state: str, code_challenge: str, scope: str) -> str:
     return f"{endpoints.authorize_endpoint}?{urlencode(params)}"
 
 
-def exchange_code(*, code: str, code_verifier: str) -> TokenResponse:
+def build_ehr_launch_authorize_url(
+    *, state: str, code_challenge: str, scope: str, launch_token: str, iss_override: str
+) -> str:
+    """Construct the Epic authorize URL for EHR-launch (sidebar) flow.
+
+    EHR-launch passes ``iss`` + ``launch`` query params to the app's launch
+    URL. The authorize request must echo back ``launch=<token>`` and discover
+    against the caller-supplied ``iss`` rather than the configured env base.
+    The ``iss`` must already be validated against an allowlist by the caller.
+    """
+    endpoints = discover(base_url_override=iss_override)
+    params = {
+        "response_type": "code",
+        "client_id": _client_id(),
+        "redirect_uri": _redirect_uri(),
+        "scope": scope,
+        "state": state,
+        "launch": launch_token,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "aud": endpoints.fhir_base,
+    }
+    return f"{endpoints.authorize_endpoint}?{urlencode(params)}"
+
+
+def exchange_code(
+    *, code: str, code_verifier: str, iss_override: str | None = None
+) -> TokenResponse:
     """POST authorization code → access token."""
-    endpoints = discover()
+    endpoints = discover(base_url_override=iss_override)
     data = {
         "grant_type": "authorization_code",
         "code": code,
@@ -238,12 +270,17 @@ def refresh(refresh_token: str) -> TokenResponse:
         "Content-Type": "application/x-www-form-urlencoded",
     }
     with httpx.Client(timeout=get_default_timeout()) as http:
+        # max_retries=0: Epic uses rotating refresh tokens (offline_access) so
+        # each token is single-use. A retry after a timeout would send the
+        # already-consumed token and receive invalid_grant, logging the user
+        # out with no recourse. Refresh must be one-shot, same as code exchange.
         resp = request_with_retry(
             http,
             "POST",
             endpoints.token_endpoint,
             label="Epic token refresh",
             error_class=EpicError,
+            max_retries=0,
             data=data,
             headers=headers,
         )
@@ -273,3 +310,151 @@ def fetch_patient(*, access_token: str, patient_fhir_id: str) -> dict:
             http, "GET", url, label="Epic Patient.read", error_class=EpicError, headers=headers
         )
     return resp.json()  # type: ignore[no-any-return]
+
+
+def _fetch_fhir_bundle_entries(
+    *,
+    access_token: str,
+    resource_type: str,
+    params: dict[str, str],
+    label: str,
+    iss_override: str | None = None,
+) -> list[dict]:
+    """GET a FHIR search bundle and return the resource list from entries.
+
+    Returns an empty list when the bundle has no entries. Raises EpicError on
+    network/HTTP failure. Callers are responsible for per-entry parsing.
+    """
+    endpoints = discover(base_url_override=iss_override)
+    query = urlencode(params)
+    url = f"{endpoints.fhir_base.rstrip('/')}/{resource_type}?{query}"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/fhir+json",
+    }
+    with httpx.Client(timeout=get_default_timeout()) as http:
+        resp = request_with_retry(
+            http, "GET", url, label=label, error_class=EpicError, headers=headers
+        )
+    bundle = resp.json()
+    return [entry["resource"] for entry in bundle.get("entry") or [] if "resource" in entry]
+
+
+def fetch_conditions(
+    *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
+) -> list[dict]:
+    """GET active Condition resources for a patient."""
+    return _fetch_fhir_bundle_entries(
+        access_token=access_token,
+        resource_type="Condition",
+        params={"patient": patient_fhir_id, "clinical-status": "active"},
+        label="Epic Condition.search",
+        iss_override=iss_override,
+    )
+
+
+def fetch_medications(
+    *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
+) -> list[dict]:
+    """GET active MedicationStatement resources for a patient."""
+    return _fetch_fhir_bundle_entries(
+        access_token=access_token,
+        resource_type="MedicationStatement",
+        params={"patient": patient_fhir_id, "status": "active"},
+        label="Epic MedicationStatement.search",
+        iss_override=iss_override,
+    )
+
+
+def fetch_allergies(
+    *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
+) -> list[dict]:
+    """GET AllergyIntolerance resources for a patient."""
+    return _fetch_fhir_bundle_entries(
+        access_token=access_token,
+        resource_type="AllergyIntolerance",
+        params={"patient": patient_fhir_id},
+        label="Epic AllergyIntolerance.search",
+        iss_override=iss_override,
+    )
+
+
+def fetch_document_references(
+    *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
+) -> list[dict]:
+    """GET current DocumentReference resources for a patient."""
+    return _fetch_fhir_bundle_entries(
+        access_token=access_token,
+        resource_type="DocumentReference",
+        params={"patient": patient_fhir_id, "status": "current"},
+        label="Epic DocumentReference.search",
+        iss_override=iss_override,
+    )
+
+
+def write_service_request(
+    *,
+    access_token: str,
+    patient_fhir_id: str,
+    referral_id: int,
+    specialty_desc: str | None,
+    reason: str | None,
+    requesting_provider_name: str | None,
+    iss_override: str | None = None,
+) -> str:
+    """POST a minimal FHIR R4 ServiceRequest to Epic. Returns the resource id.
+
+    Uses ``identifier`` with a docstats-namespaced system so the resource can
+    be looked up for idempotency in future phases. Raises EpicError on failure.
+    """
+    import json as _json
+
+    endpoints = discover(base_url_override=iss_override)
+    url = f"{endpoints.fhir_base.rstrip('/')}/ServiceRequest"
+
+    resource: dict = {
+        "resourceType": "ServiceRequest",
+        "status": "active",
+        "intent": "referral",
+        "subject": {"reference": f"Patient/{patient_fhir_id}"},
+        "identifier": [
+            {
+                "system": "urn:docstats:referral",
+                "value": str(referral_id),
+            }
+        ],
+    }
+    if specialty_desc:
+        resource["specialty"] = [{"text": specialty_desc}]
+    if reason:
+        resource["reasonCode"] = [{"text": reason}]
+    if requesting_provider_name:
+        resource["requester"] = {"display": requesting_provider_name}
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/fhir+json",
+        "Content-Type": "application/fhir+json",
+    }
+    with httpx.Client(timeout=get_default_timeout()) as http:
+        # max_retries=0: if Epic processed the POST but we timed out, a retry
+        # creates a duplicate ServiceRequest. Caller soft-fails on EpicError.
+        resp = request_with_retry(
+            http,
+            "POST",
+            url,
+            label="Epic ServiceRequest.write",
+            error_class=EpicError,
+            max_retries=0,
+            content=_json.dumps(resource).encode(),
+            headers=headers,
+        )
+    body = resp.json()
+    resource_id: str | None = body.get("id")
+    if not resource_id:
+        # Try Location header as fallback (Epic may return it instead of body id).
+        location = resp.headers.get("Location", "")
+        resource_id = location.rstrip("/").split("/")[-1] if location else None
+    if not resource_id:
+        raise EpicError(f"Epic ServiceRequest write returned no id: {_redact(body)!r}")
+    return resource_id

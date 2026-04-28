@@ -15,10 +15,13 @@ EHR_VENDORS: set[str] = {"epic_sandbox"}
 # - `launch/patient` is an EHR-LAUNCH scope (sidebar in Epic) and breaks
 #   MyChart's standalone OAuth — Epic forwards it to MyChart with no actual
 #   data scope, MyChart returns "request is invalid".
-# - `offline_access` is silently stripped unless the Epic app has "Requires
-#   Persistent Access" checked. Re-add it when 12.E ships refresh-token
-#   rotation alongside the matching app-config flip.
-EPIC_SCOPES: str = "openid fhirUser patient/Patient.read"
+# - `offline_access` requires "Requires Persistent Access" checked in the
+#   Epic developer portal. Added in 12.B alongside _maybe_refresh wiring.
+EPIC_SCOPES: str = "openid fhirUser patient/Patient.read offline_access"
+
+# Scope set for EHR-launch (sidebar): Epic provides patient context via the
+# launch token so launch/patient is not needed; `launch` is required.
+EPIC_SCOPES_EHR_LAUNCH: str = "openid fhirUser launch offline_access"
 
 
 class EHRConnection(BaseModel):
