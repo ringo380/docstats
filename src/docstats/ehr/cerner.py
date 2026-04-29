@@ -3,14 +3,17 @@
 Synchronous httpx wrapped in `request_with_retry`. Route layer wraps calls
 in an executor when invoked from async handlers.
 
-Confidential client: client_secret is sent on the token endpoint via HTTP
-Basic auth (same as Epic). PKCE is also used for defense in depth.
+Public client: registered as Application Privacy = Public in the Cerner
+console. The token endpoint is authenticated via PKCE only (no
+client_secret, no HTTP Basic). ``client_id`` is sent in the form body per
+RFC 6749 §2.3.1.
 
 Key differences from Epic:
 - FHIR base derived from ``CERNER_SANDBOX_TENANT_ID`` env var.
 - ``aud`` parameter is NOT included in the authorize URL (Cerner doesn't require it).
 - Clinical medications use ``MedicationRequest`` (not ``MedicationStatement``).
 - Token URLs are always discovered via ``.well-known/smart-configuration``.
+- Public/PKCE-only (Epic uses confidential + Basic auth).
 """
 
 from __future__ import annotations
@@ -95,13 +98,6 @@ def _client_id() -> str:
     return cid
 
 
-def _client_secret() -> str:
-    sec = os.getenv("CERNER_CLIENT_SECRET", "").strip()
-    if not sec:
-        raise CernerError("CERNER_CLIENT_SECRET not set")
-    return sec
-
-
 def _redirect_uri() -> str:
     uri = os.getenv("CERNER_REDIRECT_URI", "").strip()
     if not uri:
@@ -111,11 +107,6 @@ def _redirect_uri() -> str:
 
 def _default_fhir_base() -> str:
     return f"{_CERNER_FHIR_HOST}/{_tenant_id()}"
-
-
-def _basic_auth_header() -> str:
-    raw = f"{_client_id()}:{_client_secret()}".encode("utf-8")
-    return "Basic " + base64.b64encode(raw).decode("ascii")
 
 
 def discover(
@@ -209,9 +200,9 @@ def exchange_code(
         "code": code,
         "redirect_uri": _redirect_uri(),
         "code_verifier": code_verifier,
+        "client_id": _client_id(),
     }
     headers = {
-        "Authorization": _basic_auth_header(),
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
     }
@@ -245,9 +236,9 @@ def refresh(refresh_token: str) -> TokenResponse:
     data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
+        "client_id": _client_id(),
     }
     headers = {
-        "Authorization": _basic_auth_header(),
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
     }

@@ -19,7 +19,6 @@ def reset_discovery_cache():
 @pytest.fixture
 def cerner_env(monkeypatch):
     monkeypatch.setenv("CERNER_CLIENT_ID", "cerner-client")
-    monkeypatch.setenv("CERNER_CLIENT_SECRET", "cerner-secret")
     monkeypatch.setenv("CERNER_REDIRECT_URI", "https://referme.help/ehr/callback/cerner")
     monkeypatch.setenv("CERNER_SANDBOX_TENANT_ID", "ec2458f2-1e24-41c8-b71b-0e701af7583d")
 
@@ -76,15 +75,17 @@ def test_authorize_url_has_no_aud_param(monkeypatch, cerner_env):
     assert "aud=" not in url
 
 
-def test_exchange_code_uses_basic_auth(monkeypatch, cerner_env):
+def test_exchange_code_uses_pkce_only(monkeypatch, cerner_env):
+    """Public client: no Basic auth header; client_id sent in form body."""
     monkeypatch.setattr("docstats.ehr.cerner.discover", lambda **_: _fake_endpoints())
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers.get("authorization", "").startswith("Basic ")
+        assert "authorization" not in {k.lower() for k in request.headers.keys()}
         body = request.content.decode("utf-8")
         assert "grant_type=authorization_code" in body
         assert "code=THE_CODE" in body
         assert "code_verifier=THE_VERIFIER" in body
+        assert "client_id=cerner-client" in body
         return httpx.Response(
             200,
             json={
@@ -127,9 +128,11 @@ def test_refresh_returns_new_token(monkeypatch, cerner_env):
     monkeypatch.setattr("docstats.ehr.cerner.discover", lambda **_: _fake_endpoints())
 
     def handler(request: httpx.Request) -> httpx.Response:
+        assert "authorization" not in {k.lower() for k in request.headers.keys()}
         body = request.content.decode()
         assert "grant_type=refresh_token" in body
         assert "refresh_token=OLD_RT" in body
+        assert "client_id=cerner-client" in body
         return httpx.Response(
             200,
             json={"access_token": "NEW_AT", "refresh_token": "NEW_RT", "expires_in": 900},

@@ -497,7 +497,6 @@ def cerner_env(monkeypatch, tmp_path):
     monkeypatch.setenv("EHR_CERNER_OAUTH_ENABLED", "1")
     monkeypatch.setenv("EHR_TOKEN_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("CERNER_CLIENT_ID", "cerner-cid")
-    monkeypatch.setenv("CERNER_CLIENT_SECRET", "cerner-secret")
     monkeypatch.setenv("CERNER_REDIRECT_URI", "https://referme.help/ehr/callback/cerner")
     monkeypatch.setenv("CERNER_SANDBOX_TENANT_ID", "ec2458f2-1e24-41c8-b71b-0e701af7583d")
 
