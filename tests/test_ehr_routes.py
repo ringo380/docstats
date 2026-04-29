@@ -595,8 +595,8 @@ def test_cerner_connect_redirects_to_cerner(cerner_client):
     assert "client_id=cerner-cid" in loc
     assert "code_challenge=" in loc
     assert "state=" in loc
-    # Cerner does not include aud param.
-    assert "aud=" not in loc
+    # Cerner patient-persona requires aud = fhir_base.
+    assert "aud=https%3A%2F%2Ffhir-myrecord.cerner.com%2Fr4%2Fec2458f2" in loc
 
 
 def test_cerner_callback_creates_connection(cerner_client):

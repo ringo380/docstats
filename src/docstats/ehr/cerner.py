@@ -10,7 +10,7 @@ RFC 6749 §2.3.1.
 
 Key differences from Epic:
 - FHIR base derived from ``CERNER_SANDBOX_TENANT_ID`` env var.
-- ``aud`` parameter is NOT included in the authorize URL (Cerner doesn't require it).
+- ``aud`` parameter IS required (Cerner patient-persona rejects missing aud).
 - Clinical medications use ``MedicationRequest`` (not ``MedicationStatement``).
 - Token URLs are always discovered via ``.well-known/smart-configuration``.
 - Public/PKCE-only (Epic uses confidential + Basic auth).
@@ -157,7 +157,8 @@ def make_state() -> str:
 def build_authorize_url(*, state: str, code_challenge: str, scope: str) -> str:
     """Construct the Cerner authorize URL for standalone launch.
 
-    Cerner does not require an ``aud`` parameter in the authorize request.
+    Cerner's patient-persona authorize endpoint requires the ``aud``
+    parameter to be the FHIR base URL.
     """
     endpoints = discover()
     params = {
@@ -166,6 +167,7 @@ def build_authorize_url(*, state: str, code_challenge: str, scope: str) -> str:
         "redirect_uri": _redirect_uri(),
         "scope": scope,
         "state": state,
+        "aud": endpoints.fhir_base,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
     }

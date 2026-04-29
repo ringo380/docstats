@@ -63,8 +63,8 @@ def test_discover_caches_endpoints(monkeypatch, cerner_env):
     assert "ec2458f2" in a.fhir_base
 
 
-def test_authorize_url_has_no_aud_param(monkeypatch, cerner_env):
-    """Cerner does not require aud in the authorize request."""
+def test_authorize_url_includes_aud_param(monkeypatch, cerner_env):
+    """Cerner patient-persona authorize requires aud = fhir_base."""
     monkeypatch.setattr("docstats.ehr.cerner.discover", lambda **_: _fake_endpoints())
     url = cerner.build_authorize_url(state="s1", code_challenge="c1", scope="openid")
     assert url.startswith("https://fhir-myrecord.cerner.com/oauth2/authorize?")
@@ -72,7 +72,7 @@ def test_authorize_url_has_no_aud_param(monkeypatch, cerner_env):
     assert "code_challenge=c1" in url
     assert "code_challenge_method=S256" in url
     assert "state=s1" in url
-    assert "aud=" not in url
+    assert "aud=https%3A%2F%2Ffhir-myrecord.cerner.com%2Fr4%2Fec2458f2" in url
 
 
 def test_exchange_code_uses_pkce_only(monkeypatch, cerner_env):
