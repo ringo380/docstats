@@ -59,7 +59,7 @@ class CernerError(EHRError):
 DISCOVERY_PATH = "/.well-known/smart-configuration"
 DISCOVERY_TTL_SECONDS = 24 * 3600
 
-_CERNER_FHIR_HOST = "https://fhir-ehr-code.cerner.com/r4"
+_CERNER_FHIR_HOST = "https://fhir-myrecord.cerner.com/r4"
 
 
 @dataclass(frozen=True)

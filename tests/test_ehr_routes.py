@@ -502,12 +502,12 @@ def cerner_env(monkeypatch, tmp_path):
 
     cerner._DISCOVERY_CACHE.clear()
     cerner._DISCOVERY_CACHE[
-        "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d"
+        "https://fhir-myrecord.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d"
     ] = (
         cerner.CernerEndpoints(
-            authorize_endpoint="https://fhir-ehr-code.cerner.com/oauth2/authorize",
-            token_endpoint="https://fhir-ehr-code.cerner.com/oauth2/token",
-            fhir_base="https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
+            authorize_endpoint="https://fhir-myrecord.cerner.com/oauth2/authorize",
+            token_endpoint="https://fhir-myrecord.cerner.com/oauth2/token",
+            fhir_base="https://fhir-myrecord.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
         ),
         9999999999.0,
     )
@@ -591,7 +591,7 @@ def test_cerner_connect_redirects_to_cerner(cerner_client):
     resp = client.get("/ehr/connect/cerner", follow_redirects=False)
     assert resp.status_code == 303
     loc = resp.headers["location"]
-    assert loc.startswith("https://fhir-ehr-code.cerner.com/oauth2/authorize?")
+    assert loc.startswith("https://fhir-myrecord.cerner.com/oauth2/authorize?")
     assert "client_id=cerner-cid" in loc
     assert "code_challenge=" in loc
     assert "state=" in loc
@@ -631,7 +631,7 @@ def test_cerner_disconnect_revokes_connection(cerner_client):
     storage.create_ehr_connection(
         user_id=user_id,
         ehr_vendor="cerner_oauth",
-        iss="https://fhir-ehr-code.cerner.com/r4/ec2458f2",
+        iss="https://fhir-myrecord.cerner.com/r4/ec2458f2",
         access_token_enc="ENC",
         refresh_token_enc=None,
         expires_at=datetime.now(tz=timezone.utc) + timedelta(hours=1),
@@ -657,7 +657,7 @@ def test_maybe_refresh_dispatches_to_cerner(tmp_path, monkeypatch, cerner_env):
     storage.create_ehr_connection(
         user_id=user_id,
         ehr_vendor="cerner_oauth",
-        iss="https://fhir-ehr-code.cerner.com/r4/ec2458f2",
+        iss="https://fhir-myrecord.cerner.com/r4/ec2458f2",
         access_token_enc=encrypt_token("CAT"),
         refresh_token_enc=encrypt_token("CRT"),
         expires_at=now + timedelta(seconds=10),  # about to expire → triggers refresh

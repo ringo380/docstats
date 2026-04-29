@@ -29,9 +29,9 @@ def _mock_transport(handler):
 
 def _fake_endpoints():
     return cerner.CernerEndpoints(
-        authorize_endpoint="https://fhir-ehr-code.cerner.com/oauth2/authorize",
-        token_endpoint="https://fhir-ehr-code.cerner.com/oauth2/token",
-        fhir_base="https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
+        authorize_endpoint="https://fhir-myrecord.cerner.com/oauth2/authorize",
+        token_endpoint="https://fhir-myrecord.cerner.com/oauth2/token",
+        fhir_base="https://fhir-myrecord.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
     )
 
 
@@ -44,8 +44,8 @@ def test_discover_caches_endpoints(monkeypatch, cerner_env):
         return httpx.Response(
             200,
             json={
-                "authorization_endpoint": "https://fhir-ehr-code.cerner.com/oauth2/authorize",
-                "token_endpoint": "https://fhir-ehr-code.cerner.com/oauth2/token",
+                "authorization_endpoint": "https://fhir-myrecord.cerner.com/oauth2/authorize",
+                "token_endpoint": "https://fhir-myrecord.cerner.com/oauth2/token",
             },
         )
 
@@ -58,7 +58,7 @@ def test_discover_caches_endpoints(monkeypatch, cerner_env):
     b = cerner.discover()
     assert calls["n"] == 1
     assert a is b
-    assert a.token_endpoint == "https://fhir-ehr-code.cerner.com/oauth2/token"
+    assert a.token_endpoint == "https://fhir-myrecord.cerner.com/oauth2/token"
     # fhir_base is derived from the env tenant ID, not from the discovery payload.
     assert "ec2458f2" in a.fhir_base
 
@@ -67,7 +67,7 @@ def test_authorize_url_has_no_aud_param(monkeypatch, cerner_env):
     """Cerner does not require aud in the authorize request."""
     monkeypatch.setattr("docstats.ehr.cerner.discover", lambda **_: _fake_endpoints())
     url = cerner.build_authorize_url(state="s1", code_challenge="c1", scope="openid")
-    assert url.startswith("https://fhir-ehr-code.cerner.com/oauth2/authorize?")
+    assert url.startswith("https://fhir-myrecord.cerner.com/oauth2/authorize?")
     assert "client_id=cerner-client" in url
     assert "code_challenge=c1" in url
     assert "code_challenge_method=S256" in url
@@ -204,7 +204,7 @@ def test_fetch_medications_uses_medication_request(monkeypatch, cerner_env):
 
 def test_fetch_document_content_relative_url(monkeypatch, cerner_env):
     def handler(request: httpx.Request) -> httpx.Response:
-        assert str(request.url).startswith("https://fhir-ehr-code.cerner.com/r4/")
+        assert str(request.url).startswith("https://fhir-myrecord.cerner.com/r4/")
         assert "Binary/abc" in str(request.url)
         return httpx.Response(200, content=b"%PDF-1.4", headers={"content-type": "application/pdf"})
 
@@ -216,7 +216,7 @@ def test_fetch_document_content_relative_url(monkeypatch, cerner_env):
     data, mime = cerner.fetch_document_content(
         "Binary/abc",
         access_token="T",
-        fhir_base="https://fhir-ehr-code.cerner.com/r4/ec2458f2",
+        fhir_base="https://fhir-myrecord.cerner.com/r4/ec2458f2",
     )
     assert data[:4] == b"%PDF"
     assert mime == "application/pdf"
@@ -280,7 +280,7 @@ def test_write_service_request_id_from_location_header(monkeypatch, cerner_env):
         return httpx.Response(
             201,
             json={"resourceType": "ServiceRequest"},
-            headers={"Location": "https://fhir-ehr-code.cerner.com/r4/ec2/ServiceRequest/SR-C99"},
+            headers={"Location": "https://fhir-myrecord.cerner.com/r4/ec2/ServiceRequest/SR-C99"},
         )
 
     real_client = httpx.Client

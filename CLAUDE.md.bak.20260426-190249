@@ -1,0 +1,301 @@
+# docstats
+
+## Build & Test
+- `gh auth switch --user ringo380` — required before any `gh` commands (two accounts; ringo380 owns this repo)
+- `pip install -e ".[web]"` / `pip install -e ".[dev]"`
+- `pytest` · `ruff check .` · `ruff format --check .` · `mypy src/docstats/` (all CI-gated)
+- `docstats web` — start web UI at http://127.0.0.1:8000
+
+## Architecture
+
+### Module layout
+- `src/docstats/` — one module per concern, each <300 lines. Core (client, models, storage, cache, normalize, scoring) has zero Rich/Typer/FastAPI deps.
+- Web routes split into `routes/` subpackage (see directory listing). Shared helpers in `routes/_common.py`; shared rate-limit decorator in `routes/_rate_limit.py`. `web.py` is app shell only (middleware, exception handlers, router includes, home/history).
+- `services.py` — sync CLI-only service layer (search + save with scoring + history). Web routes have their own async paths.
+- `domain/` — referral-platform domain layer. Keep FastAPI-free where possible; FastAPI deps live in `routes/`.
+
+### Storage: dual-backend
+- Supabase Postgres in prod (when `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` set), SQLite fallback for local/CLI. Supabase tables use `docstats_` prefix (shared project ref `uhnymifvdauzlmaogjfj`).
+- `StorageBase` ABC in `storage_base.py` + shared helpers (`normalize_email`, `fuzzy_score`). `storage.py` = SQLite; `pg_storage.py` = Supabase. `get_storage()` returns the right one.
+- SQLite DB at `~/.local/share/docstats/docstats.db`. Connections require `PRAGMA journal_mode=WAL` + `PRAGMA foreign_keys=ON` + `check_same_thread=False`.
+- Pg `_row_to_*` helpers must route timestamps through `_parse_sqlite_utc` (SQLite side) so comparisons are tz-aware UTC like Supabase.
+- No auto-migration for Postgres. Add columns via Management API SQL before deploying referencing code. Migration files: `docs/migrations/NNN_name.sql`. Apply: `curl -sS -X POST "https://api.supabase.com/v1/projects/uhnymifvdauzlmaogjfj/database/query" -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" --data "$(jq -Rs '{query: .}' file.sql)"`. Python `urllib.request` hits Cloudflare 403 — use curl.
+
+### Scope / multi-tenancy
+- `scope.py`: `Scope(user_id, organization_id, membership_role)` + `scope_sql_clause(scope, user_col=..., org_col=...) -> (fragment, params)` + `ScopeRequired`. Anonymous = all None; solo = user_id only; org = both + role. `routes._common.get_scope` resolves from session + memberships; silently falls back to solo if `active_org_id` stale.
+- Phase-1+ scope-owned rows (patients, referrals, attachments, insurance_plans, csv_imports) carry exactly one of `scope_user_id` / `scope_organization_id` — CHECK constraint at DB level + two filter helpers: `scope_sql_clause(scope)` for raw SQLite SQL; `PostgresStorage._apply_scope(query, scope)` wraps supabase-py chains. Both raise `ScopeRequired` on anon. `_require_scoped(scope)` is the Postgres choke-point for inserts.
+- Sub-entities (referral_diagnoses/medications/allergies/attachments, referral_events, referral_responses, csv_import_rows) are scope-transitive — no scope columns; parent-referral/import scope-gate on every method.
+- Reference data has two shapes: `insurance_plans` is scope-owned like patients; `specialty_rules` + `payer_rules` use nullable `organization_id` where NULL=platform default, int=org override. Partial unique indices keep one global per code + one override per (org, code).
+
+### Patients & referrals
+- Patients (1.A): `domain/patients.py`. MRN unique within org via partial unique index `WHERE deleted_at IS NULL` so soft-delete frees MRN. `update_patient` skips fields where caller passed None (None means "leave alone"); clearing goes through `clear_*_field` allow-listed routes.
+- Referrals (1.B): `domain/referrals.py` — `Referral`, `ReferralEvent`, enum vocabularies, `STATUS_TRANSITIONS` + `transition_allowed()` / `require_transition()`. Storage: create/get/list (filter by patient/status/assignee/urgency natively), update, `set_referral_status` (no transition check — caller validates via `require_transition`), soft_delete, `clear_referral_field` (4-name allow-list: assigned_to_user_id, authorization_number, payer_plan_id, external_reference_id — ICD/text intentionally NOT clearable since denormalized), append-only `record_referral_event`/`list_referral_events`.
+- Cross-scope `patient_id` / `payer_plan_id` on create/update raises `ValueError`. `created` event auto-seeded on insert (SQLite: single `with self._conn:` tx; Postgres: compensating soft-delete on event-insert failure). Event shape invariant: `from_value` = OLD, `to_value` = NEW, `note` = field name or free text.
+- Patient FK on referral: `ON DELETE RESTRICT` (referrals are evidence). Contrast: `saved_providers.user_id` is `CASCADE` (per-user rolodex).
+- Clinical sub-tables (1.C): 4× tables hang off `referrals(id)` with `ON DELETE CASCADE`. Hard-delete (not soft) — `referral_events` captures edits. Every row has `source` from `SOURCE_VALUES`. One primary diagnosis enforced via partial unique on `is_primary`. Headline sync: `_sync_referral_primary_diagnosis` writes `referrals.diagnosis_primary_icd`/`text`; caller owns tx boundary (SQLite wraps sub-write + sync in one `with self._conn:`; Postgres has small atomicity gap).
+- Responses (1.D): `referral_responses` — closed-loop from receiving side. Multiple per referral allowed. `consult_completed=True` is the signal for the route layer to transition parent to `completed` (storage doesn't cascade).
+- Enum CHECK constraints must match Python vocabularies — `test_all_*_values_pass_*` tests catch drift.
+
+### Rules engine (Phase 3)
+- `domain/rules.py`: `resolve_specialty_rule(storage, org_id, code)` / `resolve_payer_rule(storage, org_id, InsurancePlan)` fetch ≤2 rows (global + any override) via storage-level `specialty_code=` / `payer_key=` narrowing. Last row in the ordered result wins (org override sorts after global via `nullsfirst=True`).
+- `evaluate(referral, ruleset)` → `CompletenessReportV2` (parallel to baseline `CompletenessReport`, not a subclass). Specialty-required fields promote existing recommended baseline items via `_FIELD_TO_BASELINE_CODE`. Required-field satisfaction intersects baseline with a specialty-specific `_check_referral_field` call — baseline is often more permissive than the admin's actual requirement (e.g. baseline `primary_diagnosis` satisfied by ICD OR free-text; specialty might require the ICD).
+- Red flags: `detect_red_flags_in_text(reason, clinical_question, specialty)` (text-first) + `detect_red_flags(referral, specialty)` wrapper. `referral_create` auto-escalates `routine` → `urgent` on red-flag hit; higher user-picked urgencies are never overridden. Auto-escalations emit `field_edited` event with `note="urgency (auto-escalated: red flags [...])"`.
+- Payer key derivation: `payer_name|plan_type`. `create_insurance_plan` rejects `|` in `payer_name` with `ValueError` so the derived key stays unambiguous.
+- Boot-time seeding: `web.py` lifespan calls `seed_platform_defaults(storage)` (12 specialties + 8 payers). Failure non-fatal (logs + continues). CLI: `docstats seed-rules [--overwrite]`. `DOCSTATS_SKIP_BOOT_SEED=1` disables (conftest sets by default). Lifespan fires BEFORE request DI so tests must `monkeypatch.setattr(docstats.web, "seed_platform_defaults", fake)` — dep-overrides don't hit the lifespan.
+
+### CSV imports (Phase 4)
+- `csv_imports` scope-owned; `csv_import_rows` scope-transitive, CASCADE on parent, unique `(import_id, row_index)`. Both hard-delete (ephemeral staging, not evidence). `csv_import_rows.referral_id` FK uses `ON DELETE SET NULL` so deleting a created referral doesn't wipe import provenance. Cross-scope referral_id on row update raises `ValueError`.
+- State machines: `IMPORT_STATUS_VALUES` (uploaded→mapped→validated→committed, `failed` terminal) + `IMPORT_ROW_STATUS_VALUES`. `require_import_transition` / `require_row_transition` — route validates, storage is dumb.
+- `routes/imports.py`: parse once at upload, persist verbatim cells to `csv_import_rows.raw_json`, re-read per step (no disk/blob needed). Caps: 5MB / 2000 rows (utf-8-sig). `TARGET_FIELD_GROUPS` + `_TARGET_ALIASES` drive auto-match. Mapping stored as `{target: csv_header}` (inverse of form). Save auto-runs validation. Row-level validators in `domain/imports_validate.py` (framework-free) with `specialty_cache` kwarg. Inline edit only modifies existing keys. Commit writes to live tables with `external_source="bulk_csv"`; per-row failures go in `validation_errors["commit"]` and don't abort batch. `/imports/template.csv` unauthenticated (public contract).
+- `_upsert_patient_from_row` returns `(entity, was_created)` tuples; compensating soft-delete on failure (Postgres REST has no multi-statement transaction).
+
+### Export pipeline (Phase 5)
+- `src/docstats/exports/pdf.py` FastAPI-free; 7 artifact constants + `render_*` fns returning PDF bytes. `render_packet` uses `pypdf` to concat. Templates: `templates/exports/*.html`; shared CSS: `static/print.css` (Letter page, counters, urgency chips).
+- `routes/exports.py` dispatches via `_ARTIFACT_BUNDLES: dict[artifact, (fetcher, renderer, filename_stem, display_label)]` — one tuple append per new artifact. `GET /referrals/{id}/export.pdf?artifact=<name>` streams PDF (PHI-gated, scope-enforced, WeasyPrint in executor). Audits `referral.export` + emits `record_referral_event(event_type="exported")`.
+- Filenames server-controlled `referral-{id}-{stem}.pdf` (no PHI). Headers: `Content-Disposition: inline`, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`.
+- Packet default include order: `fax_cover, summary, attachments`. `?include` capped `max_length=256`. Nested packet (`include=packet`) → 400. Audit metadata shape: `artifact: "packet:<csv-include>"`.
+- FHIR (5.D): `exports/fhir.py` pure-Python. `build_referral_bundle(referral, patient, ...)` → R4 Bundle type=document. "FHIR-ish" — not guaranteed to pass strict validator. Status map pinned by `test_build_referral_bundle_status_map` — new `STATUS_VALUES` entry must also land in `_STATUS_MAP`.
+- Workspace exports (5.E): `GET /referrals/export.csv` (cap 2000, same filter vocab) + `POST /referrals/batch-export.pdf` (cap 50; `referral_ids` as comma-separated `str` — `list[int] = Form()` parsing is broken; skipped IDs in `X-Export-Skipped` header + audit). Literal CSV + batch routes MUST precede `/{referral_id}/...` in the router (FastAPI matches declaration order; `{referral_id: int}` would try to coerce `"export.csv"` to int).
+- Mapping source-of-truth: `docs/fhir-mapping.md`. API contract: `docs/api-v2.md`. Runbooks: `docs/delivery.md`, `docs/attachments.md`, `docs/csv-import-schema.md`.
+- WeasyPrint system deps via Railway `railpack.json` (BOTH `buildAptPackages` + `deploy.aptPackages`): `libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2`. Local macOS: `brew install pango cairo`. Tests use `pytest.importorskip("weasyprint", ...)`.
+
+### Admin console (Phase 6)
+- `routes/admin.py` + `routes/admin_deliveries.py`. `require_admin_scope` is the single gate — `scope.is_org AND has_role_at_least(scope.membership_role, "admin")`. Sub-admins → 403; anonymous → 303 via `AuthRequiredException`. Don't re-check roles in handlers.
+- `get_current_user` computes `user["is_org_admin"]` via one extra DB round-trip when `active_org_id` set; lookup failures fail-closed (nav hidden).
+- Specialty rules editor (6.B): `overwrite=True` on save (empty display_name should clear, not be skipped). Unknown `required_field` checkbox names filtered against `REQUIRED_FIELD_CHECKS` vocabulary. `recommended_attachments.kinds` preserved verbatim (admin UI doesn't expose it). Revert hard-deletes override; idempotent no-ops don't audit. Redirect discipline: every mutating admin handler exits via `_redirect_after_save(request, dest)` (returns `HX-Redirect` for htmx, `303 Location` otherwise). Never inline `Response(status_code=303)` — htmx doesn't follow 3xx.
+- Payer rules (6.C): same pattern. Keys URL-encoded (`|` in payer_key) via Jinja `| urlencode` + `urllib.parse.quote(k, safe='')` in tests. `POST /revert` declared before `POST /{payer_key}` for route-ordering safety.
+- Org settings (6.D): scope-owned; no path param. `update_organization(overwrite=True)` raises if `name` is None/empty (NOT NULL). Route validates `name`/`npi`/`address_state` (US_STATES)/`address_zip` (`^\d{5}(?:-?\d{4})?$`). Slug intentionally immutable.
+- Audit log viewer (6.E): paginated (50/page, offset-cap 10000, fetch `page_size+1` for has-next). Filters: action / entity_type / entity_id / actor_user_id / since (inclusive) / until (advanced by 1 day so admin's range is inclusive both ends, storage treats exclusive). `_KNOWN_AUDIT_ACTIONS` seeds datalist; free-text input. `list_audit_events` gained `action`/`since`/`until`/`offset`. supabase-py `.range(start, end)` inclusive zero-indexed — use `.limit()` when offset is zero.
+- Members + invitations (6.F): `domain/invitations.py`. Token = 32-byte urlsafe, stored plaintext (single-use, ≤90d, grants membership not PHI). TTL clamp [1h, 7d, 90d]. Partial unique `(org, email) WHERE pending` — admin revoke/accept frees slot. Sole-owner / sole-admin demotion + self-demotion blocked. `has_role_at_least(role, "admin")` gates ACCESS; actor_role ≥ target_role gates GRANTING (use `_can_grant_role` on invite + role-change).
+- Gotcha: `get_current_user`-computed flags (e.g. `is_org_admin`) go stale for the rest of a request after the handler mutates `active_org_id` / role. Post-mutation routing must use storage truth, not the dict flag. Bitten by `/invite/{token}/accept`.
+
+### Delivery (Phase 9)
+- Module layout: `delivery/base.py` (Channel Protocol + `DeliveryReceipt`/`Error` + `ChannelDisabledError`), `delivery/registry.py` (factory reads env at call-time so flips don't need restart), `delivery/channels/{email,fax}.py` (Resend / Documo), `delivery/dispatcher.py` (lifespan asyncio task), `webhook_verifiers/{svix,documo}.py`.
+- `deliveries` denormalizes scope from parent (admin list without join); `idempotency_key` UNIQUE partial-index for webhook replay dedup; `packet_artifact` JSON late-binds (dispatcher renders at send, not enqueue). `async_limiter()` caps concurrency (default 5). `asyncio.shield` lets current work finish on SIGTERM cancel. `DOCSTATS_SKIP_DELIVERY_DISPATCHER=1` disables.
+- Exponential backoff (9.E): `_backoff_seconds(retry_count)` from `(10, 30, 120, 600, 3600)` ±15% jitter. `_should_skip_for_backoff` checks at pickup (no stored `next_retry_at` column). `DELIVERY_MAX_RETRIES=5`, `DELIVERY_STUCK_SENDING_SECONDS=120` clamp [30, 3600].
+- Sweeper health: thread-safe `SweepStats` + `get_sweep_stats()`. Admin route: `/admin/deliveries/health[.json]`. Multi-worker caveat: each worker has its own sweeper + stats; queue-depth counts from `storage.get_delivery_queue_stats()` are DB-authoritative.
+- Admin console: `list_deliveries_for_admin(...)` + `get_delivery_queue_stats(...)` on both backends. Cancel audit: `admin.delivery.cancel` with `previous_status` metadata (distinct from coordinator-initiated `delivery.cancel`).
+- Channel conventions: (1) raise `ChannelDisabledError` from `__init__` on missing env; (2) retryable = 429/5xx/timeout/network, fatal = 4xx/malformed; (3) pass `Idempotency-Key` header when set; (4) verify HMAC + record raw payload in `webhook_inbox` BEFORE parsing; (5) terminal rows short-circuit — replayed webhooks don't resurrect closed deliveries; (6) `sending` webhook events are informational only (dispatcher owns `queued→sending`).
+
+### Attachments (Phase 10)
+- `storage_files/base.py` (Protocol + `FileRef` + `ALLOWED_MIME_TYPES` + `build_object_path`), `storage_files/mime.py` (pure-Python magic-byte sniff, no libmagic — PDF/JPEG/PNG/TIFF/DOCX allow-list), `memory_store.py` (module-level singleton for tests), `supabase_store.py` (sync ops in executor), `factory.py::get_file_backend()`.
+- Feature flag: `ATTACHMENT_UPLOAD_ENABLED`. With flag off, every route returns 404. Bucket setup: private Supabase bucket (default `attachments`, overrideable via `SUPABASE_STORAGE_BUCKET`), 50MB limit, NO bucket-level MIME config (app enforces narrower). Service role bypasses RLS. Requires BAA.
+- Route contract: POST multipart → sniff MIME (never trust client) → scan (10.B) → insert placeholder row → `file_backend.put()` → update with `storage_ref`. Rollback on `StorageFileError`. GET redirects (302) to 15-minute signed URL. DELETE wipes both row + object (bucket delete best-effort — orphan cleanup in retention sweep).
+- Object paths denormalize scope: `{org-<id>|user-<id>}/{referral_id}/{attachment_id}.{ext}`. `MAX_UPLOAD_BYTES=50MB` via `Content-Length` first (pre-spool, 413), then post-read defense. `UploadFile.read(MAX)` does NOT cap — Starlette has already spooled the full body.
+- Virus scan (10.B): `storage_files/scanner.py` Protocol + `scanners/cloudmersive.py` (POST `/virus/scan/file`, camelCase `inputFile` NOT `input_file`) + `scanners/noop.py` + `scanner_factory.py`. `VIRUS_SCAN_REQUIRED=1` fail-closed (outage → 502, audit `attachment.scan_unavailable`); unset/0 permissive (dev). Infected verdict always rejects 422 + audit `attachment.scan_rejected`. Cloudmersive 401/429 → `ScannerUnavailable` (transient); missing `CleanResult` treated as scanner-broken.
+- Retention (10.C): lifespan sweep (`ATTACHMENT_RETENTION_INTERVAL_SECONDS`, default 86400, clamp [60, 604800]; `DOCSTATS_SKIP_ATTACHMENT_RETENTION=1` disables). Per-org `attachment_retention_days` (default 2555 ≈ 7yr, clamp [30, 10950]). `list_attachments_expired(cutoff, scope_organization_id|scope_user_id, limit)` REQUIRES exactly one scope — raises `ValueError` otherwise (guards against broken callers). Batched 500/tenant, up to 10 batches/sweep/tenant (one tenant can't starve peers). Audit action: `attachment.purged` (no actor_user_id, metadata `{reason: "retention"}`).
+- Packet embedding (10.D): `exports/pdf.py::fetch_attachment_pdfs(storage, scope, referral, file_backend)` filters by `.pdf` suffix on `storage_ref` (authoritative — derived from sniffed MIME). `ARTIFACT_ATTACHMENT_PDFS="attachment_pdfs"` is a pseudo-artifact — valid only inside `?include=`, never as `?artifact=`. `delivery/packet_builder.py::build_delivery_packet` is the dispatcher path; `_RENDERERS` + `_fetch_extra()` + `_DEFAULT_INCLUDE` must stay in sync with `routes/exports.py`. Missing blobs logged + skipped (one orphan doesn't fail the packet).
+
+### Lifespan background tasks (shared pattern)
+Used by `delivery.dispatcher` + `storage_files.retention`: (1) `DOCSTATS_SKIP_<NAME>=1` env disables; (2) conftest sets skip-flag by default; (3) thread-safe `*Stats` dataclass + `get_*_stats()` for admin health; (4) `asyncio.wait_for(stop_event.wait(), timeout=interval)` loop + `finally: _set_running(False)`; (5) lifespan creates task + `asyncio.wait_for(task, timeout=15)` on shutdown.
+
+### API v2 / interop (Phase 8)
+- `routes/api_v2.py`: `GET /api/v2/referrals/{id}`, `GET /api/v2/patients/{id}` (content-negotiated: Accept substring `fhir+json` → FHIR; `*/*` → plain JSON, regression-pinned), `POST /api/v2/webhooks/inbound`. Every response carries `X-Docstats-Api-Version: 2`. FHIR errors emit `OperationOutcome`; plain errors `{code, detail}`.
+- **Critical**: API routes use `require_user_api` + `require_phi_consent_api` — these raise `HTTPException(401/403)` JSON. Plain `require_user` / `require_phi_consent` raise `AuthRequiredException` which 303-redirects to `/auth/login` (fatal for machine consumers). Regression-pinned by `test_referral_unauthenticated_returns_401_json_not_redirect`.
+- Webhook inbox: HMAC-signed (`sha256(f"{X-Timestamp}.{body}")`, accepts `sha256=<hex>` or bare hex). `WEBHOOK_INBOX_SECRET` unset → 503 (distinct from 401). ±5min replay window. 256KB cap (Content-Length first, then post-read; Postgres CHECK `octet_length(payload_json::text) <= 262144` at DB layer too). Headers filtered to 5-name allowlist (`content-type`, `user-agent`, `x-signature`, `x-timestamp`, `x-source`). No handlers yet — Phase 11 consumes.
+
+### Audit log
+- `domain/audit.py`: `AuditEvent` + `record(storage, *, action, request=None, ...)` swallows errors (audit failure must never break caller). Action vocabulary: `{entity}.{verb}` (e.g. `user.login`, `provider.save`). Append-only by contract; FKs `ON DELETE SET NULL` so rows survive user deletion.
+- Prefer `ON DELETE SET NULL` over `CASCADE` on audit/log/immutable-history tables. `CASCADE` only for derived per-user data (saved_providers).
+- New action strings: append to `_KNOWN_AUDIT_ACTIONS` in `routes/admin.py` (alphabetical) for datalist autocomplete. Unlisted actions still work; just undiscoverable.
+- IP/UA caps: `validators.py` `IP_MAX_LENGTH=45`, `USER_AGENT_MAX_LENGTH=500`. Truncate at the storage boundary.
+- **Audit-before-delete**: `audit.record(action="user.account_deleted")` must fire BEFORE `delete_user()` — actor_user_id FK must still exist. Omit `entity_type`/`entity_id` entirely: plain-text entity_id would survive deletion and contradict anonymization; actor_user_id SET NULL is the correct surviving identifier.
+- **`list_audit_events` AND semantics**: `actor_user_id` + `scope_user_id` are AND-filtered. For OR (events where user was actor OR events scoped to their data): two separate calls + deduplicate by `ev.id`.
+
+### Sessions / auth / PHI consent
+- `domain/sessions.py`: server-side sessions, URL-safe 32-byte token. Cookie carries `user_id` + `session_id`. `get_current_user` rejects revoked/expired rows + clears cookie. `_begin_session` rotates on every login/signup/OAuth (revokes prior) + `request.session.clear()` before seeding (prevents cross-user flag leak). Legacy cookies (pre-session) grandfathered one request. Session lookup fails CLOSED.
+- `last_seen_at` touched only when older than `_TOUCH_MIN_INTERVAL` (5min).
+- `sessions.user_id` uses `ON DELETE CASCADE` — sessions are derived access, not evidence.
+- PHI consent: 4 columns on `users` (`phi_consent_version`/`at`/`ip`/`user_agent`) independent from general ToS. `src/docstats/phi.py` exposes `CURRENT_PHI_CONSENT_VERSION` + `require_phi_consent` dep (raises `PhiConsentRequiredException` extending `AuthRequiredException`). First consumer: patients routes (2.A). Bumping version forces re-accept at next PHI-route hit, NOT next login.
+- OAuth: `oauth.py` GitHub helpers; `routes/auth.py` wires GitHub OAuth App (callback `https://referme.help/auth/github/callback`). `SESSION_SECRET_KEY` unset → random (dev-only fallback, sessions don't survive restart).
+- `passlib[bcrypt]` is incompatible with `bcrypt>=4.0.0` — pin `bcrypt>=3.2.0,<4.0.0`.
+- **Revoke session before `delete_user`**: clear `request.session` + call `storage.revoke_session()` BEFORE `delete_user()`. Sessions CASCADE-delete with the user row — after deletion there's nothing left to revoke, and the explicit revoke prevents any race on the same connection.
+- Auth tests: `app.dependency_overrides[get_current_user] = lambda: fake_user_dict` — `require_user` inherits automatically.
+
+### NPPES / enrichment / scoring
+- `client.py` is sync (`httpx.Client`) — web.py must use `async_search()`/`async_lookup()` (executor-wrapped). CLI uses sync directly.
+- NPPES endpoint: `https://npiregistry.cms.hhs.gov/api/?version=2.1`. Can't combine NPI-1 (first/last) with NPI-2 (org_name). Returns names UPPERCASE, phones unformatted, postal codes raw. No middle_name search. Name search matches `other_names` — prefix-filter by current name when relevance matters. No documented rate limits but 500s under load — `client.py` retries 3x backoff.
+- `taxonomies.py`: 883 NUCC entries for client-side specialty autocomplete.
+- `http_retry.py::request_with_retry()` — exponential backoff (`backoff_base=2.0` → 1s/2s/4s; `1.0` silently degrades to constant). Honors integer `Retry-After` (HTTP-date not supported). On exhaustion, chains `__cause__`.
+- Env knobs (read at call-time): `DOCSTATS_HTTP_TIMEOUT` (30s), `DOCSTATS_HTTP_MAX_RETRIES` (3), `DOCSTATS_HTTP_CONCURRENCY` (5, for `async_limiter()`).
+- Enrichment: `enrichment.py` orchestrator + `EnrichmentCache` (same SQLite, source-aware keys, per-source TTL: OIG 30d, Medicare 7d, Open Payments 30d). Clients: `oig_client.py` (LEIE monthly CSV, NPI index; utf-8-sig for BOM), `cms_client.py` (DKAN `mj5m-pzi6`/`27ea-46a8`), `open_payments_client.py` (2024→2023 fallback). DKAN pattern: `POST {base}/api/1/datastore/query/{id}/0` with `{"conditions": [{"property": "npi", "value": "<npi>", "operator": "="}]}`. Retry tests: patch `client._http.request` + `docstats.http_retry.time.sleep`.
+- Detail page lazy-loads via htmx `hx-get="/provider/{npi}/enrichment"`.
+- Scoring (`scoring.py`): ranked by Web UI (`routes/search.py`) + CLI (`services.py`). Geo tiers (≤15mi +25, ≤30mi +20, ≤60mi +15, ≤120mi +10), state-match fallback +8. OIG excluded −100, Medicare enrolled +10. In smart-search, `search_kwargs` + `SearchQuery` built from `interp` — explicit form params (`specialty`/`city`/`state`/`zip`) must be injected separately. `rank_results()` must receive `SearchQuery` built from winning `interp` (first_name/last_name/organization_name/taxonomy_description) in smart path.
+- Geolocation: browser `navigator.geolocation` → lat/lon (rounded 2dp) + Mapbox reverse geocode (`types=region`) → hidden `geo_state`/`geo_lat`/`geo_lon` → `geo_state` passed as NPPES `state` filter (narrows at source); lat/lon for distance only. Falls back to national if 0 results. Skipped when manual location filter active. `_fireGeoReady()` idempotent, must call `_setGeoFields()` first in safety `setTimeout`. NPPES `city` filter is exact match — don't use browser-detected city (suburbs won't match). When geo present and no manual filter, fetch `limit*5` for scoring pool then trim.
+- ZIP centroid lookup: `zip_coords.py` + `zip_centroids.json.gz` (33K US ZIPs, 289KB). `haversine_miles()` for distance.
+
+### Provider rolodex / web UI
+- `SavedProvider` PK `(user_id, npi)`. `search_history.user_id` nullable. `get_provider(npi, None)` always returns None (anon).
+- Rolodex at `/rolodex` (renamed from `/saved` in 2.E). `routes/saved.py` uses `APIRouter(prefix="/rolodex")`. `web.py` has 4 `@app.get("/saved[/...]")` 301 redirects preserving `request.url.query`. Export filenames `rolodex_<date>.csv`. `/saved` redirects are GET-only; POST/DELETE hit `/rolodex` directly (mutations are `/provider/{npi}/...`).
+- Anonymous: 3 free searches (session-tracked). Save attempts return `_auth_gate.html` inline partial, not redirect.
+- Onboarding: 4-step wizard at `/onboarding` (name → DOB → PCP → terms). `_onboarding_step()` computes resume; `pcp_skipped` session flag. `terms_accepted_at` is completion gate. GitHub OAuth returners bypass only if `terms_accepted_at` set.
+- Profile: `/profile` — account info + PCP (set/change/remove). PCP data fetched from NPPES (not stored in `saved_providers`); selecting PCP only writes `users.pcp_npi`.
+- Profile dropdown: inline-SVG avatar + `.profile-menu.open` toggle + click-outside. Prefers `first_name last_name` > `display_name` > `email`.
+- Appointment location on `saved_providers`: `appt_address` (Mapbox) + `appt_suite` + `appt_phone` + `appt_fax` + `is_televisit`. `_appt_address.html` handles all; `DELETE /provider/{npi}/appt-address` clears all four; televisit toggle hides address + clears. Mapbox POI `types=poi,address,place,postcode`; phone from `f.properties.tel` auto-populates (not guaranteed).
+- Notes: `_notes.html` + JS toggle (`toggleNoteEdit`) + `PUT /provider/{npi}/notes` htmx route.
+- Typeahead: name/org fields use htmx (server-side NPPES); specialty uses client-side filtering from `taxonomies.py`. Location uses Mapbox Geocoding (client-side, 300ms debounce, reads `MAPBOX_PUBLIC_TOKEN`).
+- `initAutocomplete(inputEl, listEl)` reusable; `data-value` + `data-extra` pattern populates sibling fields without htmx.
+- Individual search: progressive disclosure via pill buttons (specialty + location optional, both modes).
+- Web errors return HTTP 200 with error HTML partial (not 4xx/5xx) — htmx swaps normally. `htmx:responseError` in `base.html` handles true net/server failures.
+- `_search_js.html` shared include (SPECIALTIES, CREDENTIALS, `parseQuery`, `renderChips`, `toggleLocation`, `initLocationAutocomplete`, `initGeolocation`). `index.html` adds `toggleSpecialty` + `initSpecialtyAutocomplete`. `onboarding.html` + `profile.html` include it too.
+- `/search` accepts `context=onboarding|profile` → renders `_pcp_results.html` with "Select as PCP" buttons. `_error()` is context-aware; must be defined before anon-limit check.
+- `services.py::search_providers` (with scoring + history logging) + `save_provider` — sync only; not used by web (which has its own async paths).
+- `models.py` exports `UserRecord` TypedDict for user dicts.
+- History re-run links navigate to `/?query=...`; `index.html` `DOMContentLoaded` auto-triggers `htmx.trigger(form, 'submit')`.
+
+### Static assets / templates
+- CSS in `static/style.css` (external, browser-cacheable). JS in `static/app.js`. `base.html` is ~69 lines — layout + nav only. `{% block head_extra %}` for page-specific head content. Titles follow `Page — referme.help`.
+- GA4 `G-7LGDP4Z19X` (property `referme.help`, ID 531379941) in `base.html` `<head>`.
+- Brand: `brand/` dir (logo SVG/PNG, favicon, philosophy, `generate_logo.py`). Favicon is data-URI SVG in `<head>`.
+- Logo: inline SVG in navbar `<a class="brand">` in `base.html`.
+
+### Organizations / memberships
+- `domain/orgs.py`: `Organization`, `Membership`, `ROLES` ladder (read_only → staff → clinician → coordinator → admin → owner), `has_role_at_least()`.
+- Slug: partial unique index (live rows only) so soft-deleted slugs reuse. `memberships.(org_id, user_id)` is PLAIN UNIQUE — `create_membership` uses `ON CONFLICT DO UPDATE` (SQLite) / `.upsert(on_conflict="organization_id,user_id")` (Postgres) to reactivate soft-deleted rows. Pinned by `test_rejoin_after_soft_delete_reactivates`.
+
+---
+
+## Storage / DB gotchas
+
+- **Postgres column-level `UNIQUE` is unconditional.** For soft-delete reuse ("live rows only" uniqueness): partial unique index `WHERE deleted_at IS NULL` AND drop the column-level UNIQUE keyword. Migration 005 fixes a shipped instance in `organizations.slug`.
+- **Partial unique indices can't use non-deterministic functions** (`datetime('now')` / `now()`) in the predicate on either engine. For "expiry-based slot recovery" do the sweep in route layer before the conflicting INSERT.
+- **`INSERT OR REPLACE`** triggers FK cascade deletes on the replaced row — use `INSERT ... ON CONFLICT(col) DO UPDATE SET ...` upsert to preserve children.
+- **Multi-step SQLite writes** that must land together: wrap in `with self._conn:` (commit on normal exit, rollback on raise). Storage helpers inside the tx do NOT call `.commit()` themselves. Postgres: no multi-statement REST tx — use explicit compensation (soft-delete fallback), wrap compensation in its own try/except.
+- **supabase-py `.upsert()` replaces ALL columns on conflict** (omitted → NULL). To preserve existing (e.g. `appt_address`), fetch first and merge. SQLite `ON CONFLICT DO UPDATE SET` only touches listed columns.
+- **Composite-key upsert**: `.upsert(row, on_conflict="col1,col2")` — comma string, not list.
+- **`.delete()` does NOT return deleted rows** — `result.data` is always `[]`. For count: SELECT ids first, then delete by id-in-list, return `len(ids)` (pattern: `purge_expired_sessions`).
+- **`.range(start, end)` is INCLUSIVE, zero-indexed** — offset/limit semantics = `.range(offset, offset + limit - 1)`. Use `.limit()` when offset is zero.
+- **`.ilike()` is Postgres LIKE** — `_` and `%` are wildcards. Use `.eq()` for exact lookups (normalized email).
+- **`.or_()` takes comma-delimited PostgREST filter string** — never interpolate user input. For small per-user data, fetch + filter in Python instead.
+- **`_escape_like(query)`** in `storage.py` escapes `\`/`%`/`_` — use with `ESCAPE '\'` for user-facing LIKE search.
+- **`.order(col, nullsfirst=True)`** — kwarg mirrors PostgREST for NULLS FIRST tiebreaker. Used by list_specialty_rules / list_payer_rules so dict-last-wins merge picks org override.
+- **Supabase returns UTC-aware timestamps** — use `datetime.now(tz=timezone.utc)` when writing. Naive `datetime.now()` causes aware/naive compare errors.
+- **Date-only columns** (DOB): Postgres `DATE`, SQLite `TEXT` — both return ISO `YYYY-MM-DD` strings to Python. Pydantic `str | None`.
+- **Same-second SQLite timestamps** make `ORDER BY created_at DESC` non-deterministic in tests — always include `id DESC` tiebreaker.
+- **Sweep-style storage methods** (`list_*_for_purge`): REQUIRE exactly one of `scope_organization_id`/`scope_user_id` — raise `ValueError` on both/neither. Defense vs broken lifespan loop purging all tenants.
+- **Adding a column to `saved_providers`** is a 5-site change: StorageBase abstract → SQLite migration + save + `_row_to_provider` → Postgres `_row_to_provider` + upsert + preserve-on-conflict fetch → `models.SavedProvider` + `export_fields()` → `routes/saved.py` `_CSV_FIELDNAMES` + all `_appt_address.html` contexts. Same for `organizations`: migration + SQLite `_migrate_*` (idempotent `try ALTER TABLE except OperationalError`) + both `_row_to_organization` (handle missing column) + `update_organization` kwarg/validation + Pydantic field default. Regression-pin via `test_org_defaults_to_*`.
+- **Any new key in `SavedProvider.export_fields()`** must also land in `routes/saved.py::_CSV_FIELDNAMES` AND in `formatting.py::referral_export()` (text/PDF export).
+- **Adding a `list_*` filter kwarg**: 4-file refactor — `StorageBase` abstract sig + SQLite (optional `AND col = ?` + params concat) + Postgres (`query = query.eq(col, val)` before ordering/execute) + route caller + storage-level test.
+- **`delete_user` FK deletion order**: `search_history` (nullable user_id, SET NULL — NOT auto-deleted) → `referrals` (scope_user_id) → `patients` (scope_user_id; RESTRICT FK blocks if referrals still exist) → `users`. Cannot rely on CASCADE alone. Returns `list[str]` (storage_refs) for caller to clean up blobs outside the DB transaction.
+
+---
+
+## FastAPI / htmx / web gotchas
+
+- **Route ordering** matters. In `web.py::include_router`: `saved_router` before `providers_router`. Within a router: literal sibling paths (e.g. `/export.csv`, `/batch-export.pdf`) MUST precede parameterized paths like `/{referral_id}/...` — FastAPI matches in declaration order; `{referral_id: int}` tries to coerce `"export.csv"` first. `POST /revert` declared before `POST /{payer_key}` for the same reason.
+- **`Form(..., max_length=N)` rejects empty-string** at boundary with 422. Route-level required/whitespace checks only run for whitespace-only. Tests pick one: `data={"field": ""}` → 422, `data={"field": "   "}` → route-level 200 re-render.
+- **`Query(int | None, ge=1)` rejects blank string submissions** (`?param=`) 422 BEFORE handler. HTML forms always submit every input — for form-sourced query params, use `str | None = Query(None, max_length=N)` and coerce + raise 422 in handler (pattern: `_parse_actor_user_id`).
+- **`referral_ids: list[int] = Form(...)`** fails with TestClient tuple form (`data=[...]`). Workaround: `referral_ids: str = Form(..., max_length=N)` + split + validate.
+- **httpx test list-valued form data**: use `data={"key": ["v1", "v2"]}` dict form. NOT `data=[(...)]` list-of-tuples — triggers deprecation + fails to reach handler as repeated form keys.
+- **Multi-action detail pages**: use `<button type="submit" form="<id>">` inside primary form + external `<form id="<id>" style="display:none;">`. HTML5 associates via `form=` attr — avoids nested-form. Pattern: `referral_detail.html` Clear button.
+- **`require_user` raises `AuthRequiredException`** → global handler returns `HX-Redirect` for htmx (200) / `303` for normal. HTMX doesn't follow 3xx.
+- **For API/machine routes** (`/api/v2/*`): use `require_user_api` + `require_phi_consent_api` (raise `HTTPException(401/403)` JSON). Plain variants redirect — silently fatal for curl/SDKs. Regression-pinned.
+- **`hx-swap="outerHTML"` on a button inside a named `<div id="...">`** destroys that container ID — subsequent clicks target missing element. Use `hx-swap="innerHTML"` on container.
+- **htmx `HX-Target`** includes `#` prefix from CSS selectors.
+- **TOCTOU + event-degradation pattern** for mutations returning `Referral | None`: row soft-deleted between guard-read and write → None → `raise HTTPException(404)`. Post-primary-write event inserts go in try/except + `logger.exception`; single `record_referral_event` failure is graceful degradation (audit_events already captures the write).
+- **Pseudo-transactional storage sequences**: `(entity, was_created)` tuples + compensating soft-delete on failure only for newly-created rows (not pre-existing matches). Pattern: `_upsert_patient_from_row`, `create_referral` fallback.
+- **`get_current_user`-computed flags go stale after handler mutates active_org_id / role** — post-mutation routing must use storage truth. Bitten by `/invite/{token}/accept`.
+- **`UploadFile.read(MAX)` does NOT cap** — Starlette already spooled full body. Check `Content-Length` FIRST, reject 413 pre-spool.
+- **Whenever a route writes `status=X`** to a state-machine row (referrals, csv_imports, csv_import_rows), wrap with `require_*_transition(row.status, X)`. Three PR reviews caught this skipped. `Invalid*Transition` bubbles as 409.
+- **CSV module permissiveness**: NUL bytes + unterminated quotes do NOT reliably raise `csv.Error`. Trigger 422 via `monkeypatch.setattr(imports_mod.csv, "DictReader", lambda buf: _BoomReader())`.
+- **Jinja `{% if results %}`** truthy for non-empty even when nested `{% if %}` filters all items — use `selectattr()` pre-filter for empty-state reachability.
+- **Jinja `| urlencode`** every URL-injection site (form `action=`, anchor `href=`, onsubmit) for path params with reserved chars (`|` in payer_key). Seed data is alphanumeric — silent regression with admin-created data.
+- **Starlette `SessionMiddleware`** only emits `Set-Cookie` on session mutation — cookie-flag tests must hit endpoints that write session. Kwarg is `same_site="lax"` (underscore, silently ignored if `samesite`). Serializes attrs lowercase (`httponly; samesite=lax`) — assertions must lowercase-compare.
+- **JS in htmx swap targets** loses listeners on swap — use event delegation on stable ancestor, or re-init via `htmx:afterSettle`. `_search_js.html` exposes named functions for this; `_detectedGeoState` caches browser's geo state.
+- **Routes rendering `_pcp_section.html`** (e.g. `profile_clear_pcp`, `profile_set_pcp`) must pass `mapbox_token: MAPBOX_TOKEN` — `_pcp_search_inline.html` `{% if mapbox_token %}` gates Mapbox vs fallback.
+- **All `/provider/{npi}/...`, `/onboarding/select-pcp/{npi}`, `/profile/pcp/{npi}`** must use `npi: str = Depends(require_valid_npi)`. Keeps malformed at boundary (422), closes header-injection in export filenames.
+- **Any new synchronous httpx client from web routes** must wrap in `asyncio.get_running_loop().run_in_executor()`. New httpx clients read `get_default_timeout()` at `__init__`; batch paths use `async_limiter()` (not unbounded `asyncio.gather`).
+- **`NPPESClient.async_lookup_many(npis, *, limiter=None)`** is the batch seam — results in input order, capped by passed semaphore or `async_limiter()`.
+- **Mocking `NPPESClient` in web tests**: `async_search`/`async_lookup` must be `AsyncMock` (not MagicMock) — `await` raises TypeError otherwise.
+- **Starlette 0.50+** changed `TemplateResponse` signature — use `render()` from `routes/_common.py`.
+- **`_notes.html`, `_appt_address.html`** etc. included via `{% set %}` chains — any new context variable must land in BOTH the `{% set %}` AND all `render("_appt_address.html", {...})` calls. Use `_render_appt_from_provider(request, npi, provider)` helper.
+- **CSV export uses static `_CSV_FIELDNAMES`** (not derived from first row) so empty lists still produce valid headers. `DictWriter` raises `ValueError` on extra keys.
+- **CLI `_get_cli_user_id()`** creates/retrieves `cli@localhost` user in SQLite — all CLI storage calls pass this user_id.
+- **`normalize_email()`/`fuzzy_score()` live in `storage_base.py`** — use them instead of inline `email.strip().lower()` / reimplementing.
+- **New storage methods**: add abstract to `StorageBase` first; both backends must implement.
+- **`web.py` re-exports `get_client`** from `routes/_common.py` for backward compat (tests import from `docstats.web`).
+- **Pydantic `basic` field** on NPIResult is a dict (not typed) — NPI-1/NPI-2 schemas incompatible. Use `parsed_basic()` method.
+- **NPIResult | None flow narrowing**: mypy can't reassign `NPIResult`-typed to `NPIResult | None`. Use separate name for fetch (`fetched = client.lookup(...)`), then `result = fetched` after None check.
+- **`Returning Any` errors** (httpx `.json()`, supabase `result.data[0]`, sqlite `Row["col"]`): `int(...)` for scalar ids, `cast("type", ...)` for composites.
+
+---
+
+## CSS / JS gotchas
+
+- **CSS `:has()`** requires `@supports selector(:has(*))` guard. Only wrap rules that actually use `:has()` inside — plain `:hover` etc. inside the guard silently no-op on Firefox <121.
+- **Flex `margin-left: auto` on child** overrides parent `justify-content: center` — preceding siblings shift left.
+- **CSS utility classes** used in multiple templates must be defined standalone (`.back-link { ... }`), not only as descendants (`.action-bar .back-link`). Silent no-op elsewhere.
+- **`querySelectorAll('input')`** does not match `<select>` — reset selects explicitly (`el.value = ''`) when clearing forms.
+- **Use `clearChildren(el)`** (in `_search_js.html`) instead of `el.innerHTML = ''`.
+- **Trigger `initAutocomplete`'s `activeIdx` reset** for non-htmx lists: dispatch `new Event('htmx:afterSwap')` on the list element after populating.
+- **Mapbox `postcode`-type features**: ZIP is in `f.text` not `f.context`. `place`-type: city is in `f.text` not `f.context`. Explicit extract before context loop.
+- **Mapbox tokens**: `pk.` public (safe client-side), `sk.` secret (server-only). Stored as `MAPBOX_PUBLIC_TOKEN` + `MAPBOX_TOKEN` in `~/.zshrc`.
+- **Inject Python var into JS**: `{{ var | tojson }}`.
+- **JS referencing elements inside `{% if %}`** (e.g. IDs in `clearSuggestions` arrays) must null-guard or live inside the same conditional.
+- **Template JS** uses `var` (not const/let) + vanilla DOM APIs — no build step, no modules. Prefer `textContent`/`createElement` over `innerHTML`.
+- **Mini PDF for tests**: see `_MINI_PDF` in `tests/test_packet_embed.py` — ~20-line inline literal parses as valid 1-page PDF for pypdf tests.
+
+---
+
+## Deployment (Railway)
+
+- Hosted at https://docstats-production.up.railway.app (prod domain `referme.help`).
+- Uses **Railpack** (NOT Nixpacks — `nixpacks.toml` ignored). Config: `railway.toml` (build/start). Railpack does NOT install pyproject extras — `requirements.txt` must have all web deps explicitly.
+- Required env: `SESSION_SECRET_KEY`, `SUPABASE_URL` (= `https://uhnymifvdauzlmaogjfj.supabase.co`), `SUPABASE_SERVICE_KEY` (service_role JWT for robworks-software).
+- Optional: `GITHUB_CLIENT_ID`/`SECRET`, `MAPBOX_PUBLIC_TOKEN` (pk.), attachment-flag vars, `CLOUDMERSIVE_API_KEY`, etc.
+- Data persists via Supabase Postgres (ephemeral filesystem resolved).
+- `python-multipart` explicit in `requirements.txt` — required for any Form POST; Railpack won't install transitively.
+- Deploy: `railway up --detach --service docstats`. Poll: `until ! railway deployment list --service docstats --json | python3 -c "import json,sys;d=json.load(sys.stdin);sys.exit(0 if d[0]['status'] in ('BUILDING','DEPLOYING','QUEUED','INITIALIZING') else 1)"; do sleep 15; done`
+- `railway deployment list` (not `deployments list`). `railway status` has no `--service` flag. `railway variables --service docstats --kv` for KV output (scriptable).
+- Custom domain: `referme.help` → CNAME `zzu1pdts.up.railway.app` (Namecheap BasicDNS at `@`). Verify via `_railway-verify` TXT. Add: `railway link ... && railway domain <d> --service docstats --json`.
+- Auto-deploy from `main` is connected. Deploys via git push have `meta.branch`/`meta.commitHash`; `railway up` ones don't. Re-connect if broken: GitHub Apps → grant repo → dashboard Source → Connect Repo.
+- Railway dashboard inputs (token name, repo-select combobox) share the React/FormControl quirk: `type` action + `Object.defineProperty` value setters don't update state. Workaround: `input.focus(); document.execCommand('insertText', false, value)` via `javascript_tool`. For combobox: `ArrowDown` + `Enter` picks highlighted, not filtered.
+- Verify post-deploy via side effects (Supabase Management SQL row count, HTTP response codes) NOT `railway logs` — tail has own buffering, JSON shape varies.
+- `mcp__Railway__deploy` output commonly exceeds 25k-token MCP cap on apt-heavy builds. Tool auto-saves full output to `~/.claude/projects/<proj>/tool-results/mcp-Railway-deploy-*.txt`; `tail -c 4000` catches the summary.
+- CI: `.github/workflows/ci.yml` — ruff check/format, mypy, pytest (3.12 + 3.13). `pytest-asyncio` in `[dev]`, required for `test_enrichment.py`. `[tool.mypy]` disables `prop-decorator` (Pydantic v2 `@computed_field` false-positive).
+- PRs show UNSTABLE when `Continuous AI:` checks fail — those are continue.dev suggestion bots, non-blocking; don't gate merges.
+- Pre-launch protections: HTTP Basic Auth removed; robots.txt + `X-Robots-Tag` header remain.
+- GA4 account: ryan@robworks.info (authuser=2), property `referme.help` (ID 531379941), under "Default Account for Firebase" (361064431).
+- Smoke-test NPPES retry messages: `DOCSTATS_HTTP_TIMEOUT=0.001 DOCSTATS_HTTP_MAX_RETRIES=0 docstats web` → instant "took too long" path.
+- **Never run `pip freeze`** on this machine for `requirements.txt` — global env has 500+ unrelated packages.
+
+---
+
+## Git / PRs / workflow
+
+- **Don't use `gh pr checks --watch`** — streams indefinitely. Poll: `until ! gh pr checks N --repo ringo380/docstats | grep -q pending; do sleep 15; done`. For blocking-only (skip Continuous AI): `... 2>&1 | grep -E "^Test .*pending"`.
+- **Clean squash commits**: always pass `--subject` + `--body` (HEREDOC) to `gh pr merge <N> --squash --delete-branch`. Without them, gh concatenates every commit title into a noisy default message.
+- **`--delete-branch`** deletes remote but `origin/<branch>` ref not pruned locally. `git remote prune origin` after. Local branch needs `git branch -d <name>` separately.
+- **After squash-merge of multi-commit branch**, local main has unsquashed originals — `git reset --hard origin/main`.
+- **Stacked PRs auto-close when base squash-merges with `--delete-branch`**; GitHub refuses to reopen. Workaround: rebase onto new main locally (`git rebase --onto origin/main <old-base> <stacked>`), force-push or new branch, fresh PR. Prefer branching off `main` from the start.
+- **Codex-generated PRs** (branch prefix `codex/...`) land as draft. Always `gh pr ready <N>` before `gh pr merge`.
+- **`gh pr merge`** for this repo is allow-listed via user-level rule `Bash(gh pr merge * --repo ringo380/docstats:*)` in `~/.claude/settings.json`. `git push origin main` still sandbox-blocked.
+- **SSH agent drops** (1Password lock, keychain re-prompt) silently break `git pull`/`fetch` while `git push https://... -c credential.helper='!gh auth git-credential'` still works. Symptom: branch off local main missing last-merged PR files. Recovery: `git fetch https://github.com/ringo380/docstats.git main:refs/remotes/origin/main` then rebase. Always re-verify `git log --oneline -1 origin/main` after a merge when SSH has been flaky.
+- **Plan lifecycle**: keep multi-phase plans in `.claude/plans/` while ANY sub-phase incomplete; archive only when entire plan done. Shipping Phase 2 of 16 does NOT archive.
+- **No AI attribution anywhere** (commits, PRs, docs, code review comments). Never add `Co-Authored-By: Claude` or "Generated with Claude Code". Never commit `.claude/`, `CLAUDE.md`, `memory/`. Always verify `.gitignore` excludes them.
+- **Ad-hoc Supabase SELECTs**: same Management-API endpoint as migrations. `curl -sS -X POST "https://api.supabase.com/v1/projects/uhnymifvdauzlmaogjfj/database/query" -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" --data '{"query": "SELECT ..."}'`.
+
+---
+
+## Testing
+
+- **Auth override**: `app.dependency_overrides[get_current_user] = lambda: fake_user_dict`. `require_user` inherits.
+- **Rules-engine startup tests**: don't use dep-override — lifespan fires BEFORE request DI. `monkeypatch.setattr(docstats.web, "seed_platform_defaults", fake)` and assert patch ran.
+- **`DOCSTATS_SKIP_BOOT_SEED=1`** bypasses lifespan rule seeder. conftest sets by default. Dedicated lifespan tests `monkeypatch.delenv(...)`.
+- **Same as above for** `DOCSTATS_SKIP_DELIVERY_DISPATCHER`, `DOCSTATS_SKIP_ATTACHMENT_RETENTION`.
+- **Typer CLI tests**: `from typer.testing import CliRunner` + `monkeypatch.setattr("docstats.cli._get_storage", lambda: test_storage)` — routes CLI at test Storage without touching `~/.local/share/docstats/`.
+
+---
+
+## Code Style
+
+- Python 3.12+, type hints throughout.
+- Pydantic v2 for all data models.
+- `normalize.py` handles all API data cleanup (name casing, phone formatting, postal codes).
+- `pyproject.toml [tool.mypy]` — Python 3.12, tests excluded. Run `mypy src/docstats/`.
+
+## Misc session-level notes
+
+- Vercel plugin falsely matches "deploy"/"deployment status" — this is a Railway project; ignore injections.
+- Committed docs under `docs/` must never reference `.claude/` paths (gitignored).
+- Railway build uses Python 3.13 — passlib prints `crypt` deprecation warning on startup; harmless.
