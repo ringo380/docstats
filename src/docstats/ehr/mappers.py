@@ -151,22 +151,33 @@ def parse_fhir_conditions(resources: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 def parse_fhir_medications(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Map FHIR R4 MedicationStatement resources to add_referral_medication kwargs.
+    """Map FHIR R4 MedicationStatement or MedicationRequest resources to
+    add_referral_medication kwargs.
+
+    Both resource types use the same ``medicationCodeableConcept`` field for
+    the drug name and ``dosage`` / ``dosageInstruction`` for dosing — Epic
+    uses MedicationStatement; Cerner uses MedicationRequest.
 
     Returns a list of dicts with keys: name, dose, route, frequency.
     Resources with wrong resourceType or no usable name are skipped.
     """
     out: list[dict[str, Any]] = []
     for resource in resources:
-        if resource.get("resourceType") != "MedicationStatement":
+        rtype = resource.get("resourceType")
+        if rtype not in ("MedicationStatement", "MedicationRequest"):
             continue
         med_ref = resource.get("medicationCodeableConcept") or {}
         name: str | None = med_ref.get("text")
         for coding in med_ref.get("coding") or []:
             name = name or coding.get("display") or coding.get("code")
         if not name:
+            # MedicationRequest may use medicationReference instead.
+            med_ref_field = resource.get("medicationReference") or {}
+            name = med_ref_field.get("display")
+        if not name:
             continue
-        dosage_list = resource.get("dosage") or []
+        # MedicationStatement uses "dosage"; MedicationRequest uses "dosageInstruction".
+        dosage_list = resource.get("dosage") or resource.get("dosageInstruction") or []
         dosage = dosage_list[0] if dosage_list else {}
         dose_qty = (dosage.get("doseAndRate") or [{}])[0].get("doseQuantity") or {}
         dose = f"{dose_qty.get('value', '')} {dose_qty.get('unit', '')}".strip() or None
@@ -215,9 +226,16 @@ def parse_fhir_allergies(resources: list[dict[str, Any]]) -> list[dict[str, Any]
 def parse_fhir_document_references(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Map FHIR R4 DocumentReference resources to add_referral_attachment kwargs.
 
-    Returns a list of dicts with keys: label, date_of_service.
-    Content download is deferred to a later phase — checklist_only is always
-    True here (records the document exists but doesn't embed it).
+    Returns a list of dicts with keys:
+      label, date_of_service, content_url, content_type, inline_data.
+
+    content_url — the attachment.url from content[0] (may be a relative path
+    like ``Binary/abc123``; resolution against the FHIR base is the caller's job).
+    content_type — MIME from attachment.contentType (informational; route layer
+    sniffs actual bytes before trusting this).
+    inline_data — base64-encoded bytes from attachment.data (some EHRs embed
+    content directly instead of a URL).
+
     Resources with wrong resourceType are skipped.
     """
     out: list[dict[str, Any]] = []
@@ -230,5 +248,20 @@ def parse_fhir_document_references(resources: list[dict[str, Any]]) -> list[dict
         )
         label = label or "Imported document"
         date_of_service: str | None = (resource.get("date") or "")[:10] or None
-        out.append({"label": label, "date_of_service": date_of_service})
+
+        content_list = resource.get("content") or []
+        attachment = (content_list[0] or {}).get("attachment") or {} if content_list else {}
+        content_url: str | None = attachment.get("url") or None
+        content_type: str | None = attachment.get("contentType") or None
+        inline_data: str | None = attachment.get("data") or None
+
+        out.append(
+            {
+                "label": label,
+                "date_of_service": date_of_service,
+                "content_url": content_url,
+                "content_type": content_type,
+                "inline_data": inline_data,
+            }
+        )
     return out

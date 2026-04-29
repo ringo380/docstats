@@ -113,7 +113,7 @@ def request_with_retry(
     for attempt in range(max_retries + 1):
         try:
             resp = http.request(method, url, **kwargs)
-            if resp.status_code == 200:
+            if 200 <= resp.status_code < 300:
                 return resp
             if resp.status_code in retryable_status and attempt < max_retries:
                 delay = _retry_after_seconds(resp) or backoff_base**attempt

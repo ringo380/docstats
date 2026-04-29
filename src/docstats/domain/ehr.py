@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-EHR_VENDORS: set[str] = {"epic_sandbox"}
+EHR_VENDORS: set[str] = {"epic_sandbox", "cerner_oauth"}
 
 # Default scope set for Phase 12.A — Patient-only standalone launch.
 # offline_access is needed for refresh_token. fhirUser + openid identify the
@@ -22,6 +22,16 @@ EPIC_SCOPES: str = "openid fhirUser patient/Patient.read offline_access"
 # Scope set for EHR-launch (sidebar): Epic provides patient context via the
 # launch token so launch/patient is not needed; `launch` is required.
 EPIC_SCOPES_EHR_LAUNCH: str = "openid fhirUser launch offline_access"
+
+# Cerner/Oracle Health scope sets.
+# Cerner uses MedicationRequest (not MedicationStatement), so the resource
+# scope references that resource type.
+CERNER_SCOPES: str = (
+    "openid fhirUser patient/Patient.read patient/Condition.read "
+    "patient/MedicationRequest.read patient/AllergyIntolerance.read "
+    "patient/DocumentReference.read offline_access"
+)
+CERNER_SCOPES_EHR_LAUNCH: str = "openid fhirUser launch offline_access"
 
 
 class EHRConnection(BaseModel):

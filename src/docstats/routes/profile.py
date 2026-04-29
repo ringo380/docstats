@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, Request, Response
@@ -17,6 +16,7 @@ from docstats.domain.orgs import has_role_at_least
 from docstats.domain.staff_access import DEFAULT_TTL_SECONDS, TTL_OPTIONS
 from docstats.phi import require_phi_consent
 from docstats.routes._common import MAPBOX_TOKEN, get_client, render, saved_count
+from docstats.routes.ehr import _ehr_vendor_ui_list
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
@@ -48,10 +48,8 @@ async def profile(
             pass
     active_grant = storage.get_active_staff_access_grant(user_id)
 
-    ehr_enabled = os.getenv("EHR_EPIC_SANDBOX_ENABLED", "").strip() == "1"
-    epic_connection = (
-        storage.get_active_ehr_connection(user_id, "epic_sandbox") if ehr_enabled else None
-    )
+    ehr_vendors = _ehr_vendor_ui_list(user_id, storage)
+    ehr_enabled = bool(ehr_vendors)
 
     return render(
         "profile.html",
@@ -67,7 +65,7 @@ async def profile(
             "ttl_options": TTL_OPTIONS,
             "ehr_enabled": ehr_enabled,
             "ehr_error": ehr_error,
-            "epic_connection": epic_connection,
+            "ehr_vendors": ehr_vendors,
         },
     )
 
