@@ -309,7 +309,7 @@ async def _ehr_post_create_hook(
         conn = None
         for _v in _reg.list_vendors():
             _c = storage.get_active_ehr_connection(user_id, _v)
-            if _c:
+            if _c and _c.patient_fhir_id:
                 conn = _c
                 break
         if conn is None:

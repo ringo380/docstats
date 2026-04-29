@@ -815,6 +815,7 @@ def _ehr_fixture(tmp_path: Path, monkeypatch, *, with_ehr_fhir_id: bool = True):
     monkeypatch.setenv("EPIC_SANDBOX_BASE_URL", "https://fake-epic.test")
 
     from docstats.ehr import epic
+
     epic._DISCOVERY_CACHE.clear()
     epic._DISCOVERY_CACHE["https://fake-epic.test"] = (
         epic.EpicEndpoints(
@@ -926,6 +927,7 @@ def test_ehr_hook_inserts_clinical_data_on_referral_create(tmp_path, monkeypatch
     finally:
         app.dependency_overrides.clear()
         from docstats.ehr import epic
+
         epic._DISCOVERY_CACHE.clear()
 
 
@@ -994,6 +996,7 @@ def test_ehr_hook_service_request_sets_id_on_referral(tmp_path, monkeypatch):
     finally:
         app.dependency_overrides.clear()
         from docstats.ehr import epic
+
         epic._DISCOVERY_CACHE.clear()
 
 

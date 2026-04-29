@@ -549,7 +549,6 @@ def _cerner_handler():
 
 @pytest.fixture
 def cerner_client(tmp_path: Path, cerner_env, monkeypatch):
-    from docstats.ehr import cerner
 
     storage = Storage(db_path=tmp_path / "test.db")
     user_id = storage.create_user("c@example.com", "pw")

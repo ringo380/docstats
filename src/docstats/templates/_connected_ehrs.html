@@ -1,22 +1,24 @@
-{% if epic_connection %}
-  <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem; padding:0.6rem 0.75rem; border:1px solid var(--border); border-radius:6px; background:var(--bg-subtle);">
+{% for vendor in ehr_vendors %}
+  {% if vendor.connection %}
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem; padding:0.6rem 0.75rem; border:1px solid var(--border); border-radius:6px; background:var(--bg-subtle); margin-bottom:0.5rem;">
     <div>
-      <div style="font-size:0.85rem; font-weight:600;">Epic Sandbox</div>
+      <div style="font-size:0.85rem; font-weight:600;">{{ vendor.label }}</div>
       <div style="font-size:0.75rem; color:var(--text-muted);">
-        Connected {{ epic_connection.created_at.strftime('%b %d, %Y') if epic_connection.created_at else '' }}
-        {% if epic_connection.patient_fhir_id %}
-          · Patient ref <code style="font-size:0.7rem;">{{ epic_connection.patient_fhir_id[:12] }}…</code>
+        Connected {{ vendor.connection.created_at.strftime('%b %d, %Y') if vendor.connection.created_at else '' }}
+        {% if vendor.connection.patient_fhir_id %}
+          · Patient ref <code style="font-size:0.7rem;">{{ vendor.connection.patient_fhir_id[:12] }}…</code>
         {% endif %}
       </div>
     </div>
-    <form hx-post="/ehr/disconnect/epic" hx-target="#connected-ehrs" hx-swap="innerHTML">
+    <form hx-post="{{ vendor.disconnect_path }}" hx-target="#connected-ehrs" hx-swap="innerHTML">
       <button type="submit" class="btn btn-secondary" style="font-size:0.78rem; padding:5px 10px;">
         Disconnect
       </button>
     </form>
   </div>
-{% else %}
-  <a href="/ehr/connect/epic" class="btn btn-secondary" style="font-size:0.82rem; padding:6px 14px;">
-    Connect Epic Sandbox
+  {% else %}
+  <a href="{{ vendor.connect_path }}" class="btn btn-secondary" style="font-size:0.82rem; padding:6px 14px; margin-right:0.5rem; margin-bottom:0.5rem; display:inline-block;">
+    Connect {{ vendor.label }}
   </a>
-{% endif %}
+  {% endif %}
+{% endfor %}

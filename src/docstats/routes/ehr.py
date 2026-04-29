@@ -82,6 +82,20 @@ _VENDOR_ISS_ALLOWLIST_ENV: dict[str, str] = {
     "cerner_oauth": "CERNER_EHR_LAUNCH_ISS_ALLOWLIST",
 }
 
+# UI metadata for each vendor (label + route paths).
+_VENDOR_META: dict[str, dict[str, str]] = {
+    "epic_sandbox": {
+        "label": "Epic Sandbox",
+        "connect_path": "/ehr/connect/epic",
+        "disconnect_path": "/ehr/disconnect/epic",
+    },
+    "cerner_oauth": {
+        "label": "Cerner (Oracle Health)",
+        "connect_path": "/ehr/connect/cerner",
+        "disconnect_path": "/ehr/disconnect/cerner",
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -101,6 +115,19 @@ def _require_vendor_enabled(vendor: str) -> None:
 def _err_redirect(reason: str) -> RedirectResponse:
     safe = reason if reason in _ALLOWED_ERROR_REASONS else "oauth_error"
     return RedirectResponse(f"/profile?ehr_error={safe}", status_code=303)
+
+
+def _ehr_vendor_ui_list(user_id: int, storage: StorageBase) -> list[dict]:
+    """Return UI metadata + active connection for every enabled EHR vendor."""
+    return [
+        {
+            **_VENDOR_META[v],
+            "key": v,
+            "connection": storage.get_active_ehr_connection(user_id, v),
+        }
+        for v in _registry.list_vendors()
+        if _vendor_enabled(v) and v in _VENDOR_META
+    ]
 
 
 def _audit_failure(
@@ -227,7 +254,11 @@ async def _load_pending_patient(
         return None
 
     fhir_id = conn.patient_fhir_id
-    vendor_mod = _registry.get(conn.ehr_vendor)
+    try:
+        vendor_mod = _registry.get(conn.ehr_vendor)
+    except ValueError:
+        logger.exception("Unknown EHR vendor %r for user_id=%d", conn.ehr_vendor, user_id)
+        return None
     try:
         patient_resource = await loop.run_in_executor(
             None,
@@ -272,6 +303,10 @@ async def _connect_flow(
         _audit_failure(storage, request, user_id, vendor, f"error:{type(e).__name__}")
         raise HTTPException(status_code=502, detail="EHR sandbox unavailable") from e
 
+    # Clear any stale EHR-launch keys left by an abandoned prior flow so the
+    # callback doesn't pick up the wrong iss or launch_mode.
+    request.session.pop(_session_iss_key(vendor), None)
+    request.session.pop(_session_launch_mode_key(vendor), None)
     request.session[_session_state_key(vendor)] = state
     request.session[_session_verifier_key(vendor)] = verifier
     return RedirectResponse(url, status_code=303)
@@ -423,16 +458,13 @@ async def _disconnect_flow(
             actor_user_id=user_id,
             metadata={"ehr_vendor": vendor},
         )
-    epic_conn = storage.get_active_ehr_connection(user_id, "epic_sandbox")
-    cerner_conn = storage.get_active_ehr_connection(user_id, "cerner_oauth")
+    ehr_vendors = _ehr_vendor_ui_list(user_id, storage)
     if request.headers.get("HX-Request"):
         return render(
             "_connected_ehrs.html",
             {
                 "request": request,
-                "epic_connection": epic_conn,
-                "cerner_connection": cerner_conn,
-                "ehr_enabled": True,
+                "ehr_vendors": ehr_vendors,
             },
         )
     return RedirectResponse("/profile", status_code=303)

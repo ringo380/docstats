@@ -343,10 +343,21 @@ def test_eligibility_scope_isolation(tmp_path: Path, monkeypatch):
     user_a = db.create_user("a@example.com", "x")
     user_b = db.create_user("b@example.com", "x")
     for uid in (user_a, user_b):
-        db.record_phi_consent(user_id=uid, phi_consent_version=CURRENT_PHI_CONSENT_VERSION, ip_address="127.0.0.1", user_agent="pytest")
+        db.record_phi_consent(
+            user_id=uid,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="127.0.0.1",
+            user_agent="pytest",
+        )
 
     scope_a = Scope(user_id=user_a)
-    patient_a = db.create_patient(scope_a, first_name="A", last_name="Patient", date_of_birth="1980-01-01", created_by_user_id=user_a)
+    patient_a = db.create_patient(
+        scope_a,
+        first_name="A",
+        last_name="Patient",
+        date_of_birth="1980-01-01",
+        created_by_user_id=user_a,
+    )
 
     app.dependency_overrides[get_storage] = lambda: db
     app.dependency_overrides[get_current_user] = lambda: _fake_user(user_b)
