@@ -151,22 +151,33 @@ def parse_fhir_conditions(resources: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 def parse_fhir_medications(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Map FHIR R4 MedicationStatement resources to add_referral_medication kwargs.
+    """Map FHIR R4 MedicationStatement or MedicationRequest resources to
+    add_referral_medication kwargs.
+
+    Both resource types use the same ``medicationCodeableConcept`` field for
+    the drug name and ``dosage`` / ``dosageInstruction`` for dosing — Epic
+    uses MedicationStatement; Cerner uses MedicationRequest.
 
     Returns a list of dicts with keys: name, dose, route, frequency.
     Resources with wrong resourceType or no usable name are skipped.
     """
     out: list[dict[str, Any]] = []
     for resource in resources:
-        if resource.get("resourceType") != "MedicationStatement":
+        rtype = resource.get("resourceType")
+        if rtype not in ("MedicationStatement", "MedicationRequest"):
             continue
         med_ref = resource.get("medicationCodeableConcept") or {}
         name: str | None = med_ref.get("text")
         for coding in med_ref.get("coding") or []:
             name = name or coding.get("display") or coding.get("code")
         if not name:
+            # MedicationRequest may use medicationReference instead.
+            med_ref_field = resource.get("medicationReference") or {}
+            name = med_ref_field.get("display")
+        if not name:
             continue
-        dosage_list = resource.get("dosage") or []
+        # MedicationStatement uses "dosage"; MedicationRequest uses "dosageInstruction".
+        dosage_list = resource.get("dosage") or resource.get("dosageInstruction") or []
         dosage = dosage_list[0] if dosage_list else {}
         dose_qty = (dosage.get("doseAndRate") or [{}])[0].get("doseQuantity") or {}
         dose = f"{dose_qty.get('value', '')} {dose_qty.get('unit', '')}".strip() or None

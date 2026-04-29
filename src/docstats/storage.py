@@ -4876,7 +4876,7 @@ class Storage(StorageBase):
             """CREATE TABLE IF NOT EXISTS ehr_connections (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                ehr_vendor          TEXT NOT NULL CHECK (ehr_vendor IN ('epic_sandbox')),
+                ehr_vendor          TEXT NOT NULL CHECK (ehr_vendor IN ('epic_sandbox', 'cerner_oauth')),
                 iss                 TEXT NOT NULL,
                 patient_fhir_id     TEXT,
                 access_token_enc    TEXT NOT NULL,

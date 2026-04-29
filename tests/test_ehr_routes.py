@@ -483,3 +483,210 @@ def test_maybe_refresh_failure_returns_stale_token_and_audits(ehr_client):
     events = storage.list_audit_events(actor_user_id=user_id, limit=10)
     actions = [e.action for e in events]
     assert "ehr.token_refresh_failed" in actions
+
+
+# ---------------------------------------------------------------------------
+# Cerner route tests (Phase 12.C)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cerner_env(monkeypatch, tmp_path):
+    from docstats.ehr import cerner
+
+    monkeypatch.setenv("EHR_CERNER_OAUTH_ENABLED", "1")
+    monkeypatch.setenv("EHR_TOKEN_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("CERNER_CLIENT_ID", "cerner-cid")
+    monkeypatch.setenv("CERNER_CLIENT_SECRET", "cerner-secret")
+    monkeypatch.setenv("CERNER_REDIRECT_URI", "https://referme.help/ehr/callback/cerner")
+    monkeypatch.setenv("CERNER_SANDBOX_TENANT_ID", "ec2458f2-1e24-41c8-b71b-0e701af7583d")
+
+    cerner._DISCOVERY_CACHE.clear()
+    cerner._DISCOVERY_CACHE[
+        "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d"
+    ] = (
+        cerner.CernerEndpoints(
+            authorize_endpoint="https://fhir-ehr-code.cerner.com/oauth2/authorize",
+            token_endpoint="https://fhir-ehr-code.cerner.com/oauth2/token",
+            fhir_base="https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
+        ),
+        9999999999.0,
+    )
+    yield
+    cerner._DISCOVERY_CACHE.clear()
+
+
+def _cerner_handler():
+    """Default Cerner mock: token endpoint + Patient.read for PAT-C1."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/oauth2/token"):
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "CAT",
+                    "refresh_token": "CRT",
+                    "expires_in": 3600,
+                    "scope": "openid fhirUser",
+                    "patient": "PAT-C1",
+                },
+            )
+        if "/Patient/PAT-C1" in str(request.url):
+            return httpx.Response(
+                200,
+                json={
+                    "resourceType": "Patient",
+                    "id": "PAT-C1",
+                    "name": [{"use": "official", "given": ["Alice"], "family": "Chen"}],
+                    "birthDate": "1980-06-15",
+                    "gender": "female",
+                },
+            )
+        return httpx.Response(404)
+
+    return handler
+
+
+@pytest.fixture
+def cerner_client(tmp_path: Path, cerner_env, monkeypatch):
+    from docstats.ehr import cerner
+
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_id = storage.create_user("c@example.com", "pw")
+    storage.record_phi_consent(
+        user_id=user_id,
+        phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+        ip_address="",
+        user_agent="",
+    )
+    user = _fake_user(user_id, "c@example.com")
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: user
+
+    real_client = httpx.Client
+    handler = _cerner_handler()
+    monkeypatch.setattr(
+        "docstats.ehr.cerner.httpx.Client",
+        lambda *a, **kw: real_client(*a, transport=httpx.MockTransport(handler), **kw),
+    )
+
+    client = TestClient(app)
+    yield client, storage, user_id
+    app.dependency_overrides.clear()
+
+
+def test_cerner_routes_404_when_disabled(tmp_path, monkeypatch):
+    monkeypatch.delenv("EHR_CERNER_OAUTH_ENABLED", raising=False)
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_id = storage.create_user("d@example.com", "pw")
+    user = _fake_user(user_id, "d@example.com")
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: user
+    client = TestClient(app)
+    resp = client.get("/ehr/connect/cerner", follow_redirects=False)
+    assert resp.status_code == 404
+    app.dependency_overrides.clear()
+
+
+def test_cerner_connect_redirects_to_cerner(cerner_client):
+    client, _, _ = cerner_client
+    resp = client.get("/ehr/connect/cerner", follow_redirects=False)
+    assert resp.status_code == 303
+    loc = resp.headers["location"]
+    assert loc.startswith("https://fhir-ehr-code.cerner.com/oauth2/authorize?")
+    assert "client_id=cerner-cid" in loc
+    assert "code_challenge=" in loc
+    assert "state=" in loc
+    # Cerner does not include aud param.
+    assert "aud=" not in loc
+
+
+def test_cerner_callback_creates_connection(cerner_client):
+    client, storage, user_id = cerner_client
+    resp1 = client.get("/ehr/connect/cerner", follow_redirects=False)
+    state = resp1.headers["location"].split("state=")[1].split("&")[0]
+    resp2 = client.get(f"/ehr/callback/cerner?code=THE_CODE&state={state}", follow_redirects=False)
+    assert resp2.status_code == 303
+    assert resp2.headers["location"] == "/ehr/import/review"
+
+    conn = storage.get_active_ehr_connection(user_id, "cerner_oauth")
+    assert conn is not None
+    assert conn.ehr_vendor == "cerner_oauth"
+    assert conn.patient_fhir_id == "PAT-C1"
+    assert conn.access_token_enc != "CAT"  # Fernet ciphertext, not plaintext
+
+    events = storage.list_audit_events(actor_user_id=user_id, limit=10)
+    assert any(e.action == "ehr.connected" for e in events)
+
+
+def test_cerner_callback_state_mismatch_redirects(cerner_client):
+    client, storage, user_id = cerner_client
+    resp = client.get("/ehr/callback/cerner?code=x&state=bogus", follow_redirects=False)
+    assert resp.status_code == 303
+    assert "ehr_error=state_mismatch" in resp.headers["location"]
+    events = storage.list_audit_events(actor_user_id=user_id, limit=10)
+    assert any(e.action == "ehr.connect_failed" for e in events)
+
+
+def test_cerner_disconnect_revokes_connection(cerner_client):
+    client, storage, user_id = cerner_client
+    storage.create_ehr_connection(
+        user_id=user_id,
+        ehr_vendor="cerner_oauth",
+        iss="https://fhir-ehr-code.cerner.com/r4/ec2458f2",
+        access_token_enc="ENC",
+        refresh_token_enc=None,
+        expires_at=datetime.now(tz=timezone.utc) + timedelta(hours=1),
+        scope="openid",
+        patient_fhir_id="PAT-C1",
+    )
+    resp = client.post("/ehr/disconnect/cerner", follow_redirects=False)
+    assert resp.status_code == 303
+    assert storage.get_active_ehr_connection(user_id, "cerner_oauth") is None
+    events = storage.list_audit_events(actor_user_id=user_id, limit=10)
+    assert any(e.action == "ehr.disconnected" for e in events)
+
+
+def test_maybe_refresh_dispatches_to_cerner(tmp_path, monkeypatch, cerner_env):
+    """_maybe_refresh uses cerner.refresh when conn.ehr_vendor == 'cerner_oauth'."""
+    from docstats.ehr import cerner as _cerner_mod
+    from docstats.ehr.crypto import encrypt_token
+    from docstats.routes import ehr as _ehr_mod
+
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_id = storage.create_user("e@example.com", "pw")
+    now = datetime.now(tz=timezone.utc)
+    storage.create_ehr_connection(
+        user_id=user_id,
+        ehr_vendor="cerner_oauth",
+        iss="https://fhir-ehr-code.cerner.com/r4/ec2458f2",
+        access_token_enc=encrypt_token("CAT"),
+        refresh_token_enc=encrypt_token("CRT"),
+        expires_at=now + timedelta(seconds=10),  # about to expire → triggers refresh
+        scope="openid",
+        patient_fhir_id="PAT-C1",
+    )
+    conn = storage.get_active_ehr_connection(user_id, "cerner_oauth")
+
+    refreshed = []
+
+    def _mock_refresh(rt: str):
+        refreshed.append(rt)
+        return _cerner_mod.TokenResponse(
+            access_token="NEW_CAT",
+            refresh_token="NEW_CRT",
+            expires_in=3600,
+            scope="openid",
+            patient_fhir_id=None,
+            id_token=None,
+        )
+
+    orig = _cerner_mod.refresh
+    _cerner_mod.refresh = _mock_refresh
+    try:
+        token = _ehr_mod._maybe_refresh(conn, storage)
+    finally:
+        _cerner_mod.refresh = orig
+
+    assert token == "NEW_CAT"
+    assert refreshed == ["CRT"]

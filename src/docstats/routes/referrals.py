@@ -270,15 +270,16 @@ async def _ehr_post_create_hook(
     import os as _os
 
     from docstats.domain.audit import record as _audit
-    from docstats.ehr import epic as _epic
-    from docstats.ehr.epic import EpicError as _EpicError
+    from docstats.ehr import epic as _epic_mod, cerner as _cerner_mod  # noqa: F401 — registers vendors
+    from docstats.ehr import registry as _reg
+    from docstats.ehr.registry import EHRError as _EHRError
     from docstats.ehr.mappers import (
         parse_fhir_conditions as _conditions,
         parse_fhir_medications as _medications,
         parse_fhir_allergies as _allergies,
         parse_fhir_document_references as _doc_refs,
     )
-    from docstats.routes.ehr import _maybe_refresh, EHR_VENDOR
+    from docstats.routes.ehr import _maybe_refresh
     from docstats.storage_files import (
         ALLOWED_MIME_TYPES,
         MAX_UPLOAD_BYTES,
@@ -288,7 +289,11 @@ async def _ehr_post_create_hook(
     )
 
     def _upload_enabled() -> bool:
-        return _os.environ.get("ATTACHMENT_UPLOAD_ENABLED", "").strip().lower() in ("1", "true", "yes")
+        return _os.environ.get("ATTACHMENT_UPLOAD_ENABLED", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
 
     def _kind_for_mime(mime: str) -> str:
         if mime.startswith("image/"):
@@ -299,9 +304,19 @@ async def _ehr_post_create_hook(
         patient = storage.get_patient(scope, patient_id)
         if patient is None or not patient.ehr_fhir_id:
             return
-        conn = storage.get_active_ehr_connection(user_id, EHR_VENDOR)
+
+        # Iterate registered vendors to find an active connection.
+        conn = None
+        for _v in _reg.list_vendors():
+            _c = storage.get_active_ehr_connection(user_id, _v)
+            if _c:
+                conn = _c
+                break
         if conn is None:
             return
+
+        _vendor = _reg.get(conn.ehr_vendor)
+        ehr_vendor: str = conn.ehr_vendor
 
         loop = asyncio.get_running_loop()
         access_token: str = await loop.run_in_executor(None, lambda: _maybe_refresh(conn, storage))
@@ -315,13 +330,13 @@ async def _ehr_post_create_hook(
 
         # Resolve the FHIR base once — needed for relative document content URLs.
         endpoints = await loop.run_in_executor(
-            None, lambda: _epic.discover(base_url_override=conn_iss)
+            None, lambda: _vendor.discover(base_url_override=conn_iss)
         )
 
         async def _fetch(fn, **kwargs):
             try:
                 return await loop.run_in_executor(None, lambda: fn(**kwargs))
-            except _EpicError:
+            except _EHRError:
                 logger.exception(
                     "EHR clinical fetch failed (%s) for referral %s", fn.__name__, referral.id
                 )
@@ -329,25 +344,25 @@ async def _ehr_post_create_hook(
 
         conds, meds, allergies, docs = await asyncio.gather(
             _fetch(
-                _epic.fetch_conditions,
+                _vendor.fetch_conditions,
                 access_token=access_token,
                 patient_fhir_id=fhir_id,
                 iss_override=conn_iss,
             ),
             _fetch(
-                _epic.fetch_medications,
+                _vendor.fetch_medications,
                 access_token=access_token,
                 patient_fhir_id=fhir_id,
                 iss_override=conn_iss,
             ),
             _fetch(
-                _epic.fetch_allergies,
+                _vendor.fetch_allergies,
                 access_token=access_token,
                 patient_fhir_id=fhir_id,
                 iss_override=conn_iss,
             ),
             _fetch(
-                _epic.fetch_document_references,
+                _vendor.fetch_document_references,
                 access_token=access_token,
                 patient_fhir_id=fhir_id,
                 iss_override=conn_iss,
@@ -412,12 +427,14 @@ async def _ehr_post_create_hook(
                         content_bytes = _base64.b64decode(entry["inline_data"])
                     elif entry.get("content_url"):
                         content_url = entry["content_url"]
+
                         def _fetch_content(url: str) -> tuple[bytes, str]:
-                            return _epic.fetch_document_content(
+                            result = _vendor.fetch_document_content(
                                 url,
                                 access_token=access_token,
                                 fhir_base=endpoints.fhir_base,
                             )
+                            return (bytes(result[0]), str(result[1]))
 
                         content_bytes, _claimed_mime = await loop.run_in_executor(
                             None, lambda: _fetch_content(content_url)
@@ -428,10 +445,8 @@ async def _ehr_post_create_hook(
                             raise ValueError("EHR document exceeds 50 MB size limit")
                         actual_mime = sniff_mime(content_bytes)
                         if actual_mime not in ALLOWED_MIME_TYPES:
-                            raise ValueError(
-                                f"EHR document MIME {actual_mime!r} not in allow-list"
-                            )
-                        # No virus scanning — Epic is a trusted clinical system.
+                            raise ValueError(f"EHR document MIME {actual_mime!r} not in allow-list")
+                        # No virus scanning — EHR is a trusted clinical system.
                         file_backend = get_file_backend()
                         placeholder = storage.add_referral_attachment(
                             scope,
@@ -495,7 +510,7 @@ async def _ehr_post_create_hook(
             entity_type="referral",
             entity_id=str(referral.id),
             metadata={
-                "ehr_vendor": EHR_VENDOR,
+                "ehr_vendor": ehr_vendor,
                 "fhir_patient_id": fhir_id,
                 "diagnoses": diag_count,
                 "medications": med_count,
@@ -508,7 +523,7 @@ async def _ehr_post_create_hook(
         try:
             sr_id = await loop.run_in_executor(
                 None,
-                lambda: _epic.write_service_request(
+                lambda: _vendor.write_service_request(
                     access_token=access_token,
                     patient_fhir_id=fhir_id,
                     referral_id=referral.id,
@@ -526,9 +541,9 @@ async def _ehr_post_create_hook(
                 actor_user_id=user_id,
                 entity_type="referral",
                 entity_id=str(referral.id),
-                metadata={"ehr_vendor": EHR_VENDOR, "service_request_id": sr_id},
+                metadata={"ehr_vendor": ehr_vendor, "service_request_id": sr_id},
             )
-        except _EpicError as sr_err:
+        except _EHRError as sr_err:
             logger.exception("EHR ServiceRequest write failed for referral %s", referral.id)
             _audit(
                 storage,
@@ -537,7 +552,7 @@ async def _ehr_post_create_hook(
                 actor_user_id=user_id,
                 entity_type="referral",
                 entity_id=str(referral.id),
-                metadata={"ehr_vendor": EHR_VENDOR, "reason": str(sr_err)},
+                metadata={"ehr_vendor": ehr_vendor, "reason": str(sr_err)},
             )
 
     except Exception:

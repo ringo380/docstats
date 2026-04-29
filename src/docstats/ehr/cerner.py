@@ -1,12 +1,16 @@
-"""Epic SMART-on-FHIR sandbox client (Phase 12.A).
+"""Cerner/Oracle Health SMART-on-FHIR sandbox client (Phase 12.C).
 
-Synchronous httpx wrapped in `request_with_retry` for consistent timeout +
-retry policy. Route layer wraps these calls in an executor when invoked from
-async handlers.
+Synchronous httpx wrapped in `request_with_retry`. Route layer wraps calls
+in an executor when invoked from async handlers.
 
 Confidential client: client_secret is sent on the token endpoint via HTTP
-Basic auth (Epic's preferred form). Public-client / PKCE-only is not used —
-referme.help is registered as confidential.
+Basic auth (same as Epic). PKCE is also used for defense in depth.
+
+Key differences from Epic:
+- FHIR base derived from ``CERNER_SANDBOX_TENANT_ID`` env var.
+- ``aud`` parameter is NOT included in the authorize URL (Cerner doesn't require it).
+- Clinical medications use ``MedicationRequest`` (not ``MedicationStatement``).
+- Token URLs are always discovered via ``.well-known/smart-configuration``.
 """
 
 from __future__ import annotations
@@ -32,20 +36,12 @@ from docstats.http_retry import (
 
 logger = logging.getLogger(__name__)
 
-# Fields we never want to surface in exception messages or logs.
 _TOKEN_FIELDS: frozenset[str] = frozenset(
     {"access_token", "refresh_token", "id_token", "code", "client_secret"}
 )
 
 
 def _redact(payload: object) -> object:
-    """Return a copy of ``payload`` with token-shaped fields redacted.
-
-    Used before formatting an Epic response into an EpicError message so a
-    500 / log line never carries token plaintext, even when the response is
-    only "missing access_token" — the rest of the body might still hold a
-    refresh_token or id_token that an attacker could pivot from.
-    """
     if isinstance(payload, dict):
         return {k: ("***" if k in _TOKEN_FIELDS else _redact(v)) for k, v in payload.items()}
     if isinstance(payload, list):
@@ -53,67 +49,68 @@ def _redact(payload: object) -> object:
     return payload
 
 
-class EpicError(EHRError):
-    """Epic SMART-on-FHIR call failed."""
+class CernerError(EHRError):
+    """Cerner/Oracle Health SMART-on-FHIR call failed."""
 
 
-# `EPIC_SANDBOX_BASE_URL` is the FHIR R4 root, not the OAuth root. SMART
-# discovery lives at `{fhir_base}/.well-known/smart-configuration` per the
-# SMART App Launch v2 spec. Epic's well-known returns `fhir_base: null` and
-# its `issuer` field is the OAuth issuer (`.../oauth2`) — neither can be
-# trusted as the FHIR base for Patient.read, so we keep the configured
-# base authoritative.
-DEFAULT_BASE_URL = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
 DISCOVERY_PATH = "/.well-known/smart-configuration"
 DISCOVERY_TTL_SECONDS = 24 * 3600
 
+_CERNER_FHIR_HOST = "https://fhir-ehr-code.cerner.com/r4"
+
 
 @dataclass(frozen=True)
-class EpicEndpoints:
+class CernerEndpoints:
     """Resolved auth/token/fhir endpoints from .well-known discovery."""
 
     authorize_endpoint: str
     token_endpoint: str
-    fhir_base: str  # FHIR R4 root for Patient/{id} reads
+    fhir_base: str
 
 
 @dataclass(frozen=True)
 class TokenResponse:
     access_token: str
     refresh_token: str | None
-    expires_in: int  # seconds
+    expires_in: int
     scope: str
     patient_fhir_id: str | None
     id_token: str | None
 
 
-# Module-level discovery cache: { base_url: (endpoints, fetched_at_unix) }
-_DISCOVERY_CACHE: dict[str, tuple[EpicEndpoints, float]] = {}
+_DISCOVERY_CACHE: dict[str, tuple[CernerEndpoints, float]] = {}
+
+
+def _tenant_id() -> str:
+    tid = os.getenv("CERNER_SANDBOX_TENANT_ID", "").strip()
+    if not tid:
+        raise CernerError("CERNER_SANDBOX_TENANT_ID not set")
+    return tid
 
 
 def _client_id() -> str:
-    cid = os.getenv("EPIC_CLIENT_ID", "").strip()
+    cid = os.getenv("CERNER_CLIENT_ID", "").strip()
     if not cid:
-        raise EpicError("EPIC_CLIENT_ID not set")
+        raise CernerError("CERNER_CLIENT_ID not set")
     return cid
 
 
 def _client_secret() -> str:
-    sec = os.getenv("EPIC_CLIENT_SECRET", "").strip()
+    sec = os.getenv("CERNER_CLIENT_SECRET", "").strip()
     if not sec:
-        raise EpicError("EPIC_CLIENT_SECRET not set")
+        raise CernerError("CERNER_CLIENT_SECRET not set")
     return sec
 
 
 def _redirect_uri() -> str:
-    uri = os.getenv("EPIC_REDIRECT_URI", "").strip()
+    uri = os.getenv("CERNER_REDIRECT_URI", "").strip()
     if not uri:
-        raise EpicError("EPIC_REDIRECT_URI not set")
+        raise CernerError("CERNER_REDIRECT_URI not set")
     return uri
 
 
-def _base_url() -> str:
-    return os.getenv("EPIC_SANDBOX_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+def _default_fhir_base() -> str:
+    return f"{_CERNER_FHIR_HOST}/{_tenant_id()}"
 
 
 def _basic_auth_header() -> str:
@@ -121,18 +118,15 @@ def _basic_auth_header() -> str:
     return "Basic " + base64.b64encode(raw).decode("ascii")
 
 
-def discover(*, force_refresh: bool = False, base_url_override: str | None = None) -> EpicEndpoints:
-    """Fetch + cache `.well-known/smart-configuration`.
+def discover(
+    *, force_refresh: bool = False, base_url_override: str | None = None
+) -> CernerEndpoints:
+    """Fetch + cache ``.well-known/smart-configuration``.
 
-    The fhir_base returned by Epic discovery points at the FHIR R4 root.
-    Cached for 24h in-process; force_refresh bypasses the cache.
-
-    ``base_url_override`` is used by EHR-launch where the FHIR base is
-    supplied dynamically by the EHR via the ``iss`` query param rather than
-    read from the configured env var. The override URL is validated against
-    an allowlist by the caller before being passed here.
+    ``base_url_override`` supports EHR-launch where the FHIR base is
+    supplied by the EHR via the ``iss`` query param. Cached 24h in-process.
     """
-    base = base_url_override.rstrip("/") if base_url_override else _base_url()
+    base = base_url_override.rstrip("/") if base_url_override else _default_fhir_base()
     if not force_refresh:
         cached = _DISCOVERY_CACHE.get(base)
         if cached and (time.time() - cached[1]) < DISCOVERY_TTL_SECONDS:
@@ -140,31 +134,25 @@ def discover(*, force_refresh: bool = False, base_url_override: str | None = Non
 
     url = f"{base}{DISCOVERY_PATH}"
     with httpx.Client(timeout=get_default_timeout()) as http:
-        resp = request_with_retry(http, "GET", url, label="Epic discovery", error_class=EpicError)
+        resp = request_with_retry(
+            http, "GET", url, label="Cerner discovery", error_class=CernerError
+        )
     payload = resp.json()
     try:
-        endpoints = EpicEndpoints(
+        endpoints = CernerEndpoints(
             authorize_endpoint=payload["authorization_endpoint"],
             token_endpoint=payload["token_endpoint"],
-            # The configured base IS the FHIR base (we discovered from it).
-            # Don't trust payload["issuer"] — Epic's `issuer` is the OAuth
-            # issuer (`.../oauth2`), not the FHIR root, and Epic returns
-            # `fhir_base: null`.  Using either for Patient.read would 404.
             fhir_base=base,
         )
     except KeyError as e:
-        raise EpicError(f"Epic discovery missing field: {e}") from e
+        raise CernerError(f"Cerner discovery missing field: {e}") from e
 
     _DISCOVERY_CACHE[base] = (endpoints, time.time())
     return endpoints
 
 
 def make_pkce_pair() -> tuple[str, str]:
-    """Return (code_verifier, code_challenge) for PKCE S256.
-
-    Used even on confidential clients — Epic supports PKCE alongside
-    client_secret and it's harmless extra defense against code interception.
-    """
+    """Return (code_verifier, code_challenge) for PKCE S256."""
     verifier = secrets.token_urlsafe(64)[:128]
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
@@ -176,7 +164,10 @@ def make_state() -> str:
 
 
 def build_authorize_url(*, state: str, code_challenge: str, scope: str) -> str:
-    """Construct the Epic authorize URL for standalone launch."""
+    """Construct the Cerner authorize URL for standalone launch.
+
+    Cerner does not require an ``aud`` parameter in the authorize request.
+    """
     endpoints = discover()
     params = {
         "response_type": "code",
@@ -186,7 +177,6 @@ def build_authorize_url(*, state: str, code_challenge: str, scope: str) -> str:
         "state": state,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        "aud": endpoints.fhir_base,
     }
     return f"{endpoints.authorize_endpoint}?{urlencode(params)}"
 
@@ -194,13 +184,7 @@ def build_authorize_url(*, state: str, code_challenge: str, scope: str) -> str:
 def build_ehr_launch_authorize_url(
     *, state: str, code_challenge: str, scope: str, launch_token: str, iss_override: str
 ) -> str:
-    """Construct the Epic authorize URL for EHR-launch (sidebar) flow.
-
-    EHR-launch passes ``iss`` + ``launch`` query params to the app's launch
-    URL. The authorize request must echo back ``launch=<token>`` and discover
-    against the caller-supplied ``iss`` rather than the configured env base.
-    The ``iss`` must already be validated against an allowlist by the caller.
-    """
+    """Construct the Cerner authorize URL for EHR-launch (sidebar) flow."""
     endpoints = discover(base_url_override=iss_override)
     params = {
         "response_type": "code",
@@ -211,7 +195,6 @@ def build_ehr_launch_authorize_url(
         "launch": launch_token,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        "aud": endpoints.fhir_base,
     }
     return f"{endpoints.authorize_endpoint}?{urlencode(params)}"
 
@@ -233,23 +216,19 @@ def exchange_code(
         "Content-Type": "application/x-www-form-urlencoded",
     }
     with httpx.Client(timeout=get_default_timeout()) as http:
-        # max_retries=0 because the authorization code is single-use:
-        # if Epic processed the first request but the response timed out,
-        # retrying replays the same code and Epic returns invalid_grant
-        # while the user has no recourse. Token-exchange must be one-shot.
         resp = request_with_retry(
             http,
             "POST",
             endpoints.token_endpoint,
-            label="Epic token exchange",
-            error_class=EpicError,
+            label="Cerner token exchange",
+            error_class=CernerError,
             max_retries=0,
             data=data,
             headers=headers,
         )
     payload = resp.json()
     if "access_token" not in payload:
-        raise EpicError(f"Epic token response missing access_token: {_redact(payload)!r}")
+        raise CernerError(f"Cerner token response missing access_token: {_redact(payload)!r}")
     return TokenResponse(
         access_token=payload["access_token"],
         refresh_token=payload.get("refresh_token"),
@@ -273,23 +252,19 @@ def refresh(refresh_token: str) -> TokenResponse:
         "Content-Type": "application/x-www-form-urlencoded",
     }
     with httpx.Client(timeout=get_default_timeout()) as http:
-        # max_retries=0: Epic uses rotating refresh tokens (offline_access) so
-        # each token is single-use. A retry after a timeout would send the
-        # already-consumed token and receive invalid_grant, logging the user
-        # out with no recourse. Refresh must be one-shot, same as code exchange.
         resp = request_with_retry(
             http,
             "POST",
             endpoints.token_endpoint,
-            label="Epic token refresh",
-            error_class=EpicError,
+            label="Cerner token refresh",
+            error_class=CernerError,
             max_retries=0,
             data=data,
             headers=headers,
         )
     payload = resp.json()
     if "access_token" not in payload:
-        raise EpicError(f"Epic refresh response missing access_token: {_redact(payload)!r}")
+        raise CernerError(f"Cerner refresh response missing access_token: {_redact(payload)!r}")
     return TokenResponse(
         access_token=payload["access_token"],
         refresh_token=payload.get("refresh_token") or refresh_token,
@@ -301,7 +276,7 @@ def refresh(refresh_token: str) -> TokenResponse:
 
 
 def fetch_patient(*, access_token: str, patient_fhir_id: str) -> dict:
-    """GET Patient/{id} from Epic's FHIR R4 endpoint."""
+    """GET Patient/{id} from Cerner's FHIR R4 endpoint."""
     endpoints = discover()
     url = f"{endpoints.fhir_base.rstrip('/')}/Patient/{patient_fhir_id}"
     headers = {
@@ -310,7 +285,7 @@ def fetch_patient(*, access_token: str, patient_fhir_id: str) -> dict:
     }
     with httpx.Client(timeout=get_default_timeout()) as http:
         resp = request_with_retry(
-            http, "GET", url, label="Epic Patient.read", error_class=EpicError, headers=headers
+            http, "GET", url, label="Cerner Patient.read", error_class=CernerError, headers=headers
         )
     return resp.json()  # type: ignore[no-any-return]
 
@@ -323,11 +298,6 @@ def _fetch_fhir_bundle_entries(
     label: str,
     iss_override: str | None = None,
 ) -> list[dict]:
-    """GET a FHIR search bundle and return the resource list from entries.
-
-    Returns an empty list when the bundle has no entries. Raises EpicError on
-    network/HTTP failure. Callers are responsible for per-entry parsing.
-    """
     endpoints = discover(base_url_override=iss_override)
     query = urlencode(params)
     url = f"{endpoints.fhir_base.rstrip('/')}/{resource_type}?{query}"
@@ -337,7 +307,7 @@ def _fetch_fhir_bundle_entries(
     }
     with httpx.Client(timeout=get_default_timeout()) as http:
         resp = request_with_retry(
-            http, "GET", url, label=label, error_class=EpicError, headers=headers
+            http, "GET", url, label=label, error_class=CernerError, headers=headers
         )
     bundle = resp.json()
     return [entry["resource"] for entry in bundle.get("entry") or [] if "resource" in entry]
@@ -346,12 +316,11 @@ def _fetch_fhir_bundle_entries(
 def fetch_conditions(
     *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
 ) -> list[dict]:
-    """GET active Condition resources for a patient."""
     return _fetch_fhir_bundle_entries(
         access_token=access_token,
         resource_type="Condition",
         params={"patient": patient_fhir_id, "clinical-status": "active"},
-        label="Epic Condition.search",
+        label="Cerner Condition.search",
         iss_override=iss_override,
     )
 
@@ -359,12 +328,15 @@ def fetch_conditions(
 def fetch_medications(
     *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
 ) -> list[dict]:
-    """GET active MedicationStatement resources for a patient."""
+    """GET active MedicationRequest resources for a patient.
+
+    Cerner uses MedicationRequest (not MedicationStatement like Epic).
+    """
     return _fetch_fhir_bundle_entries(
         access_token=access_token,
-        resource_type="MedicationStatement",
+        resource_type="MedicationRequest",
         params={"patient": patient_fhir_id, "status": "active"},
-        label="Epic MedicationStatement.search",
+        label="Cerner MedicationRequest.search",
         iss_override=iss_override,
     )
 
@@ -372,12 +344,11 @@ def fetch_medications(
 def fetch_allergies(
     *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
 ) -> list[dict]:
-    """GET AllergyIntolerance resources for a patient."""
     return _fetch_fhir_bundle_entries(
         access_token=access_token,
         resource_type="AllergyIntolerance",
         params={"patient": patient_fhir_id},
-        label="Epic AllergyIntolerance.search",
+        label="Cerner AllergyIntolerance.search",
         iss_override=iss_override,
     )
 
@@ -385,31 +356,23 @@ def fetch_allergies(
 def fetch_document_references(
     *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
 ) -> list[dict]:
-    """GET current DocumentReference resources for a patient."""
     return _fetch_fhir_bundle_entries(
         access_token=access_token,
         resource_type="DocumentReference",
         params={"patient": patient_fhir_id, "status": "current"},
-        label="Epic DocumentReference.search",
+        label="Cerner DocumentReference.search",
         iss_override=iss_override,
     )
 
 
 def fetch_document_content(url: str, *, access_token: str, fhir_base: str) -> tuple[bytes, str]:
-    """Download a DocumentReference attachment from Epic.
+    """Download a DocumentReference attachment from Cerner.
 
-    ``url`` may be a relative path (e.g. ``Binary/abc123``) or absolute.
     Relative paths are resolved against ``fhir_base``.
-
-    Returns ``(content_bytes, mime_type)`` where mime_type comes from the
-    Content-Type response header (defaulting to application/octet-stream).
-
-    ``max_retries=0`` — document URLs are not guaranteed idempotent and a
-    double-fetch could return stale bytes. Caller soft-fails on EpicError.
+    Returns ``(content_bytes, mime_type)``.
     """
     if not url.startswith(("http://", "https://")):
         url = f"{fhir_base.rstrip('/')}/{url.lstrip('/')}"
-
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/pdf, application/fhir+json, */*",
@@ -419,8 +382,8 @@ def fetch_document_content(url: str, *, access_token: str, fhir_base: str) -> tu
             http,
             "GET",
             url,
-            label="Epic DocumentReference content",
-            error_class=EpicError,
+            label="Cerner DocumentReference content",
+            error_class=CernerError,
             max_retries=0,
             headers=headers,
         )
@@ -438,11 +401,7 @@ def write_service_request(
     requesting_provider_name: str | None,
     iss_override: str | None = None,
 ) -> str:
-    """POST a minimal FHIR R4 ServiceRequest to Epic. Returns the resource id.
-
-    Uses ``identifier`` with a docstats-namespaced system so the resource can
-    be looked up for idempotency in future phases. Raises EpicError on failure.
-    """
+    """POST a minimal FHIR R4 ServiceRequest to Cerner. Returns the resource id."""
     import json as _json
 
     endpoints = discover(base_url_override=iss_override)
@@ -473,14 +432,12 @@ def write_service_request(
         "Content-Type": "application/fhir+json",
     }
     with httpx.Client(timeout=get_default_timeout()) as http:
-        # max_retries=0: if Epic processed the POST but we timed out, a retry
-        # creates a duplicate ServiceRequest. Caller soft-fails on EpicError.
         resp = request_with_retry(
             http,
             "POST",
             url,
-            label="Epic ServiceRequest.write",
-            error_class=EpicError,
+            label="Cerner ServiceRequest.write",
+            error_class=CernerError,
             max_retries=0,
             content=_json.dumps(resource).encode(),
             headers=headers,
@@ -488,12 +445,11 @@ def write_service_request(
     body = resp.json()
     resource_id: str | None = body.get("id")
     if not resource_id:
-        # Try Location header as fallback (Epic may return it instead of body id).
         location = resp.headers.get("Location", "")
         resource_id = location.rstrip("/").split("/")[-1] if location else None
     if not resource_id:
-        raise EpicError(f"Epic ServiceRequest write returned no id: {_redact(body)!r}")
+        raise CernerError(f"Cerner ServiceRequest write returned no id: {_redact(body)!r}")
     return resource_id
 
 
-_ehr_registry.register("epic_sandbox", sys.modules[__name__])
+_ehr_registry.register("cerner_oauth", sys.modules[__name__])

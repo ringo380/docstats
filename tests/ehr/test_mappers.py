@@ -235,7 +235,7 @@ def test_medications_missing_dosage_returns_none_fields():
 
 def test_medications_wrong_resource_type_skipped():
     resources = [
-        {"resourceType": "MedicationRequest", "medicationCodeableConcept": {"text": "X"}},
+        {"resourceType": "Observation", "medicationCodeableConcept": {"text": "X"}},
         {
             "resourceType": "MedicationStatement",
             "medicationCodeableConcept": {"text": "Aspirin"},
@@ -243,6 +243,32 @@ def test_medications_wrong_resource_type_skipped():
     ]
     out = parse_fhir_medications(resources)
     assert len(out) == 1
+
+
+def test_medications_medication_request_accepted():
+    """Cerner-style MedicationRequest is parsed identically to MedicationStatement."""
+    resources = [
+        {
+            "resourceType": "MedicationRequest",
+            "medicationCodeableConcept": {
+                "text": "Metformin",
+                "coding": [{"display": "Metformin 500mg", "code": "860975"}],
+            },
+            "dosageInstruction": [
+                {
+                    "doseAndRate": [{"doseQuantity": {"value": 500, "unit": "mg"}}],
+                    "route": {"text": "Oral"},
+                    "timing": {"repeat": {"frequency": 2, "period": 1, "periodUnit": "d"}},
+                }
+            ],
+        }
+    ]
+    out = parse_fhir_medications(resources)
+    assert len(out) == 1
+    assert out[0]["name"] == "Metformin"
+    assert out[0]["dose"] == "500 mg"
+    assert out[0]["route"] == "Oral"
+    assert out[0]["frequency"] == "2 per 1d"
 
 
 def test_medications_no_name_skipped():
