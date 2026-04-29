@@ -392,6 +392,41 @@ def fetch_document_references(
     )
 
 
+def fetch_document_content(
+    url: str, *, access_token: str, fhir_base: str
+) -> tuple[bytes, str]:
+    """Download a DocumentReference attachment from Epic.
+
+    ``url`` may be a relative path (e.g. ``Binary/abc123``) or absolute.
+    Relative paths are resolved against ``fhir_base``.
+
+    Returns ``(content_bytes, mime_type)`` where mime_type comes from the
+    Content-Type response header (defaulting to application/octet-stream).
+
+    ``max_retries=0`` — document URLs are not guaranteed idempotent and a
+    double-fetch could return stale bytes. Caller soft-fails on EpicError.
+    """
+    if not url.startswith(("http://", "https://")):
+        url = f"{fhir_base.rstrip('/')}/{url.lstrip('/')}"
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/pdf, application/fhir+json, */*",
+    }
+    with httpx.Client(timeout=get_default_timeout()) as http:
+        resp = request_with_retry(
+            http,
+            "GET",
+            url,
+            label="Epic DocumentReference content",
+            error_class=EpicError,
+            max_retries=0,
+            headers=headers,
+        )
+    mime = resp.headers.get("content-type", "application/octet-stream").split(";")[0].strip()
+    return resp.content, mime
+
+
 def write_service_request(
     *,
     access_token: str,

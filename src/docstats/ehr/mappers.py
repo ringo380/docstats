@@ -215,9 +215,16 @@ def parse_fhir_allergies(resources: list[dict[str, Any]]) -> list[dict[str, Any]
 def parse_fhir_document_references(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Map FHIR R4 DocumentReference resources to add_referral_attachment kwargs.
 
-    Returns a list of dicts with keys: label, date_of_service.
-    Content download is deferred to a later phase — checklist_only is always
-    True here (records the document exists but doesn't embed it).
+    Returns a list of dicts with keys:
+      label, date_of_service, content_url, content_type, inline_data.
+
+    content_url — the attachment.url from content[0] (may be a relative path
+    like ``Binary/abc123``; resolution against the FHIR base is the caller's job).
+    content_type — MIME from attachment.contentType (informational; route layer
+    sniffs actual bytes before trusting this).
+    inline_data — base64-encoded bytes from attachment.data (some EHRs embed
+    content directly instead of a URL).
+
     Resources with wrong resourceType are skipped.
     """
     out: list[dict[str, Any]] = []
@@ -230,5 +237,20 @@ def parse_fhir_document_references(resources: list[dict[str, Any]]) -> list[dict
         )
         label = label or "Imported document"
         date_of_service: str | None = (resource.get("date") or "")[:10] or None
-        out.append({"label": label, "date_of_service": date_of_service})
+
+        content_list = resource.get("content") or []
+        attachment = (content_list[0] or {}).get("attachment") or {} if content_list else {}
+        content_url: str | None = attachment.get("url") or None
+        content_type: str | None = attachment.get("contentType") or None
+        inline_data: str | None = attachment.get("data") or None
+
+        out.append(
+            {
+                "label": label,
+                "date_of_service": date_of_service,
+                "content_url": content_url,
+                "content_type": content_type,
+                "inline_data": inline_data,
+            }
+        )
     return out

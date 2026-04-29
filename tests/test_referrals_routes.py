@@ -786,3 +786,294 @@ def test_list_referrals_urgency_filter_at_storage(solo_client):
     assert len(routine_only) == 1
     urgent_only = storage.list_referrals(scope, urgency="urgent")
     assert len(urgent_only) == 1
+
+
+# ---------------------------------------------------------------------------
+# _ehr_post_create_hook — clinical import + ServiceRequest write-back
+# ---------------------------------------------------------------------------
+
+
+def _ehr_fixture(tmp_path: Path, monkeypatch, *, with_ehr_fhir_id: bool = True):
+    """Return (client, storage, user_id) with Epic mocked for clinical imports."""
+    from cryptography.fernet import Fernet
+    from docstats.ehr.crypto import encrypt_token
+
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_id = storage.create_user("ehr@example.com", "pw")
+    storage.record_phi_consent(
+        user_id=user_id,
+        phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+        ip_address="",
+        user_agent="",
+    )
+
+    monkeypatch.setenv("EHR_EPIC_SANDBOX_ENABLED", "1")
+    monkeypatch.setenv("EHR_TOKEN_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("EPIC_CLIENT_ID", "fake")
+    monkeypatch.setenv("EPIC_CLIENT_SECRET", "fake")
+    monkeypatch.setenv("EPIC_REDIRECT_URI", "https://referme.help/ehr/callback/epic")
+    monkeypatch.setenv("EPIC_SANDBOX_BASE_URL", "https://fake-epic.test")
+
+    from docstats.ehr import epic
+    epic._DISCOVERY_CACHE.clear()
+    epic._DISCOVERY_CACHE["https://fake-epic.test"] = (
+        epic.EpicEndpoints(
+            authorize_endpoint="https://fake-epic.test/oauth2/authorize",
+            token_endpoint="https://fake-epic.test/oauth2/token",
+            fhir_base="https://fake-epic.test/api/FHIR/R4",
+        ),
+        9999999999.0,
+    )
+
+    # Seed EHR connection.
+    storage.create_ehr_connection(
+        user_id=user_id,
+        ehr_vendor="epic_sandbox",
+        iss="https://fake-epic.test",
+        access_token_enc=encrypt_token("ACCESS-TOKEN"),
+        refresh_token_enc=None,
+        expires_at=datetime.now(tz=timezone.utc) + timedelta(hours=1),
+        scope="openid",
+        patient_fhir_id="PAT-99",
+    )
+
+    scope = Scope(user_id=user_id)
+    patient = storage.create_patient(
+        scope,
+        first_name="Sam",
+        last_name="Carter",
+        date_of_birth="1975-01-02",
+        created_by_user_id=user_id,
+        ehr_fhir_id="PAT-99" if with_ehr_fhir_id else None,
+    )
+
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _fake_user(user_id, "ehr@example.com")
+
+    return TestClient(app), storage, user_id, patient
+
+
+def _mock_clinical_resources(monkeypatch):
+    """Make all Epic fetch_* calls return minimal FHIR bundles."""
+    import docstats.ehr.epic as _epic
+
+    CONDITION = {
+        "resourceType": "Condition",
+        "code": {
+            "coding": [
+                {
+                    "system": "http://hl7.org/fhir/sid/icd-10-cm",
+                    "code": "E11.9",
+                    "display": "Type 2 DM",
+                }
+            ]
+        },
+    }
+    MEDICATION = {
+        "resourceType": "MedicationStatement",
+        "medicationCodeableConcept": {"text": "Metformin 500mg"},
+    }
+    ALLERGY = {
+        "resourceType": "AllergyIntolerance",
+        "code": {"text": "Penicillin"},
+        "reaction": [{"manifestation": [{"text": "Hives"}], "severity": "moderate"}],
+    }
+
+    monkeypatch.setattr(_epic, "fetch_conditions", lambda **_kw: [CONDITION])
+    monkeypatch.setattr(_epic, "fetch_medications", lambda **_kw: [MEDICATION])
+    monkeypatch.setattr(_epic, "fetch_allergies", lambda **_kw: [ALLERGY])
+    monkeypatch.setattr(_epic, "fetch_document_references", lambda **_kw: [])
+    monkeypatch.setattr(
+        _epic,
+        "write_service_request",
+        lambda **_kw: "SR-001",
+    )
+
+
+def _post_referral(client, patient_id: int):
+    return client.post(
+        "/referrals",
+        data={
+            "patient_id": str(patient_id),
+            "reason": "EHR test reason",
+            "urgency": "routine",
+            "specialty_desc": "Cardiology",
+            "receiving_organization_name": "Heart Clinic",
+        },
+        follow_redirects=False,
+    )
+
+
+def test_ehr_hook_inserts_clinical_data_on_referral_create(tmp_path, monkeypatch):
+    """Patient with ehr_fhir_id + active connection → diagnoses/meds/allergies inserted."""
+    client, storage, user_id, patient = _ehr_fixture(tmp_path, monkeypatch)
+    _mock_clinical_resources(monkeypatch)
+    try:
+        resp = _post_referral(client, patient.id)
+        assert resp.status_code == 303
+        location = resp.headers["location"]
+        referral_id = int(location.split("/referrals/")[1])
+
+        scope = Scope(user_id=user_id)
+        diags = storage.list_referral_diagnoses(scope, referral_id)
+        assert any(d.icd10_code == "E11.9" for d in diags)
+
+        meds = storage.list_referral_medications(scope, referral_id)
+        assert any("Metformin" in (m.name or "") for m in meds)
+
+        allergies = storage.list_referral_allergies(scope, referral_id)
+        assert any(a.substance == "Penicillin" for a in allergies)
+    finally:
+        app.dependency_overrides.clear()
+        from docstats.ehr import epic
+        epic._DISCOVERY_CACHE.clear()
+
+
+def test_ehr_hook_skipped_when_no_ehr_fhir_id(tmp_path, monkeypatch):
+    """Patient without ehr_fhir_id → hook exits early, no EHR fetch attempted."""
+    import docstats.ehr.epic as _epic
+
+    client, storage, user_id, patient = _ehr_fixture(tmp_path, monkeypatch, with_ehr_fhir_id=False)
+    fetch_called = {"n": 0}
+
+    def _fail(**_kw):
+        fetch_called["n"] += 1
+        return []
+
+    monkeypatch.setattr(_epic, "fetch_conditions", _fail)
+    monkeypatch.setattr(_epic, "fetch_medications", _fail)
+    monkeypatch.setattr(_epic, "fetch_allergies", _fail)
+    monkeypatch.setattr(_epic, "fetch_document_references", _fail)
+    monkeypatch.setattr(_epic, "write_service_request", lambda **_kw: "SR-X")
+    try:
+        resp = _post_referral(client, patient.id)
+        assert resp.status_code == 303
+        assert fetch_called["n"] == 0
+    finally:
+        app.dependency_overrides.clear()
+        _epic._DISCOVERY_CACHE.clear()
+
+
+def test_ehr_hook_soft_fails_on_epic_error(tmp_path, monkeypatch):
+    """EpicError on clinical fetch → referral still created, no exception surfaced."""
+    from docstats.ehr.epic import EpicError
+    import docstats.ehr.epic as _epic
+
+    client, storage, user_id, patient = _ehr_fixture(tmp_path, monkeypatch)
+
+    def _raise(**_kw):
+        raise EpicError("network error")
+
+    monkeypatch.setattr(_epic, "fetch_conditions", _raise)
+    monkeypatch.setattr(_epic, "fetch_medications", _raise)
+    monkeypatch.setattr(_epic, "fetch_allergies", _raise)
+    monkeypatch.setattr(_epic, "fetch_document_references", _raise)
+    monkeypatch.setattr(_epic, "write_service_request", lambda **_kw: "SR-OK")
+    try:
+        resp = _post_referral(client, patient.id)
+        # Referral creation must succeed even if hook fails.
+        assert resp.status_code == 303
+        assert "/referrals/" in resp.headers["location"]
+    finally:
+        app.dependency_overrides.clear()
+        _epic._DISCOVERY_CACHE.clear()
+
+
+def test_ehr_hook_service_request_sets_id_on_referral(tmp_path, monkeypatch):
+    """Successful ServiceRequest write → ehr_service_request_id set on referral."""
+    client, storage, user_id, patient = _ehr_fixture(tmp_path, monkeypatch)
+    _mock_clinical_resources(monkeypatch)
+    try:
+        resp = _post_referral(client, patient.id)
+        assert resp.status_code == 303
+        referral_id = int(resp.headers["location"].split("/referrals/")[1])
+        scope = Scope(user_id=user_id)
+        referral = storage.get_referral(scope, referral_id)
+        assert referral is not None
+        assert referral.ehr_service_request_id == "SR-001"
+    finally:
+        app.dependency_overrides.clear()
+        from docstats.ehr import epic
+        epic._DISCOVERY_CACHE.clear()
+
+
+def test_ehr_hook_service_request_failure_audits_and_referral_survives(tmp_path, monkeypatch):
+    """ServiceRequest write failure → referral created; audit ehr.service_request_write_failed."""
+    from docstats.ehr.epic import EpicError
+    import docstats.ehr.epic as _epic
+
+    client, storage, user_id, patient = _ehr_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(_epic, "fetch_conditions", lambda **_kw: [])
+    monkeypatch.setattr(_epic, "fetch_medications", lambda **_kw: [])
+    monkeypatch.setattr(_epic, "fetch_allergies", lambda **_kw: [])
+    monkeypatch.setattr(_epic, "fetch_document_references", lambda **_kw: [])
+
+    def _fail_sr(**_kw):
+        raise EpicError("write_failed")
+
+    monkeypatch.setattr(_epic, "write_service_request", _fail_sr)
+    try:
+        resp = _post_referral(client, patient.id)
+        assert resp.status_code == 303
+        referral_id = int(resp.headers["location"].split("/referrals/")[1])
+        scope = Scope(user_id=user_id)
+        referral = storage.get_referral(scope, referral_id)
+        assert referral is not None
+        assert referral.ehr_service_request_id is None
+        events = storage.list_audit_events(actor_user_id=user_id, limit=20)
+        assert any(e.action == "ehr.service_request_write_failed" for e in events)
+    finally:
+        app.dependency_overrides.clear()
+        _epic._DISCOVERY_CACHE.clear()
+
+
+def test_ehr_hook_doc_content_upload_stores_storage_ref(tmp_path, monkeypatch):
+    """With ATTACHMENT_UPLOAD_ENABLED, doc content bytes are stored via file backend."""
+    import base64
+    import docstats.ehr.epic as _epic
+    import docstats.storage_files.mime as _mime_mod
+    from docstats.storage_files.factory import reset_memory_singleton_for_tests
+
+    # A minimal valid PDF magic bytes.
+    pdf_bytes = b"%PDF-1.4 fake-pdf-content"
+
+    DOC_REF = {
+        "resourceType": "DocumentReference",
+        "type": {"text": "Progress Note"},
+        "date": "2024-03-15T10:00:00Z",
+        "content": [
+            {
+                "attachment": {
+                    "data": base64.b64encode(pdf_bytes).decode(),
+                    "contentType": "application/pdf",
+                }
+            }
+        ],
+    }
+
+    client, storage, user_id, patient = _ehr_fixture(tmp_path, monkeypatch)
+    monkeypatch.setenv("ATTACHMENT_UPLOAD_ENABLED", "1")
+    monkeypatch.setenv("ATTACHMENT_STORAGE_BACKEND", "memory")
+    monkeypatch.setattr(_epic, "fetch_conditions", lambda **_kw: [])
+    monkeypatch.setattr(_epic, "fetch_medications", lambda **_kw: [])
+    monkeypatch.setattr(_epic, "fetch_allergies", lambda **_kw: [])
+    monkeypatch.setattr(_epic, "fetch_document_references", lambda **_kw: [DOC_REF])
+    monkeypatch.setattr(_epic, "write_service_request", lambda **_kw: "SR-DOC")
+
+    # Bypass real magic-byte check for our fake PDF.
+    monkeypatch.setattr(_mime_mod, "sniff_mime", lambda _b: "application/pdf")
+
+    reset_memory_singleton_for_tests()
+    try:
+        resp = _post_referral(client, patient.id)
+        assert resp.status_code == 303
+        referral_id = int(resp.headers["location"].split("/referrals/")[1])
+        scope = Scope(user_id=user_id)
+        attachments = storage.list_referral_attachments(scope, referral_id)
+        uploaded = [a for a in attachments if a.storage_ref is not None]
+        assert len(uploaded) >= 1
+        assert uploaded[0].checklist_only is False
+    finally:
+        app.dependency_overrides.clear()
+        _epic._DISCOVERY_CACHE.clear()
+        reset_memory_singleton_for_tests()
