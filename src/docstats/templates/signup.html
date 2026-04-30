@@ -20,7 +20,7 @@
       <div>
         <label for="password">
           Password
-          <span style="color:var(--text-dim); font-size:0.75rem; font-weight:400;">(min. 8 characters)</span>
+          <span class="auth-hint">(min. 8 characters)</span>
         </label>
         <input type="password" id="password" name="password" required autocomplete="new-password" minlength="8" placeholder="••••••••">
       </div>
@@ -28,7 +28,7 @@
         <label for="confirm_password">Confirm password</label>
         <input type="password" id="confirm_password" name="confirm_password" required autocomplete="new-password" placeholder="••••••••">
       </div>
-      <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center; padding:10px; margin-top:0.25rem;">Create Account</button>
+      <button type="submit" class="btn btn-primary auth-submit-btn">Create Account</button>
     </form>
 
     {% if github_enabled %}

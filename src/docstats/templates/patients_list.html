@@ -12,10 +12,9 @@
   </div>
 </div>
 
-<form method="get" action="/patients" style="margin-bottom: 16px;">
+<form method="get" action="/patients" class="search-form">
   <input type="text" name="search" value="{{ search }}" placeholder="Search by name or MRN..."
-         autocomplete="off" maxlength="100"
-         style="width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.95rem; background: var(--bg-card); color: var(--text);">
+         autocomplete="off" maxlength="100" class="search-input">
 </form>
 
 {% if patients %}
