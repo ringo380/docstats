@@ -12,10 +12,9 @@
   </div>
 </div>
 
-<form method="get" action="/patients" style="margin-bottom: 16px;">
+<form method="get" action="/patients" class="search-form">
   <input type="text" name="search" value="{{ search }}" placeholder="Search by name or MRN..."
-         autocomplete="off" maxlength="100"
-         style="width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.95rem; background: var(--card-bg); color: var(--text);">
+         autocomplete="off" maxlength="100" class="search-input">
 </form>
 
 {% if patients %}
@@ -43,7 +42,7 @@
   {% endfor %}
 {% else %}
   <div class="empty-state">
-    <div style="font-size: 2.5rem;">🧑‍⚕️</div>
+    <div class="empty-state-icon"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
     {% if search %}
       <p>No patients match "{{ search }}".</p>
       <p><a href="/patients">Clear search</a></p>

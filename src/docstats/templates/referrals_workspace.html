@@ -78,7 +78,7 @@
   </div>
 {% else %}
   <div class="empty-state">
-    <div style="font-size: 2.5rem;">📋</div>
+    <div class="empty-state-icon"><svg viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg></div>
     {% if filters.status or filters.urgency or filters.patient_id or filters.assigned_to_user_id or filters.assignee %}
       <p>No referrals match the current filters.</p>
       <p><a href="/referrals">Clear filters</a></p>
