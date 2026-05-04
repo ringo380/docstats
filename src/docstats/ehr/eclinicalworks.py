@@ -87,6 +87,11 @@ class TokenResponse:
 _DISCOVERY_CACHE: dict[str, tuple[ECWEndpoints, float]] = {}
 
 
+def reset_discovery_cache() -> None:
+    """Clear the in-process discovery cache (test hook + post-rotation refresh)."""
+    _DISCOVERY_CACHE.clear()
+
+
 def _client_id() -> str:
     cid = os.getenv("ECW_CLIENT_ID", "").strip()
     if not cid:
@@ -255,9 +260,14 @@ def exchange_code(
     )
 
 
-def refresh(refresh_token: str) -> TokenResponse:
-    """Exchange a refresh_token for a new access_token using HTTP Basic auth."""
-    endpoints = discover()
+def refresh(refresh_token: str, *, iss_override: str | None = None) -> TokenResponse:
+    """Exchange a refresh_token for a new access_token using HTTP Basic auth.
+
+    ``iss_override`` is required for multi-tenant correctness: eCW practices
+    each have their own FHIR base, so refresh must hit the same tenant the
+    connection was minted against. Defaults to the configured sandbox base.
+    """
+    endpoints = discover(base_url_override=iss_override)
     data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -291,9 +301,15 @@ def refresh(refresh_token: str) -> TokenResponse:
     )
 
 
-def fetch_patient(*, access_token: str, patient_fhir_id: str) -> dict:
-    """GET Patient/{id} from eCW's FHIR R4 endpoint."""
-    endpoints = discover()
+def fetch_patient(
+    *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
+) -> dict:
+    """GET Patient/{id} from eCW's FHIR R4 endpoint.
+
+    ``iss_override`` is required for multi-tenant correctness — the connection
+    stores its tenant FHIR base on ``EHRConnection.iss``.
+    """
+    endpoints = discover(base_url_override=iss_override)
     url = f"{endpoints.fhir_base.rstrip('/')}/Patient/{patient_fhir_id}"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -437,7 +453,9 @@ def write_service_request(
         ],
     }
     if specialty_desc:
-        resource["specialty"] = [{"text": specialty_desc}]
+        # FHIR R4 ServiceRequest uses `performerType` (single CodeableConcept),
+        # not `specialty`.
+        resource["performerType"] = {"text": specialty_desc}
     if reason:
         resource["reasonCode"] = [{"text": reason}]
     if requesting_provider_name:

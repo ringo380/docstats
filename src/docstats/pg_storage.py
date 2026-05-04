@@ -1523,6 +1523,18 @@ class PostgresStorage(StorageBase):
         )
         return self._row_to_ehr_connection(result.data[0]) if result.data else None
 
+    def list_active_ehr_connections(self, user_id: int) -> list[EHRConnection]:
+        result = (
+            self._t("ehr_connections")
+            .select("*")
+            .eq("user_id", user_id)
+            .is_("revoked_at", None)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .execute()
+        )
+        return [self._row_to_ehr_connection(r) for r in (result.data or [])]
+
     def update_ehr_connection_tokens(
         self,
         connection_id: int,

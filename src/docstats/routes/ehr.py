@@ -205,7 +205,10 @@ def _maybe_refresh(conn: EHRConnection, storage: StorageBase) -> str:
 
     try:
         refresh_token = decrypt_token(conn.refresh_token_enc)
-        token = vendor_mod.refresh(refresh_token)
+        # Pass iss_override so multi-tenant vendors (eCW; future Epic/Cerner
+        # multi-tenant) refresh against the same FHIR base the connection was
+        # minted against, not the configured default.
+        token = vendor_mod.refresh(refresh_token, iss_override=conn.iss)
         new_access_enc = encrypt_token(token.access_token)
         new_refresh_enc = encrypt_token(token.refresh_token) if token.refresh_token else None
         new_expires_at = now + timedelta(seconds=token.expires_in)
@@ -241,16 +244,16 @@ async def _load_pending_patient(
 ) -> tuple[EHRConnection, ImportedPatient] | None:
     """Re-fetch the FHIR Patient associated with the user's most recent active connection.
 
-    Iterates all registered vendors to find an active connection with a
-    patient_fhir_id. Returns ``(connection, imported)`` on success or None.
-    Never raises.
+    Picks the most recently created active connection that has a
+    ``patient_fhir_id`` — using registry iteration order picks an arbitrary
+    vendor in multi-vendor accounts and can associate Patient PHI with the
+    wrong EHR connection. Returns ``(connection, imported)`` on success or
+    None. Never raises.
     """
-    conn: EHRConnection | None = None
-    for vendor in _registry.list_vendors():
-        c = storage.get_active_ehr_connection(user_id, vendor)
-        if c and c.patient_fhir_id:
-            conn = c
-            break
+    conn: EHRConnection | None = next(
+        (c for c in storage.list_active_ehr_connections(user_id) if c.patient_fhir_id),
+        None,
+    )
 
     if conn is None:
         return None
@@ -265,6 +268,7 @@ async def _load_pending_patient(
         return None
 
     fhir_id = conn.patient_fhir_id
+    iss = conn.iss
     try:
         vendor_mod = _registry.get(conn.ehr_vendor)
     except ValueError:
@@ -273,7 +277,9 @@ async def _load_pending_patient(
     try:
         patient_resource = await loop.run_in_executor(
             None,
-            lambda: vendor_mod.fetch_patient(access_token=access_token, patient_fhir_id=fhir_id),
+            lambda: vendor_mod.fetch_patient(
+                access_token=access_token, patient_fhir_id=fhir_id, iss_override=iss
+            ),
         )
         imported = parse_fhir_patient(patient_resource)
     except (EHRError, ValueError):

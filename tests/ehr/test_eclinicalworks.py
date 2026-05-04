@@ -275,6 +275,76 @@ def test_fetch_patient_uses_bearer(monkeypatch, ecw_env):
     assert res["resourceType"] == "Patient"
 
 
+def test_fetch_patient_iss_override_routes_to_tenant_base(monkeypatch, ecw_env):
+    """Multi-tenant: fetch_patient hits the FHIR base supplied by iss_override,
+    not the env default. eCW practices each have their own FHIR base."""
+    captured: dict[str, str | None] = {"base": None}
+
+    def fake_discover(*, base_url_override=None, force_refresh=False):
+        captured["base"] = base_url_override
+        return ecw.ECWEndpoints(
+            authorize_endpoint="https://t.example/authorize",
+            token_endpoint="https://t.example/token",
+            fhir_base=(base_url_override or "https://default.example").rstrip("/"),
+        )
+
+    monkeypatch.setattr("docstats.ehr.eclinicalworks.discover", fake_discover)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url).startswith("https://practice-7.example")
+        return httpx.Response(200, json={"resourceType": "Patient", "id": "P"})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        "docstats.ehr.eclinicalworks.httpx.Client",
+        lambda *a, **kw: real_client(*a, transport=_mock_transport(handler), **kw),
+    )
+
+    ecw.fetch_patient(
+        access_token="T", patient_fhir_id="P", iss_override="https://practice-7.example"
+    )
+    assert captured["base"] == "https://practice-7.example"
+
+
+def test_refresh_iss_override_routes_to_tenant_base(monkeypatch, ecw_env):
+    """Refresh must hit the same tenant the connection was minted against."""
+    captured: dict[str, str | None] = {"base": None}
+
+    def fake_discover(*, base_url_override=None, force_refresh=False):
+        captured["base"] = base_url_override
+        return ecw.ECWEndpoints(
+            authorize_endpoint="https://t.example/authorize",
+            token_endpoint="https://practice-9.example/token",
+            fhir_base=base_url_override or "https://default.example",
+        )
+
+    monkeypatch.setattr("docstats.ehr.eclinicalworks.discover", fake_discover)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://practice-9.example/token"
+        return httpx.Response(
+            200,
+            json={"access_token": "NEW_AT", "refresh_token": "NEW_RT", "expires_in": 3600},
+        )
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        "docstats.ehr.eclinicalworks.httpx.Client",
+        lambda *a, **kw: real_client(*a, transport=_mock_transport(handler), **kw),
+    )
+
+    tok = ecw.refresh("OLD_RT", iss_override="https://practice-9.example")
+    assert tok.access_token == "NEW_AT"
+    assert captured["base"] == "https://practice-9.example"
+
+
+def test_reset_discovery_cache_clears_in_process_state(monkeypatch, ecw_env):
+    ecw._DISCOVERY_CACHE["https://x.example"] = (_fake_endpoints(), 999_999_999.0)
+    assert ecw._DISCOVERY_CACHE
+    ecw.reset_discovery_cache()
+    assert ecw._DISCOVERY_CACHE == {}
+
+
 def test_fetch_medications_uses_medication_request(monkeypatch, ecw_env):
     """eCW uses MedicationRequest like Cerner — wrong resource → 404."""
     monkeypatch.setattr("docstats.ehr.eclinicalworks.discover", lambda **_: _fake_endpoints())
@@ -356,6 +426,10 @@ def test_write_service_request_returns_id_from_body(monkeypatch, ecw_env):
             i["system"] == "urn:docstats:referral" and i["value"] == "42"
             for i in body["identifier"]
         )
+        # FHIR R4 ServiceRequest uses `performerType` (single CodeableConcept),
+        # NOT `specialty` (which doesn't exist on the resource).
+        assert "specialty" not in body
+        assert body["performerType"] == {"text": "Cardiology"}
         return httpx.Response(201, json={"resourceType": "ServiceRequest", "id": "SR-E42"})
 
     real_client = httpx.Client

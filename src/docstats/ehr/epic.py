@@ -91,6 +91,16 @@ class TokenResponse:
 _DISCOVERY_CACHE: dict[str, tuple[EpicEndpoints, float]] = {}
 
 
+def reset_discovery_cache() -> None:
+    """Clear the in-process discovery cache.
+
+    Test hook: cached endpoints survive across tests in the same process,
+    masking config drift when env vars change between cases. Production
+    code can also use this after rotating EPIC_FHIR_BASE_URL.
+    """
+    _DISCOVERY_CACHE.clear()
+
+
 def _client_id() -> str:
     cid = os.getenv("EPIC_CLIENT_ID", "").strip()
     if not cid:
@@ -260,9 +270,14 @@ def exchange_code(
     )
 
 
-def refresh(refresh_token: str) -> TokenResponse:
-    """Exchange a refresh_token for a new access_token."""
-    endpoints = discover()
+def refresh(refresh_token: str, *, iss_override: str | None = None) -> TokenResponse:
+    """Exchange a refresh_token for a new access_token.
+
+    ``iss_override`` routes refresh through the same FHIR base the connection
+    was minted against, so EHR-launch tokens refresh against the correct
+    tenant. Defaults to the configured FHIR base for standalone-launch.
+    """
+    endpoints = discover(base_url_override=iss_override)
     data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -300,9 +315,16 @@ def refresh(refresh_token: str) -> TokenResponse:
     )
 
 
-def fetch_patient(*, access_token: str, patient_fhir_id: str) -> dict:
-    """GET Patient/{id} from Epic's FHIR R4 endpoint."""
-    endpoints = discover()
+def fetch_patient(
+    *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
+) -> dict:
+    """GET Patient/{id} from Epic's FHIR R4 endpoint.
+
+    ``iss_override`` targets the FHIR base the connection was minted against —
+    required for EHR-launch flows where the tenant differs from the configured
+    standalone FHIR base.
+    """
+    endpoints = discover(base_url_override=iss_override)
     url = f"{endpoints.fhir_base.rstrip('/')}/Patient/{patient_fhir_id}"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -461,7 +483,11 @@ def write_service_request(
         ],
     }
     if specialty_desc:
-        resource["specialty"] = [{"text": specialty_desc}]
+        # FHIR R4 ServiceRequest has no `specialty` element — `performerType`
+        # (single CodeableConcept) is the right field for "the kind of provider
+        # who should perform this service." Earlier drafts used `specialty`,
+        # which servers silently ignored or rejected.
+        resource["performerType"] = {"text": specialty_desc}
     if reason:
         resource["reasonCode"] = [{"text": reason}]
     if requesting_provider_name:
