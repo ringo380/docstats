@@ -27,3 +27,5 @@ GEMINI.md
 MEMORY.md
 docs/superpowers/
 CLAUDE.md.bak.*
+.claude-dev-helper/
+.plugin-config/

@@ -25,6 +25,14 @@ IP_MAX_LENGTH = 45  # IPv6 max (8 groups of 4 hex + 7 colons); IPv4 fits easily
 USER_AGENT_MAX_LENGTH = 500  # defensive bound; real UAs are ~200 chars
 FAX_NUMBER_MAX_LENGTH = 20  # "+1 (555) 555-5555 x1234" — generous upper bound
 
+# Direct Trust addresses look like email but route through DirectTrust-accredited
+# HISPs. Format is ``local-part@direct.<domain>`` per RFC 5322; DirectTrust
+# convention reserves a sub-domain (typically containing ``direct``), but we
+# don't enforce the sub-domain shape here — vendors disagree on the convention
+# and the trust bundle is what actually validates routability.
+DIRECT_ADDRESS_MAX_LENGTH = 254
+DIRECT_ADDRESS_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 
 class ValidationError(ValueError):
     """Raised when user input fails format validation."""
@@ -66,6 +74,19 @@ def validate_fax_number(fax: str) -> str:
             "Fax number must be a US/Canada number (10 digits, or 11 digits starting with 1)."
         )
     return "+" + digits
+
+
+def validate_direct_address(addr: str) -> str:
+    """Return normalized Direct Trust address, raise ValidationError otherwise.
+
+    Direct addresses are syntactically email-shaped — the trust bundle
+    enforces actual routability at the HISP layer. We just guard against
+    obvious garbage at the input boundary.
+    """
+    addr = (addr or "").strip().lower()
+    if not addr or len(addr) > DIRECT_ADDRESS_MAX_LENGTH or not DIRECT_ADDRESS_PATTERN.match(addr):
+        raise ValidationError("Please enter a valid Direct Trust address.")
+    return addr
 
 
 def require_valid_npi(npi: str = Path(..., min_length=10, max_length=10)) -> str:
