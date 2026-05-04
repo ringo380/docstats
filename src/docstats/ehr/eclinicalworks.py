@@ -1,19 +1,24 @@
-"""Cerner/Oracle Health SMART-on-FHIR sandbox client (Phase 12.C).
+"""eClinicalWorks (eCW) SMART-on-FHIR client (Phase 12.D).
 
-Synchronous httpx wrapped in `request_with_retry`. Route layer wraps calls
-in an executor when invoked from async handlers.
+Synchronous httpx wrapped in `request_with_retry`. Route layer wraps these
+calls in an executor when invoked from async handlers.
 
-Public client: registered as Application Privacy = Public in the Cerner
-console. The token endpoint is authenticated via PKCE only (no
-client_secret, no HTTP Basic). ``client_id`` is sent in the form body per
-RFC 6749 §2.3.1.
+Confidential client: client_secret is sent on the token endpoint via HTTP
+Basic auth (same pattern as Epic). PKCE is layered on top — eCW supports
+PKCE for confidential clients and it's harmless extra defense against code
+interception.
 
 Key differences from Epic:
-- FHIR base derived from ``CERNER_SANDBOX_TENANT_ID`` env var.
-- ``aud`` parameter IS required (Cerner patient-persona rejects missing aud).
-- Clinical medications use ``MedicationRequest`` (not ``MedicationStatement``).
-- Token URLs are always discovered via ``.well-known/smart-configuration``.
-- Public/PKCE-only (Epic uses confidential + Basic auth).
+- ``aud`` parameter IS required on the authorize URL (eCW rejects without).
+- Medications use ``MedicationRequest`` (Cerner-style, not Epic's
+  ``MedicationStatement``).
+- Multi-tenant: eCW has no single sandbox FHIR root. ``ECW_SANDBOX_FHIR_BASE``
+  is a hard-required env var (no fallback). Production multi-practice support
+  (per-practice FHIR base discovery) is deferred — Phase 12.D ships against
+  one configured sandbox tenant.
+
+Key differences from Cerner:
+- Confidential client (Basic auth header) — Cerner is public/PKCE-only.
 """
 
 from __future__ import annotations
@@ -52,18 +57,16 @@ def _redact(payload: object) -> object:
     return payload
 
 
-class CernerError(EHRError):
-    """Cerner/Oracle Health SMART-on-FHIR call failed."""
+class ECWError(EHRError):
+    """eClinicalWorks SMART-on-FHIR call failed."""
 
 
 DISCOVERY_PATH = "/.well-known/smart-configuration"
 DISCOVERY_TTL_SECONDS = 24 * 3600
 
-_CERNER_FHIR_HOST = "https://fhir-myrecord.cerner.com/r4"
-
 
 @dataclass(frozen=True)
-class CernerEndpoints:
+class ECWEndpoints:
     """Resolved auth/token/fhir endpoints from .well-known discovery."""
 
     authorize_endpoint: str
@@ -81,7 +84,7 @@ class TokenResponse:
     id_token: str | None
 
 
-_DISCOVERY_CACHE: dict[str, tuple[CernerEndpoints, float]] = {}
+_DISCOVERY_CACHE: dict[str, tuple[ECWEndpoints, float]] = {}
 
 
 def reset_discovery_cache() -> None:
@@ -89,38 +92,55 @@ def reset_discovery_cache() -> None:
     _DISCOVERY_CACHE.clear()
 
 
-def _tenant_id() -> str:
-    tid = os.getenv("CERNER_SANDBOX_TENANT_ID", "").strip()
-    if not tid:
-        raise CernerError("CERNER_SANDBOX_TENANT_ID not set")
-    return tid
-
-
 def _client_id() -> str:
-    cid = os.getenv("CERNER_CLIENT_ID", "").strip()
+    cid = os.getenv("ECW_CLIENT_ID", "").strip()
     if not cid:
-        raise CernerError("CERNER_CLIENT_ID not set")
+        raise ECWError("ECW_CLIENT_ID not set")
     return cid
 
 
+def _client_secret() -> str:
+    sec = os.getenv("ECW_CLIENT_SECRET", "").strip()
+    if not sec:
+        raise ECWError("ECW_CLIENT_SECRET not set")
+    return sec
+
+
 def _redirect_uri() -> str:
-    uri = os.getenv("CERNER_REDIRECT_URI", "").strip()
+    uri = os.getenv("ECW_REDIRECT_URI", "").strip()
     if not uri:
-        raise CernerError("CERNER_REDIRECT_URI not set")
+        raise ECWError("ECW_REDIRECT_URI not set")
     return uri
 
 
 def _default_fhir_base() -> str:
-    return f"{_CERNER_FHIR_HOST}/{_tenant_id()}"
+    """Return the configured sandbox FHIR base, fail-closed when unset.
+
+    Unlike Epic (single sandbox URL) or Cerner (tenant-id derivation), eCW
+    has a different FHIR base per practice/installation. Phase 12.D ships
+    against one configured sandbox; production multi-practice discovery is a
+    later phase. We do NOT fall back to a hardcoded URL — a missing env var
+    must surface as a clear error rather than silently pointing at the
+    wrong tenant.
+    """
+    base = os.getenv("ECW_SANDBOX_FHIR_BASE", "").strip()
+    if not base:
+        raise ECWError("ECW_SANDBOX_FHIR_BASE not set")
+    return base.rstrip("/")
 
 
-def discover(
-    *, force_refresh: bool = False, base_url_override: str | None = None
-) -> CernerEndpoints:
+def _basic_auth_header() -> str:
+    raw = f"{_client_id()}:{_client_secret()}".encode("utf-8")
+    return "Basic " + base64.b64encode(raw).decode("ascii")
+
+
+def discover(*, force_refresh: bool = False, base_url_override: str | None = None) -> ECWEndpoints:
     """Fetch + cache ``.well-known/smart-configuration``.
 
-    ``base_url_override`` supports EHR-launch where the FHIR base is
-    supplied by the EHR via the ``iss`` query param. Cached 24h in-process.
+    ``base_url_override`` supports EHR-launch where the FHIR base is supplied
+    by the EHR via the ``iss`` query param. Cached 24h in-process; cache key
+    is the FHIR base, so per-practice bases will naturally cache separately
+    when production multi-tenant support lands.
     """
     base = base_url_override.rstrip("/") if base_url_override else _default_fhir_base()
     if not force_refresh:
@@ -130,25 +150,28 @@ def discover(
 
     url = f"{base}{DISCOVERY_PATH}"
     with httpx.Client(timeout=get_default_timeout()) as http:
-        resp = request_with_retry(
-            http, "GET", url, label="Cerner discovery", error_class=CernerError
-        )
+        resp = request_with_retry(http, "GET", url, label="ECW discovery", error_class=ECWError)
     payload = resp.json()
     try:
-        endpoints = CernerEndpoints(
+        endpoints = ECWEndpoints(
             authorize_endpoint=payload["authorization_endpoint"],
             token_endpoint=payload["token_endpoint"],
             fhir_base=base,
         )
     except KeyError as e:
-        raise CernerError(f"Cerner discovery missing field: {e}") from e
+        raise ECWError(f"ECW discovery missing field: {e}") from e
 
     _DISCOVERY_CACHE[base] = (endpoints, time.time())
     return endpoints
 
 
 def make_pkce_pair() -> tuple[str, str]:
-    """Return (code_verifier, code_challenge) for PKCE S256."""
+    """Return (code_verifier, code_challenge) for PKCE S256.
+
+    Used even though we are a confidential client — eCW supports PKCE
+    alongside client_secret and it's a defense-in-depth measure against
+    authorization-code interception.
+    """
     verifier = secrets.token_urlsafe(64)[:128]
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
@@ -160,10 +183,9 @@ def make_state() -> str:
 
 
 def build_authorize_url(*, state: str, code_challenge: str, scope: str) -> str:
-    """Construct the Cerner authorize URL for standalone launch.
+    """Construct the eCW authorize URL for standalone launch.
 
-    Cerner's patient-persona authorize endpoint requires the ``aud``
-    parameter to be the FHIR base URL.
+    eCW requires the ``aud`` parameter to be the FHIR base URL.
     """
     endpoints = discover()
     params = {
@@ -182,7 +204,7 @@ def build_authorize_url(*, state: str, code_challenge: str, scope: str) -> str:
 def build_ehr_launch_authorize_url(
     *, state: str, code_challenge: str, scope: str, launch_token: str, iss_override: str
 ) -> str:
-    """Construct the Cerner authorize URL for EHR-launch (sidebar) flow."""
+    """Construct the eCW authorize URL for EHR-launch flow."""
     endpoints = discover(base_url_override=iss_override)
     params = {
         "response_type": "code",
@@ -190,6 +212,7 @@ def build_ehr_launch_authorize_url(
         "redirect_uri": _redirect_uri(),
         "scope": scope,
         "state": state,
+        "aud": endpoints.fhir_base,
         "launch": launch_token,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
@@ -200,16 +223,16 @@ def build_ehr_launch_authorize_url(
 def exchange_code(
     *, code: str, code_verifier: str, iss_override: str | None = None
 ) -> TokenResponse:
-    """POST authorization code → access token."""
+    """POST authorization code → access token using HTTP Basic auth."""
     endpoints = discover(base_url_override=iss_override)
     data = {
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": _redirect_uri(),
         "code_verifier": code_verifier,
-        "client_id": _client_id(),
     }
     headers = {
+        "Authorization": _basic_auth_header(),
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
     }
@@ -218,15 +241,15 @@ def exchange_code(
             http,
             "POST",
             endpoints.token_endpoint,
-            label="Cerner token exchange",
-            error_class=CernerError,
+            label="ECW token exchange",
+            error_class=ECWError,
             max_retries=0,
             data=data,
             headers=headers,
         )
     payload = resp.json()
     if "access_token" not in payload:
-        raise CernerError(f"Cerner token response missing access_token: {_redact(payload)!r}")
+        raise ECWError(f"ECW token response missing access_token: {_redact(payload)!r}")
     return TokenResponse(
         access_token=payload["access_token"],
         refresh_token=payload.get("refresh_token"),
@@ -238,18 +261,19 @@ def exchange_code(
 
 
 def refresh(refresh_token: str, *, iss_override: str | None = None) -> TokenResponse:
-    """Exchange a refresh_token for a new access_token.
+    """Exchange a refresh_token for a new access_token using HTTP Basic auth.
 
-    ``iss_override`` routes refresh through the FHIR base the connection was
-    minted against (EHR-launch tenants).
+    ``iss_override`` is required for multi-tenant correctness: eCW practices
+    each have their own FHIR base, so refresh must hit the same tenant the
+    connection was minted against. Defaults to the configured sandbox base.
     """
     endpoints = discover(base_url_override=iss_override)
     data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
-        "client_id": _client_id(),
     }
     headers = {
+        "Authorization": _basic_auth_header(),
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
     }
@@ -258,15 +282,15 @@ def refresh(refresh_token: str, *, iss_override: str | None = None) -> TokenResp
             http,
             "POST",
             endpoints.token_endpoint,
-            label="Cerner token refresh",
-            error_class=CernerError,
+            label="ECW token refresh",
+            error_class=ECWError,
             max_retries=0,
             data=data,
             headers=headers,
         )
     payload = resp.json()
     if "access_token" not in payload:
-        raise CernerError(f"Cerner refresh response missing access_token: {_redact(payload)!r}")
+        raise ECWError(f"ECW refresh response missing access_token: {_redact(payload)!r}")
     return TokenResponse(
         access_token=payload["access_token"],
         refresh_token=payload.get("refresh_token") or refresh_token,
@@ -280,9 +304,10 @@ def refresh(refresh_token: str, *, iss_override: str | None = None) -> TokenResp
 def fetch_patient(
     *, access_token: str, patient_fhir_id: str, iss_override: str | None = None
 ) -> dict:
-    """GET Patient/{id} from Cerner's FHIR R4 endpoint.
+    """GET Patient/{id} from eCW's FHIR R4 endpoint.
 
-    ``iss_override`` targets the connection's FHIR base for EHR-launch tenants.
+    ``iss_override`` is required for multi-tenant correctness — the connection
+    stores its tenant FHIR base on ``EHRConnection.iss``.
     """
     endpoints = discover(base_url_override=iss_override)
     url = f"{endpoints.fhir_base.rstrip('/')}/Patient/{patient_fhir_id}"
@@ -292,7 +317,7 @@ def fetch_patient(
     }
     with httpx.Client(timeout=get_default_timeout()) as http:
         resp = request_with_retry(
-            http, "GET", url, label="Cerner Patient.read", error_class=CernerError, headers=headers
+            http, "GET", url, label="ECW Patient.read", error_class=ECWError, headers=headers
         )
     return resp.json()  # type: ignore[no-any-return]
 
@@ -314,7 +339,7 @@ def _fetch_fhir_bundle_entries(
     }
     with httpx.Client(timeout=get_default_timeout()) as http:
         resp = request_with_retry(
-            http, "GET", url, label=label, error_class=CernerError, headers=headers
+            http, "GET", url, label=label, error_class=ECWError, headers=headers
         )
     bundle = resp.json()
     return [entry["resource"] for entry in bundle.get("entry") or [] if "resource" in entry]
@@ -327,7 +352,7 @@ def fetch_conditions(
         access_token=access_token,
         resource_type="Condition",
         params={"patient": patient_fhir_id, "clinical-status": "active"},
-        label="Cerner Condition.search",
+        label="ECW Condition.search",
         iss_override=iss_override,
     )
 
@@ -337,13 +362,14 @@ def fetch_medications(
 ) -> list[dict]:
     """GET active MedicationRequest resources for a patient.
 
-    Cerner uses MedicationRequest (not MedicationStatement like Epic).
+    eCW uses MedicationRequest (Cerner-style), NOT MedicationStatement
+    (Epic-style). Wrong resource → 404.
     """
     return _fetch_fhir_bundle_entries(
         access_token=access_token,
         resource_type="MedicationRequest",
         params={"patient": patient_fhir_id, "status": "active"},
-        label="Cerner MedicationRequest.search",
+        label="ECW MedicationRequest.search",
         iss_override=iss_override,
     )
 
@@ -355,7 +381,7 @@ def fetch_allergies(
         access_token=access_token,
         resource_type="AllergyIntolerance",
         params={"patient": patient_fhir_id},
-        label="Cerner AllergyIntolerance.search",
+        label="ECW AllergyIntolerance.search",
         iss_override=iss_override,
     )
 
@@ -367,13 +393,13 @@ def fetch_document_references(
         access_token=access_token,
         resource_type="DocumentReference",
         params={"patient": patient_fhir_id, "status": "current"},
-        label="Cerner DocumentReference.search",
+        label="ECW DocumentReference.search",
         iss_override=iss_override,
     )
 
 
 def fetch_document_content(url: str, *, access_token: str, fhir_base: str) -> tuple[bytes, str]:
-    """Download a DocumentReference attachment from Cerner.
+    """Download a DocumentReference attachment from eCW.
 
     Relative paths are resolved against ``fhir_base``.
     Returns ``(content_bytes, mime_type)``.
@@ -389,8 +415,8 @@ def fetch_document_content(url: str, *, access_token: str, fhir_base: str) -> tu
             http,
             "GET",
             url,
-            label="Cerner DocumentReference content",
-            error_class=CernerError,
+            label="ECW DocumentReference content",
+            error_class=ECWError,
             max_retries=0,
             headers=headers,
         )
@@ -408,7 +434,7 @@ def write_service_request(
     requesting_provider_name: str | None,
     iss_override: str | None = None,
 ) -> str:
-    """POST a minimal FHIR R4 ServiceRequest to Cerner. Returns the resource id."""
+    """POST a minimal FHIR R4 ServiceRequest to eCW. Returns the resource id."""
     import json as _json
 
     endpoints = discover(base_url_override=iss_override)
@@ -445,8 +471,8 @@ def write_service_request(
             http,
             "POST",
             url,
-            label="Cerner ServiceRequest.write",
-            error_class=CernerError,
+            label="ECW ServiceRequest.write",
+            error_class=ECWError,
             max_retries=0,
             content=_json.dumps(resource).encode(),
             headers=headers,
@@ -457,8 +483,8 @@ def write_service_request(
         location = resp.headers.get("Location", "")
         resource_id = location.rstrip("/").split("/")[-1] if location else None
     if not resource_id:
-        raise CernerError(f"Cerner ServiceRequest write returned no id: {_redact(body)!r}")
+        raise ECWError(f"ECW ServiceRequest write returned no id: {_redact(body)!r}")
     return resource_id
 
 
-_ehr_registry.register("cerner_oauth", sys.modules[__name__])
+_ehr_registry.register("ecw_smart", sys.modules[__name__])

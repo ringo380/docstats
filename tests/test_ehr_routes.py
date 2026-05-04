@@ -82,14 +82,16 @@ def epic_env(monkeypatch):
     monkeypatch.setenv("EPIC_SANDBOX_BASE_URL", "https://fake-epic.test")
 
     epic._DISCOVERY_CACHE.clear()
-    epic._DISCOVERY_CACHE["https://fake-epic.test"] = (
-        epic.EpicEndpoints(
-            authorize_endpoint="https://fake-epic.test/oauth2/authorize",
-            token_endpoint="https://fake-epic.test/oauth2/token",
-            fhir_base="https://fake-epic.test/api/FHIR/R4",
-        ),
-        9999999999.0,
+    fake_endpoints = epic.EpicEndpoints(
+        authorize_endpoint="https://fake-epic.test/oauth2/authorize",
+        token_endpoint="https://fake-epic.test/oauth2/token",
+        fhir_base="https://fake-epic.test/api/FHIR/R4",
     )
+    # Seed under both the env base (used by initial discover() before any
+    # connection exists) AND the stored iss / fhir_base (used by post-connect
+    # calls that pass iss_override=conn.iss for multi-tenant safety).
+    epic._DISCOVERY_CACHE["https://fake-epic.test"] = (fake_endpoints, 9999999999.0)
+    epic._DISCOVERY_CACHE["https://fake-epic.test/api/FHIR/R4"] = (fake_endpoints, 9999999999.0)
     yield
     epic._DISCOVERY_CACHE.clear()
 
@@ -444,7 +446,7 @@ def test_maybe_refresh_rotates_near_expiry(ehr_client):
     from docstats.routes import ehr as _ehr_mod
 
     _epic_mod_orig = _epic_mod.refresh
-    _epic_mod.refresh = lambda _rt: new_tok
+    _epic_mod.refresh = lambda _rt, *, iss_override=None: new_tok
     try:
         token = _ehr_mod._maybe_refresh(conn, storage)
     finally:
@@ -467,7 +469,7 @@ def test_maybe_refresh_failure_returns_stale_token_and_audits(ehr_client):
     import docstats.ehr.epic as _epic_mod
     from docstats.routes import ehr as _ehr_mod
 
-    def _fail_refresh(_rt):
+    def _fail_refresh(_rt, *, iss_override=None):
         raise EpicError("boom")
 
     _epic_mod_orig = _epic_mod.refresh
@@ -668,7 +670,7 @@ def test_maybe_refresh_dispatches_to_cerner(tmp_path, monkeypatch, cerner_env):
 
     refreshed = []
 
-    def _mock_refresh(rt: str):
+    def _mock_refresh(rt: str, *, iss_override=None):
         refreshed.append(rt)
         return _cerner_mod.TokenResponse(
             access_token="NEW_CAT",

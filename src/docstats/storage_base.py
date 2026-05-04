@@ -507,6 +507,16 @@ class StorageBase(ABC):
         ...
 
     @abstractmethod
+    def list_active_ehr_connections(self, user_id: int) -> "list[EHRConnection]":
+        """Return all active connections for the user across vendors, most-recent first.
+
+        Used by post-create / post-import hooks to pick the EHR the user was
+        most recently working with rather than relying on registry iteration
+        order, which can mis-route PHI in multi-vendor accounts.
+        """
+        ...
+
+    @abstractmethod
     def update_ehr_connection_tokens(
         self,
         connection_id: int,

@@ -305,13 +305,14 @@ async def _ehr_post_create_hook(
         if patient is None or not patient.ehr_fhir_id:
             return
 
-        # Iterate registered vendors to find an active connection.
-        conn = None
-        for _v in _reg.list_vendors():
-            _c = storage.get_active_ehr_connection(user_id, _v)
-            if _c and _c.patient_fhir_id:
-                conn = _c
-                break
+        # Pick the most recently created active connection that has a
+        # patient_fhir_id. Iterating `_reg.list_vendors()` and stopping at
+        # the first match picks an arbitrary vendor in multi-vendor accounts,
+        # which can route Patient PHI to the wrong EHR.
+        conn = next(
+            (c for c in storage.list_active_ehr_connections(user_id) if c.patient_fhir_id),
+            None,
+        )
         if conn is None:
             return
 

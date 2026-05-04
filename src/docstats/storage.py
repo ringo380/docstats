@@ -4968,6 +4968,15 @@ class Storage(StorageBase):
         ).fetchone()
         return self._row_to_ehr_connection(row) if row else None
 
+    def list_active_ehr_connections(self, user_id: int) -> list[EHRConnection]:
+        rows = self._conn.execute(
+            "SELECT * FROM ehr_connections"
+            " WHERE user_id = ? AND revoked_at IS NULL"
+            " ORDER BY created_at DESC, id DESC",
+            (user_id,),
+        ).fetchall()
+        return [self._row_to_ehr_connection(r) for r in rows]
+
     def update_ehr_connection_tokens(
         self,
         connection_id: int,
