@@ -5,7 +5,9 @@ disabled → the Send-form dropdown hides it AND the route-level send call
 still defends in depth (raises ``ChannelDisabledError`` from the channel
 itself, not from the registry).
 
-9.B adds email via Resend; 9.C adds fax via Documo; 9.D (deferred) adds direct.
+9.B adds email via Resend; 9.C adds fax via Documo; 9.D ships the
+Direct Trust scaffolding (disabled until ``DIRECT_HISP_*`` env vars
+are set on Railway after a HISP contract activates).
 """
 
 from __future__ import annotations
@@ -47,13 +49,17 @@ def _fax_channel() -> Channel:
 
 
 def _direct_channel() -> Channel:
-    """Factory for the Direct Trust channel. Deferred past Phase 9.
+    """Factory for the Direct Trust channel (Phase 9.D scaffolding).
 
-    Requires a HISP relationship (DataMotion et al.). HISP onboarding
-    takes weeks, so code stays stubbed until the user's HISP contract
-    activates and the real integration lands in a follow-up phase.
+    Requires a HISP relationship — onboarding takes weeks. The channel
+    skeleton ships now (vendor-agnostic; see ``channels/direct.py``)
+    but raises ``ChannelDisabledError`` until the four ``DIRECT_HISP_*``
+    env vars are set on Railway. Activation = config flip, no code
+    change required.
     """
-    raise ChannelDisabledError("direct", reason="Direct Trust deferred — HISP onboarding required")
+    from docstats.delivery.channels.direct import DirectTrustChannel
+
+    return DirectTrustChannel()
 
 
 _CHANNEL_FACTORIES: dict[str, Callable[[], Channel]] = {
@@ -101,7 +107,15 @@ def enabled_channels() -> list[str]:
 _ENV_VARS_BY_CHANNEL: Final[dict[str, tuple[str, ...]]] = {
     "email": ("RESEND_API_KEY",),
     "fax": ("DOCUMO_API_KEY",),
-    "direct": ("DIRECT_HISP_USERNAME", "DIRECT_HISP_PASSWORD", "DIRECT_HISP_ENDPOINT"),
+    # Must stay in sync with DirectTrustChannel._REQUIRED_ENV_VARS — when
+    # this list and the channel's __init__ requirements diverge,
+    # channel_is_configured() lies and the Send-form picks an option that
+    # then fails at construction time.
+    "direct": (
+        "DIRECT_HISP_USERNAME",
+        "DIRECT_HISP_ENDPOINT",
+        "DIRECT_HISP_FROM_ADDRESS",
+    ),
 }
 
 
