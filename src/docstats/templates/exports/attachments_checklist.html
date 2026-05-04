@@ -7,10 +7,12 @@
 <body class="pdf-doc">
 <div class="watermark">CONFIDENTIAL PHI</div>
 
+{% include "_partials/_letterhead.html" %}
+
 <header class="doc-header">
   <div class="doc-title">
     <h1>Attachments Checklist</h1>
-    <div class="doc-subtitle">Referral #{{ referral.id }} · {{ patient.display_name }}</div>
+    <div class="doc-subtitle">Referral #{{ referral.id }} · {{ patient.display_name }}{% if patient.mrn %} · MRN {{ patient.mrn }}{% endif %}{% if patient.date_of_birth %} · DOB {{ patient.date_of_birth }}{% endif %}</div>
   </div>
   <div class="doc-meta">
     <div><span class="label">Generated:</span> {{ generated_at.strftime('%Y-%m-%d %H:%M UTC') }}</div>

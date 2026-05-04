@@ -39,6 +39,7 @@ from docstats.exports import (
     ARTIFACT_ATTACHMENT_PDFS,
     ARTIFACT_ATTACHMENTS_CHECKLIST,
     ARTIFACT_FAX_COVER,
+    ARTIFACT_MEDICAL_NECESSITY,
     ARTIFACT_MISSING_INFO,
     ARTIFACT_PACKET,
     ARTIFACT_PATIENT_SUMMARY,
@@ -50,6 +51,7 @@ from docstats.exports import (
     referral_to_csv_row,
     render_attachments_checklist,
     render_fax_cover,
+    render_medical_necessity,
     render_missing_info,
     render_packet,
     render_patient_summary,
@@ -121,6 +123,48 @@ def _fetch_none(
     return {}
 
 
+def _fetch_for_medical_necessity(
+    *,
+    storage: StorageBase,
+    scope: Scope,
+    referral: Any,
+    patient: Any,
+) -> dict[str, Any]:
+    """Pull diagnoses/meds/allergies/attachments + payer plan + CPT JSON."""
+    insurance_plan: Any = None
+    if getattr(referral, "payer_plan_id", None):
+        try:
+            insurance_plan = storage.get_insurance_plan(scope, referral.payer_plan_id)
+        except Exception:
+            logger.exception(
+                "insurance_plan lookup failed for referral %s plan %s",
+                referral.id,
+                referral.payer_plan_id,
+            )
+    raw_codes = getattr(referral, "cpt_codes", None)
+    cpt_codes: list[dict[str, Any]] = []
+    if raw_codes:
+        if isinstance(raw_codes, str):
+            import json as _json
+
+            try:
+                parsed = _json.loads(raw_codes)
+                if isinstance(parsed, list):
+                    cpt_codes = [c for c in parsed if isinstance(c, dict)]
+            except ValueError:
+                logger.warning("malformed cpt_codes JSON on referral %s", referral.id)
+        elif isinstance(raw_codes, list):
+            cpt_codes = [c for c in raw_codes if isinstance(c, dict)]
+    return {
+        "diagnoses": storage.list_referral_diagnoses(scope, referral.id),
+        "medications": storage.list_referral_medications(scope, referral.id),
+        "allergies": storage.list_referral_allergies(scope, referral.id),
+        "attachments": storage.list_referral_attachments(scope, referral.id),
+        "insurance_plan": insurance_plan,
+        "cpt_codes": cpt_codes,
+    }
+
+
 # The ``label`` field drives the preview-page UI. Keep it user-facing.
 _ARTIFACT_BUNDLES: dict[str, tuple[Callable[..., Any], Callable[..., bytes], str, str]] = {
     ARTIFACT_REFERRAL_SUMMARY: (
@@ -159,6 +203,12 @@ _ARTIFACT_BUNDLES: dict[str, tuple[Callable[..., Any], Callable[..., bytes], str
         "fax-cover",
         "Fax Cover Sheet",
     ),
+    ARTIFACT_MEDICAL_NECESSITY: (
+        _fetch_for_medical_necessity,
+        render_medical_necessity,
+        "prior-auth",
+        "Medical Necessity / Prior Auth Letter",
+    ),
 }
 
 
@@ -184,6 +234,23 @@ def _safe_pdf_filename(referral_id: int, stem: str) -> str:
     return f"referral-{referral_id}-{stem}.pdf"
 
 
+def _resolve_letterhead_org(storage: StorageBase, scope: Scope, current_user: dict) -> Any:
+    """Pick the Organization that should render on the letterhead.
+
+    Priority: scope-bound org (if user is operating inside an org) →
+    user's active_org_id (fallback for solo→org transitions) → None
+    (templates render a "Practice information not configured" stub).
+    """
+    org_id = scope.organization_id if scope.is_org else current_user.get("active_org_id")
+    if not org_id:
+        return None
+    try:
+        return storage.get_organization(int(org_id))
+    except Exception:  # storage outage during render shouldn't abort the export
+        logger.exception("letterhead org lookup failed for org_id=%s", org_id)
+        return None
+
+
 def _render_one(
     *,
     storage: StorageBase,
@@ -193,6 +260,8 @@ def _render_one(
     generated_at: datetime,
     generated_by_label: str | None,
     artifact: str,
+    organization: Any = None,
+    current_user: dict | None = None,
 ) -> bytes:
     """Render a single artifact by name. Raises KeyError if unknown."""
     fetcher, renderer, _stem, _label = _ARTIFACT_BUNDLES[artifact]
@@ -202,6 +271,8 @@ def _render_one(
         patient=patient,
         generated_at=generated_at,
         generated_by_label=generated_by_label,
+        organization=organization,
+        current_user=current_user,
         **extra,
     )
 
@@ -373,6 +444,7 @@ async def referrals_batch_export(
 
     generated_at = datetime.now(tz=timezone.utc)
     generated_by_label = _generated_by_label(current_user)
+    letterhead_org = _resolve_letterhead_org(storage, scope, current_user)
     loop = asyncio.get_running_loop()
 
     pdf_parts: list[bytes] = []
@@ -405,6 +477,8 @@ async def referrals_batch_export(
                             generated_at=generated_at,
                             generated_by_label=generated_by_label,
                             artifact=n,
+                            organization=letterhead_org,
+                            current_user=current_user,
                         ),
                     )
                     sub_parts.append(part)
@@ -430,6 +504,8 @@ async def referrals_batch_export(
                         generated_at=generated_at,
                         generated_by_label=generated_by_label,
                         artifact=artifact,
+                        organization=letterhead_org,
+                        current_user=current_user,
                     ),
                 )
                 pdf_parts.append(part)
@@ -662,6 +738,7 @@ async def referral_export_pdf(
 
     generated_at = datetime.now(tz=timezone.utc)
     generated_by_label = _generated_by_label(current_user)
+    letterhead_org = _resolve_letterhead_org(storage, scope, current_user)
     loop = asyncio.get_running_loop()
 
     if artifact == ARTIFACT_PACKET:
@@ -715,6 +792,8 @@ async def referral_export_pdf(
                         generated_at=generated_at,
                         generated_by_label=generated_by_label,
                         artifact=n,
+                        organization=letterhead_org,
+                        current_user=current_user,
                     ),
                 )
                 parts.append(part)
@@ -755,6 +834,8 @@ async def referral_export_pdf(
                     generated_at=generated_at,
                     generated_by_label=generated_by_label,
                     artifact=artifact,
+                    organization=letterhead_org,
+                    current_user=current_user,
                 ),
             )
         except Exception:

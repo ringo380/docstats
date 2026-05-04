@@ -1,16 +1,51 @@
-/* Print-scoped stylesheet for export artifacts (Phase 5.A).
+/* Print-scoped stylesheet for export artifacts.
  *
  * Loaded by WeasyPrint via `CSS(filename=...)` — not served to browsers.
- * Keep this file framework-free so future artifacts (scheduling summary,
- * fax cover, etc.) can share a single typography + layout baseline.
+ * Two stylesheet "modes" are layered onto a shared baseline:
+ *
+ *   body.letter-style — Scenario A AMA-style consultation request letter
+ *                        (referral_summary + future medical_necessity).
+ *                        Serif typography, 1" margins, block-letter
+ *                        spacing, formal letterhead/signature blocks.
+ *
+ *   body.form-style   — Scenario B forms + utility artifacts
+ *                        (scheduling, attachments_checklist, missing_info,
+ *                        fax_cover, medical_necessity in tabular mode).
+ *                        Sans-serif, tight margins, dense tabular layout.
+ *
+ * Both modes share the same partials (_letterhead, _phi_footer,
+ * _signature_block, _addressee_block) — only the typography + page
+ * geometry differs.
  */
 
+/* ── Default page (form-style) — 0.6in margins, dense layout ─── */
 @page {
     size: Letter;
     margin: 0.5in 0.6in 0.6in 0.6in;
-    @bottom-left { content: "Referral — docstats"; font-size: 8pt; color: #777; }
-    @bottom-center { content: "Confidential PHI"; font-size: 8pt; color: #999; }
+    @bottom-left { content: "Confidential — PHI"; font-size: 8pt; color: #777; }
+    @bottom-center { content: ""; font-size: 8pt; color: #999; }
     @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #777; }
+}
+
+/* ── Letter-style page — 1" margins, generous header/footer area ─── */
+@page letter-page {
+    size: Letter;
+    margin: 1in 1in 1in 1in;
+    @top-center {
+        content: element(continuationHeader);
+    }
+    @bottom-left { content: "CONFIDENTIAL — PROTECTED HEALTH INFORMATION"; font-size: 8pt; color: #777; font-family: "Georgia", "Times New Roman", serif; }
+    @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #777; font-family: "Georgia", "Times New Roman", serif; }
+}
+
+/* First page of a letter has no continuation header — letterhead lives
+ * inline at the top of the page body. */
+@page letter-page:first {
+    @top-center { content: ""; }
+}
+
+body.letter-style {
+    page: letter-page;
 }
 
 html, body {
@@ -22,8 +57,36 @@ html, body {
     line-height: 1.35;
 }
 
-body.pdf-doc {
-    /* Leave room at the top for the doc-header, no extra padding needed. */
+/* Letter-style typography overrides */
+body.letter-style {
+    font-family: "Georgia", "Times New Roman", "Liberation Serif", serif;
+    font-size: 11pt;
+    line-height: 1.45;
+    color: #111;
+}
+
+body.letter-style p {
+    margin: 0 0 8pt 0;
+}
+
+body.letter-style h1 {
+    font-family: "Georgia", "Times New Roman", serif;
+    font-size: 16pt;
+    font-weight: 700;
+    letter-spacing: 0;
+    margin: 0;
+}
+
+body.letter-style h2 {
+    font-family: "Georgia", "Times New Roman", serif;
+    font-size: 11.5pt;
+    font-weight: 700;
+    text-transform: none;
+    letter-spacing: 0;
+    color: #111;
+    border-bottom: none;
+    padding-bottom: 0;
+    margin: 12pt 0 4pt 0;
 }
 
 .watermark {
@@ -38,6 +101,7 @@ body.pdf-doc {
     z-index: -1;
 }
 
+/* ── Form-style typography (default) ─────────────────────────── */
 h1, h2 {
     margin: 0;
     font-weight: 700;
@@ -52,6 +116,135 @@ h2 {
     padding-bottom: 3pt;
     margin-bottom: 8pt;
 }
+
+/* ── Shared partials ─────────────────────────────────────────── */
+
+/* Letterhead block — page 1 of letters, top of forms.
+ * Designed to read like printed practice stationery. */
+.letterhead {
+    border-bottom: 1.5pt solid #111;
+    padding-bottom: 8pt;
+    margin-bottom: 14pt;
+}
+.letterhead-org {
+    font-size: 14pt;
+    font-weight: 700;
+    letter-spacing: 0.3pt;
+    color: #111;
+    margin: 0;
+}
+body.letter-style .letterhead-org {
+    font-family: "Georgia", "Times New Roman", serif;
+    font-size: 16pt;
+    letter-spacing: 0;
+}
+.letterhead-meta {
+    font-size: 9pt;
+    color: #444;
+    margin-top: 3pt;
+    line-height: 1.4;
+}
+.letterhead-meta .sep::before {
+    content: " · ";
+    color: #999;
+}
+
+/* Continuation header — runs in @top-center on pages 2+ of letters.
+ * WeasyPrint composes this via CSS3 named-strings + running()
+ * elements. Keep it terse — patient name + MRN + DOB only. */
+.continuation-header {
+    position: running(continuationHeader);
+    font-family: "Georgia", "Times New Roman", serif;
+    font-size: 9pt;
+    color: #555;
+    text-align: center;
+    border-bottom: 0.5pt solid #c0c0c0;
+    padding-bottom: 2pt;
+}
+
+/* Date line + addressee block — Scenario A letters */
+.date-line {
+    margin: 0 0 14pt 0;
+    font-size: 11pt;
+}
+.addressee-block {
+    margin: 0 0 14pt 0;
+    line-height: 1.4;
+}
+.addressee-block .recipient-name {
+    font-weight: 700;
+}
+.re-line {
+    margin: 14pt 0 4pt 0;
+    font-weight: 700;
+}
+.re-line .re-label {
+    text-transform: none;
+    letter-spacing: 0;
+    margin-right: 4pt;
+}
+.salutation {
+    margin: 14pt 0 8pt 0;
+}
+
+/* Signature block — used by both letter-style and form-style.
+ * The 4-blank-line gap before the typed name is rendered as
+ * margin-top: 36pt to leave room for a wet signature. When a
+ * signature_image is provided, that gap is replaced by the image. */
+.signature-block {
+    margin-top: 18pt;
+    page-break-inside: avoid;
+}
+.signature-closing {
+    margin-bottom: 0;
+}
+.signature-img {
+    display: block;
+    max-height: 48pt;
+    margin: 6pt 0 2pt 0;
+}
+.signature-gap {
+    height: 36pt;
+}
+.signature-name {
+    font-weight: 700;
+    margin-top: 2pt;
+}
+.signature-meta {
+    font-size: 9.5pt;
+    color: #333;
+    line-height: 1.45;
+    margin-top: 1pt;
+}
+
+/* Enclosures block */
+.enclosures {
+    margin-top: 18pt;
+    page-break-inside: avoid;
+}
+.enclosures-label {
+    font-weight: 700;
+    margin-bottom: 4pt;
+}
+.enclosures ul {
+    margin: 0 0 0 0;
+    padding-left: 18pt;
+}
+.enclosures li {
+    margin-bottom: 2pt;
+}
+
+/* Confidentiality notice — every letter & fax cover */
+.confidentiality-notice {
+    margin-top: 14pt;
+    padding: 6pt 8pt;
+    border-top: 0.5pt solid #c0c0c0;
+    font-size: 8.5pt;
+    color: #444;
+    line-height: 1.4;
+}
+
+/* ── Form-style cards/grids (legacy artifacts) ───────────────── */
 
 .doc-header {
     display: flex;
@@ -78,6 +271,40 @@ h2 {
     padding: 8pt 10pt 10pt 10pt;
     margin-bottom: 9pt;
     page-break-inside: avoid;
+}
+
+/* Letter-style mutes the form-card chrome — sections render as
+ * plain headed prose, not bordered cards. */
+body.letter-style .card {
+    border: none;
+    padding: 0;
+    margin-bottom: 10pt;
+    page-break-inside: auto;
+}
+body.letter-style .grid-2 {
+    display: block;
+}
+body.letter-style .grid-2 > div {
+    min-height: 0;
+    margin-bottom: 4pt;
+}
+body.letter-style .label {
+    display: inline;
+    font-size: 11pt;
+    color: #111;
+    text-transform: none;
+    letter-spacing: 0;
+    margin-right: 4pt;
+    font-weight: 600;
+}
+body.letter-style .label::after {
+    content: ":";
+}
+body.letter-style .value {
+    display: inline;
+}
+body.letter-style .field-block {
+    margin-bottom: 4pt;
 }
 
 .row-2 {
@@ -149,6 +376,15 @@ h2 {
     border-bottom: 1pt solid #d6d6d6;
     padding: 3pt 4pt;
 }
+body.letter-style .list-table {
+    font-family: "Georgia", "Times New Roman", serif;
+    font-size: 10.5pt;
+}
+body.letter-style .list-table th {
+    font-family: "Helvetica", "Arial", sans-serif;
+    color: #444;
+    border-bottom-color: #888;
+}
 .list-table td {
     padding: 3pt 4pt;
     border-bottom: 0.5pt solid #eee;
@@ -190,7 +426,7 @@ h2 {
     margin-top: 10pt;
 }
 
-/* ── Scheduling Summary (5.B): hero card ──────────────────────── */
+/* ── Scheduling Summary: hero card ───────────────────────────── */
 .hero-card {
     border: 1.5pt solid #111;
     background: #fafafa;
@@ -210,7 +446,7 @@ h2 {
     font-weight: 700;
 }
 
-/* ── Patient-Friendly Summary (5.B) ──────────────────────────── */
+/* ── Patient-Friendly Summary ────────────────────────────────── */
 .patient-doc { font-size: 11.5pt; line-height: 1.5; }
 .patient-doc h1 { font-size: 20pt; }
 .patient-doc h2 { font-size: 13pt; text-transform: none; letter-spacing: 0; color: #111; }
@@ -234,7 +470,7 @@ h2 {
     margin-bottom: 3pt;
 }
 
-/* ── Missing-Info Checklist (5.B): alert card ────────────────── */
+/* ── Missing-Info Checklist: alert card ──────────────────────── */
 .alert-card {
     border-color: #b07a10;
     background: #fff7e0;
@@ -249,7 +485,7 @@ h2 {
     font-weight: 500;
 }
 
-/* ── Fax Cover (5.C) ──────────────────────────────────────────── */
+/* ── Fax Cover ────────────────────────────────────────────────── */
 .fax-header { border-bottom-width: 2.5pt; }
 .fax-urgent-stamp {
     display: inline-block;
@@ -280,4 +516,42 @@ h2 {
     color: #333;
     margin-top: 10pt;
     background: #fffef2;
+}
+
+/* ── Medical Necessity / Prior Auth letter ───────────────────── */
+.payer-target {
+    margin: 6pt 0 12pt 0;
+    padding: 8pt 10pt;
+    background: #f3f5fb;
+    border-left: 3pt solid #2a4a8c;
+}
+.payer-target .label {
+    color: #2a4a8c;
+}
+.svc-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 4pt;
+    font-size: 10pt;
+}
+.svc-table th, .svc-table td {
+    border: 0.5pt solid #c0c0c0;
+    padding: 4pt 6pt;
+    text-align: left;
+}
+.svc-table th {
+    background: #f0f2f6;
+    font-size: 9pt;
+    text-transform: uppercase;
+    letter-spacing: 0.4pt;
+}
+.svc-table td.svc-code {
+    font-family: "Menlo", "Courier New", monospace;
+    font-weight: 700;
+}
+.necessity-box {
+    margin: 8pt 0;
+    padding: 8pt 10pt;
+    border-left: 2pt solid #2a4a8c;
+    background: #f7f9fd;
 }

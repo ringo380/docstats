@@ -1,0 +1,12 @@
+{# Continuation header — runs in @top-center on letter pages 2+.
+   The .continuation-header class uses CSS3 position: running(name), so
+   this element is removed from the document flow and projected into
+   the page header area. Page 1 is excluded via @page :first override.
+
+   Vars: patient (Patient model). Falls back to display_name + MRN/DOB.
+#}
+<div class="continuation-header">
+  {{ patient.display_name }}
+  {% if patient.mrn %} · MRN {{ patient.mrn }}{% endif %}
+  {% if patient.date_of_birth %} · DOB {{ patient.date_of_birth }}{% endif %}
+</div>

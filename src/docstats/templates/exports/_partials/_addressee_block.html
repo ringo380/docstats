@@ -1,0 +1,38 @@
+{# Addressee block + RE: line + salutation.
+   Vars:
+     generated_at      -- datetime
+     referral          -- Referral
+     patient           -- Patient
+     patient_age       -- int | None (precomputed)
+     recipient_name    -- str | None (override; defaults to receiving_provider_name)
+#}
+<div class="date-line">{{ generated_at.strftime('%B %d, %Y') }}</div>
+
+<div class="addressee-block">
+  {% set _to_name = recipient_name or referral.receiving_provider_name %}
+  {% if _to_name %}
+    <div class="recipient-name">{{ _to_name }}</div>
+  {% endif %}
+  {% if referral.receiving_organization_name %}
+    <div>{{ referral.receiving_organization_name }}</div>
+  {% endif %}
+  {% if referral.specialty_desc and not _to_name %}
+    <div>{{ referral.specialty_desc }} Department</div>
+  {% endif %}
+</div>
+
+<div class="re-line">
+  <span class="re-label">RE:</span>
+  {{ patient.display_name }}
+  {%- if patient.date_of_birth %} · DOB {{ patient.date_of_birth }}{% if patient_age is not none %} (age {{ patient_age }}){% endif %}{% endif %}
+  {%- if patient.sex %} · {{ patient.sex }}{% endif %}
+  {%- if patient.mrn %} · MRN {{ patient.mrn }}{% endif %}
+</div>
+
+<div class="salutation">
+  {% if referral.receiving_provider_name %}
+    Dear Dr. {{ referral.receiving_provider_name.split(' ') | last }}:
+  {% else %}
+    Dear Colleague:
+  {% endif %}
+</div>

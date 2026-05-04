@@ -7,6 +7,8 @@
 <body class="pdf-doc">
 <div class="watermark">CONFIDENTIAL PHI</div>
 
+{% include "_partials/_letterhead.html" %}
+
 <header class="doc-header fax-header">
   <div class="doc-title">
     <h1>Fax Cover Sheet</h1>
@@ -24,19 +26,33 @@
     <h2>From</h2>
     <div class="field-block">
       <span class="label">Organization</span>
-      <div class="value">{{ referral.referring_organization or '—' }}</div>
+      <div class="value">
+        {% if organization %}{{ organization.name }}{% else %}{{ referral.referring_organization or '—' }}{% endif %}
+      </div>
     </div>
     <div class="field-block">
-      <span class="label">Provider</span>
-      <div class="value">{{ referral.referring_provider_name or '—' }}</div>
+      <span class="label">Sending provider</span>
+      <div class="value">
+        {% set _name = (current_user.first_name and current_user.last_name and (current_user.first_name ~ ' ' ~ current_user.last_name))
+                        or current_user.display_name
+                        or referral.referring_provider_name
+                        or '—' %}
+        {{ _name }}{% if current_user.credentials %}, {{ current_user.credentials }}{% endif %}
+      </div>
     </div>
     <div class="field-block">
       <span class="label">NPI</span>
-      <div class="value mono">{{ referral.referring_provider_npi or '—' }}</div>
+      <div class="value mono">
+        {{ current_user.individual_npi or referral.referring_provider_npi or (organization.npi if organization else None) or '—' }}
+      </div>
     </div>
     <div class="field-block">
       <span class="label">Fax</span>
-      <div class="value mono">{{ sender_fax or '—' }}</div>
+      <div class="value mono">{{ (organization.fax if organization else None) or sender_fax or '—' }}</div>
+    </div>
+    <div class="field-block">
+      <span class="label">Phone</span>
+      <div class="value mono">{{ (organization.phone if organization else None) or '—' }}</div>
     </div>
     {% if generated_by_label %}
     <div class="field-block">
@@ -51,6 +67,10 @@
     <div class="field-block">
       <span class="label">Organization</span>
       <div class="value">{{ referral.receiving_organization_name or '—' }}</div>
+    </div>
+    <div class="field-block">
+      <span class="label">Recipient</span>
+      <div class="value">{{ referral.receiving_provider_name or 'Referrals/Scheduling Department' }}</div>
     </div>
     <div class="field-block">
       <span class="label">NPI</span>
@@ -68,22 +88,22 @@
 </section>
 
 <section class="card fax-subject">
-  <h2>Subject</h2>
+  <h2>RE: {{ patient.display_name }}</h2>
   <div class="grid-2">
-    <div>
-      <span class="label">Patient</span>
-      <div class="value hero-value">{{ patient.display_name }}</div>
-    </div>
     <div>
       <span class="label">DOB</span>
       <div class="value">
         {{ patient.date_of_birth or '—' }}
-        {% if patient_age is not none %}<span class="muted">({{ patient_age }} y)</span>{% endif %}
+        {% if patient_age is not none %}<span class="muted">(age {{ patient_age }})</span>{% endif %}
       </div>
     </div>
     <div>
       <span class="label">MRN</span>
       <div class="value mono">{{ patient.mrn or '—' }}</div>
+    </div>
+    <div>
+      <span class="label">Sex</span>
+      <div class="value">{{ patient.sex or '—' }}</div>
     </div>
     <div>
       <span class="label">Authorization</span>
@@ -117,15 +137,18 @@
 </section>
 
 <section class="fax-notice">
-  <strong>Confidentiality Notice</strong> — The information in this transmission is privileged
-  and confidential, intended only for the named recipient. If you received this fax in error,
-  please call the sender immediately and destroy all copies.
+  <strong>HIPAA CONFIDENTIALITY NOTICE</strong> — The information contained in this facsimile transmission
+  is privileged and confidential, intended only for the use of the named recipient. It contains
+  Protected Health Information protected by federal law (HIPAA, 45 CFR §164). If you have received
+  this fax in error, please notify the sender immediately by telephone and destroy all copies of
+  this transmission. Any unauthorized review, disclosure, copying, distribution, or other use of
+  this information is strictly prohibited.
 </section>
 
 <footer class="doc-footer">
   <span>Referral #{{ referral.id }}</span>
-  <span>{{ patient.display_name }}</span>
-  <span>Confidential — contains protected health information.</span>
+  <span>{{ patient.display_name }}{% if patient.mrn %} · MRN {{ patient.mrn }}{% endif %}</span>
+  <span>Confidential — Protected Health Information</span>
 </footer>
 
 </body>
