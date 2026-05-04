@@ -362,18 +362,22 @@ def referral_letter_text(
     lines.append(now.strftime("%B %d, %Y"))
     lines.append("")
 
-    # Addressee
+    # Addressee — Referral domain carries receiving_organization_name +
+    # receiving_provider_npi but no provider name field; an explicit
+    # provider name comes through optional getattr (future schema add)
+    # or stays anonymous and we fall back to the org/specialty.
+    receiving_provider_name = getattr(referral, "receiving_provider_name", None)
     if include_payer:
         target = "Utilization Management / Prior Authorization"
         if insurance_plan:
             target = f"{insurance_plan.payer_name} — {target}"
         lines.append(f"To: {target}")
     else:
-        if referral.receiving_provider_name:
-            lines.append(referral.receiving_provider_name)
+        if receiving_provider_name:
+            lines.append(receiving_provider_name)
         if referral.receiving_organization_name:
             lines.append(referral.receiving_organization_name)
-        if referral.specialty_desc and not referral.receiving_provider_name:
+        if referral.specialty_desc and not receiving_provider_name:
             lines.append(f"{referral.specialty_desc} Department")
     lines.append("")
 
@@ -396,8 +400,8 @@ def referral_letter_text(
     if include_payer:
         lines.append("To Whom It May Concern:")
     else:
-        if referral.receiving_provider_name:
-            last_name = referral.receiving_provider_name.split(" ")[-1]
+        if receiving_provider_name:
+            last_name = receiving_provider_name.split(" ")[-1]
             lines.append(f"Dear Dr. {last_name}:")
         else:
             lines.append("Dear Colleague:")
@@ -436,19 +440,27 @@ def referral_letter_text(
             lines.append(f"Group NPI: {organization.npi}")
         lines.append("")
 
-        if referral.requested_service or referral.cpt_codes:
+        # cpt_codes / place_of_service_code land via migration 027 +
+        # follow-up Pydantic update; until then read defensively.
+        raw_cpt = getattr(referral, "cpt_codes", None)
+        place_of_service = getattr(referral, "place_of_service_code", None)
+        if referral.requested_service or raw_cpt:
             lines.append("SERVICE REQUESTED")
             lines.append("-" * 72)
-            if referral.cpt_codes:
-                cpt_list = referral.cpt_codes
-                if isinstance(cpt_list, str):
-                    import json as _json
+            cpt_list: list[Any] = []
+            if isinstance(raw_cpt, str):
+                import json as _json
 
-                    try:
-                        cpt_list = _json.loads(cpt_list)
-                    except ValueError:
-                        cpt_list = []
-                for code in cpt_list or []:
+                try:
+                    parsed = _json.loads(raw_cpt)
+                    if isinstance(parsed, list):
+                        cpt_list = parsed
+                except ValueError:
+                    cpt_list = []
+            elif isinstance(raw_cpt, list):
+                cpt_list = raw_cpt
+            if cpt_list:
+                for code in cpt_list:
                     if not isinstance(code, dict):
                         continue
                     parts = [code.get("code", "—")]
@@ -459,8 +471,8 @@ def referral_letter_text(
                     lines.append("  " + " · ".join(parts))
             elif referral.requested_service:
                 lines.append(f"  {referral.requested_service}")
-            if referral.place_of_service_code:
-                lines.append(f"  Place of Service: {referral.place_of_service_code}")
+            if place_of_service:
+                lines.append(f"  Place of Service: {place_of_service}")
             lines.append("")
 
     lines.append("REASON FOR REFERRAL")
@@ -557,13 +569,13 @@ def referral_letter_text(
     if attachments:
         lines.append("ENCLOSURES")
         lines.append("-" * 72)
-        for a in attachments:
-            note = a.kind.replace("_", " ")
-            if a.date_of_service:
-                note += f", {a.date_of_service}"
-            if a.checklist_only:
+        for att in attachments:
+            note = att.kind.replace("_", " ")
+            if att.date_of_service:
+                note += f", {att.date_of_service}"
+            if att.checklist_only:
                 note += ", to follow"
-            lines.append(f"  - {a.label} ({note})")
+            lines.append(f"  - {att.label} ({note})")
         lines.append("")
 
     # Closing + signature
@@ -587,13 +599,13 @@ def referral_letter_text(
                 lic += f" ({current_user['state_license_state']})"
             lines.append(lic)
     if organization:
-        contact: list[str] = []
+        sig_contact: list[str] = []
         if organization.phone:
-            contact.append(f"Phone: {organization.phone}")
+            sig_contact.append(f"Phone: {organization.phone}")
         if organization.fax:
-            contact.append(f"Fax: {organization.fax}")
-        if contact:
-            lines.append(" · ".join(contact))
+            sig_contact.append(f"Fax: {organization.fax}")
+        if sig_contact:
+            lines.append(" · ".join(sig_contact))
     if current_user and current_user.get("email"):
         lines.append(f"Direct: {current_user['email']}")
     lines.append("")

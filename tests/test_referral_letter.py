@@ -63,7 +63,6 @@ def _referral(**kwargs):
         referring_provider_name=None,
         referring_organization=None,
         receiving_provider_npi=None,
-        receiving_provider_name="John Smith, MD",
         receiving_organization_name="Bay Cardiology",
         specialty_code=None,
         specialty_desc="Cardiovascular Disease",
@@ -119,13 +118,14 @@ def test_letter_text_includes_re_line_and_salutation():
     assert "RE: Jane Doe" in text
     assert "DOB 1985-04-12" in text
     assert "MRN MRN-001" in text
-    # Salutation is "Dear Dr. <last>" — last token of receiving_provider_name.
-    assert "Dear Dr. MD" in text or "Dear Dr." in text
+    # Referral domain has no receiving_provider_name field today, so the
+    # default fallback salutation fires.
+    assert "Dear Colleague:" in text
 
 
 def test_letter_text_default_salutation_when_no_receiver():
     text = referral_letter_text(
-        _referral(receiving_provider_name=None),
+        _referral(),
         _patient(),
         current_user=_user(),
     )

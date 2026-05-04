@@ -4,19 +4,23 @@
      referral          -- Referral
      patient           -- Patient
      patient_age       -- int | None (precomputed)
-     recipient_name    -- str | None (override; defaults to receiving_provider_name)
+     recipient_name    -- str | None (override; falls back to receiving_organization_name)
+
+   The Referral domain currently carries receiving_organization_name +
+   receiving_provider_npi but NO provider name; the fallback salutation
+   is "Dear Colleague:" until either the schema gains a name or the
+   caller passes recipient_name explicitly.
 #}
 <div class="date-line">{{ generated_at.strftime('%B %d, %Y') }}</div>
 
 <div class="addressee-block">
-  {% set _to_name = recipient_name or referral.receiving_provider_name %}
-  {% if _to_name %}
-    <div class="recipient-name">{{ _to_name }}</div>
+  {% if recipient_name %}
+    <div class="recipient-name">{{ recipient_name }}</div>
   {% endif %}
   {% if referral.receiving_organization_name %}
     <div>{{ referral.receiving_organization_name }}</div>
   {% endif %}
-  {% if referral.specialty_desc and not _to_name %}
+  {% if referral.specialty_desc and not recipient_name %}
     <div>{{ referral.specialty_desc }} Department</div>
   {% endif %}
 </div>
@@ -30,8 +34,8 @@
 </div>
 
 <div class="salutation">
-  {% if referral.receiving_provider_name %}
-    Dear Dr. {{ referral.receiving_provider_name.split(' ') | last }}:
+  {% if recipient_name %}
+    Dear Dr. {{ recipient_name.split(' ') | last }}:
   {% else %}
     Dear Colleague:
   {% endif %}
