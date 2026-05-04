@@ -1,8 +1,9 @@
-"""SMART-on-FHIR routes — vendor-agnostic dispatch layer (Phase 12.C).
+"""SMART-on-FHIR routes — vendor-agnostic dispatch layer (Phase 12.D).
 
-Supports Epic (``epic_sandbox``) and Cerner/Oracle Health (``cerner_oauth``).
-Each vendor is a plain module registered in ``ehr.registry``; routes dispatch
-via the registry rather than calling vendor modules directly.
+Supports Epic (``epic_sandbox``), Cerner/Oracle Health (``cerner_oauth``),
+and eClinicalWorks (``ecw_smart``). Each vendor is a plain module registered
+in ``ehr.registry``; routes dispatch via the registry rather than calling
+vendor modules directly.
 
 PHI is NOT cached in the session cookie. The OAuth callback persists the
 encrypted access token + ``patient_fhir_id`` on ``ehr_connections``; review
@@ -12,6 +13,7 @@ carries opaque OAuth state (PKCE verifier + state token + vendor name).
 Feature flags:
   ``EHR_EPIC_SANDBOX_ENABLED=1``  — Epic routes return 404 when unset.
   ``EHR_CERNER_OAUTH_ENABLED=1``  — Cerner routes return 404 when unset.
+  ``EHR_ECW_ENABLED=1``           — eCW routes return 404 when unset.
 """
 
 from __future__ import annotations
@@ -34,9 +36,11 @@ from docstats.domain.ehr import (
     EPIC_SCOPES_EHR_LAUNCH,
     CERNER_SCOPES,
     CERNER_SCOPES_EHR_LAUNCH,
+    ECW_SCOPES,
+    ECW_SCOPES_EHR_LAUNCH,
     ImportedPatient,
 )
-from docstats.ehr import epic, cerner  # noqa: F401 — side-effect: registers both vendors
+from docstats.ehr import epic, cerner, eclinicalworks  # noqa: F401 — side-effect: registers vendors
 from docstats.ehr import registry as _registry
 from docstats.ehr.crypto import EHRConfigError, decrypt_token, encrypt_token
 from docstats.ehr.registry import EHRError
@@ -74,12 +78,14 @@ _ALLOWED_ERROR_REASONS: frozenset[str] = frozenset(
 _VENDOR_FLAG_ENV: dict[str, str] = {
     "epic_sandbox": "EHR_EPIC_SANDBOX_ENABLED",
     "cerner_oauth": "EHR_CERNER_OAUTH_ENABLED",
+    "ecw_smart": "EHR_ECW_ENABLED",
 }
 
 # Per-vendor EHR-launch ISS allowlist env vars.
 _VENDOR_ISS_ALLOWLIST_ENV: dict[str, str] = {
     "epic_sandbox": "EPIC_EHR_LAUNCH_ISS_ALLOWLIST",
     "cerner_oauth": "CERNER_EHR_LAUNCH_ISS_ALLOWLIST",
+    "ecw_smart": "ECW_EHR_LAUNCH_ISS_ALLOWLIST",
 }
 
 # UI metadata for each vendor (label + route paths).
@@ -93,6 +99,11 @@ _VENDOR_META: dict[str, dict[str, str]] = {
         "label": "Cerner (Oracle Health)",
         "connect_path": "/ehr/connect/cerner",
         "disconnect_path": "/ehr/disconnect/cerner",
+    },
+    "ecw_smart": {
+        "label": "eClinicalWorks",
+        "connect_path": "/ehr/connect/ecw",
+        "disconnect_path": "/ehr/disconnect/ecw",
     },
 }
 
@@ -586,6 +597,65 @@ async def disconnect_cerner(
     storage: StorageBase = Depends(get_storage),
 ) -> Response:
     return await _disconnect_flow("cerner_oauth", request, current_user, storage)
+
+
+# ---------------------------------------------------------------------------
+# eClinicalWorks routes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/launch/ecw")
+async def launch_ecw(
+    request: Request,
+    iss: str | None = Query(None),
+    launch: str | None = Query(None),
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+) -> Response:
+    return await _launch_flow(
+        "ecw_smart", ECW_SCOPES_EHR_LAUNCH, request, current_user, storage, iss, launch
+    )
+
+
+@router.get("/connect/ecw")
+async def connect_ecw(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+) -> Response:
+    return await _connect_flow("ecw_smart", ECW_SCOPES, request, current_user, storage)
+
+
+@router.get("/callback/ecw")
+async def callback_ecw(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+) -> Response:
+    return await _callback_flow(
+        "ecw_smart",
+        ECW_SCOPES,
+        ECW_SCOPES_EHR_LAUNCH,
+        request,
+        current_user,
+        storage,
+        code,
+        state,
+        error,
+    )
+
+
+@router.post("/disconnect/ecw")
+async def disconnect_ecw(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+) -> Response:
+    return await _disconnect_flow("ecw_smart", request, current_user, storage)
 
 
 # ---------------------------------------------------------------------------

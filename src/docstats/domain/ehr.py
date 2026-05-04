@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-EHR_VENDORS: set[str] = {"epic_sandbox", "cerner_oauth"}
+EHR_VENDORS: set[str] = {"epic_sandbox", "cerner_oauth", "ecw_smart"}
 
 # Default scope set for Phase 12.A — Patient-only standalone launch.
 # offline_access is needed for refresh_token. fhirUser + openid identify the
@@ -32,6 +32,20 @@ CERNER_SCOPES: str = (
     "patient/DocumentReference.read offline_access"
 )
 CERNER_SCOPES_EHR_LAUNCH: str = "openid fhirUser launch offline_access"
+
+# eClinicalWorks (eCW) scope sets — Phase 12.D.
+# eCW uses MedicationRequest like Cerner. The eCW dev portal does NOT
+# expose `openid` / `fhirUser` / `offline_access` / `launch` as checkbox
+# scopes — those are gated by separate radio buttons (OpenID? Yes; Refresh
+# Token? Yes/Offline). We still send them in the OAuth `scope` parameter
+# per the SMART App Launch spec; the portal radios just authorize the app
+# to USE them.
+ECW_SCOPES: str = (
+    "openid fhirUser patient/Patient.read patient/Condition.read "
+    "patient/MedicationRequest.read patient/AllergyIntolerance.read "
+    "patient/DocumentReference.read offline_access"
+)
+ECW_SCOPES_EHR_LAUNCH: str = "openid fhirUser launch offline_access"
 
 
 class EHRConnection(BaseModel):
