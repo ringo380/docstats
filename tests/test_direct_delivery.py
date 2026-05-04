@@ -201,9 +201,15 @@ async def test_direct_send_accepts_messageid_field(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_direct_send_uses_bearer_when_configured(monkeypatch):
-    _set_env(monkeypatch)
+async def test_direct_send_uses_bearer_token_when_configured(monkeypatch):
+    """Bearer mode reads DIRECT_HISP_TOKEN, not DIRECT_HISP_USERNAME — putting the
+    token in USERNAME used to silently work and made operator setup confusing."""
+    monkeypatch.setenv("DIRECT_HISP_ENDPOINT", "https://hisp.example.com/api/send")
+    monkeypatch.setenv("DIRECT_HISP_FROM_ADDRESS", "referrals@direct.referme.help")
     monkeypatch.setenv("DIRECT_HISP_AUTH_SCHEME", "bearer")
+    monkeypatch.setenv("DIRECT_HISP_TOKEN", "tok_xyz")
+    monkeypatch.delenv("DIRECT_HISP_USERNAME", raising=False)
+    monkeypatch.delenv("DIRECT_HISP_PASSWORD", raising=False)
     from docstats.delivery.channels.direct import DirectTrustChannel
 
     ch = DirectTrustChannel()
@@ -216,7 +222,53 @@ async def test_direct_send_uses_bearer_when_configured(monkeypatch):
     with patch.object(httpx.AsyncClient, "post", new=AsyncMock(return_value=mock_response)) as post:
         await ch.send(delivery, b"pdf")
     headers = post.call_args.kwargs["headers"]
-    assert headers["Authorization"] == "Bearer hisp_user"
+    assert headers["Authorization"] == "Bearer tok_xyz"
+
+
+def test_direct_bearer_mode_requires_token_not_username(monkeypatch):
+    """Bearer scheme without DIRECT_HISP_TOKEN must fail closed, not silently
+    fall back to using USERNAME as the token."""
+    monkeypatch.setenv("DIRECT_HISP_ENDPOINT", "https://hisp.example.com/api/send")
+    monkeypatch.setenv("DIRECT_HISP_FROM_ADDRESS", "referrals@direct.referme.help")
+    monkeypatch.setenv("DIRECT_HISP_AUTH_SCHEME", "bearer")
+    monkeypatch.setenv("DIRECT_HISP_USERNAME", "hisp_user")  # present but irrelevant
+    monkeypatch.delenv("DIRECT_HISP_TOKEN", raising=False)
+    from docstats.delivery.channels.direct import DirectTrustChannel
+
+    with pytest.raises(ChannelDisabledError, match="DIRECT_HISP_TOKEN"):
+        DirectTrustChannel()
+
+
+def test_direct_bearer_mode_does_not_require_password(monkeypatch):
+    """Bearer mode skips USERNAME/PASSWORD requirements — operator only needs
+    a token. Earlier scaffolding required PASSWORD even in bearer mode."""
+    monkeypatch.setenv("DIRECT_HISP_ENDPOINT", "https://hisp.example.com/api/send")
+    monkeypatch.setenv("DIRECT_HISP_FROM_ADDRESS", "referrals@direct.referme.help")
+    monkeypatch.setenv("DIRECT_HISP_AUTH_SCHEME", "bearer")
+    monkeypatch.setenv("DIRECT_HISP_TOKEN", "tok")
+    monkeypatch.delenv("DIRECT_HISP_USERNAME", raising=False)
+    monkeypatch.delenv("DIRECT_HISP_PASSWORD", raising=False)
+    from docstats.delivery.channels.direct import DirectTrustChannel
+
+    DirectTrustChannel()  # should not raise
+
+
+def test_direct_invalid_auth_scheme_fails_closed(monkeypatch):
+    _set_env(monkeypatch)
+    monkeypatch.setenv("DIRECT_HISP_AUTH_SCHEME", "oauth1")
+    from docstats.delivery.channels.direct import DirectTrustChannel
+
+    with pytest.raises(ChannelDisabledError, match="basic.*bearer"):
+        DirectTrustChannel()
+
+
+def test_direct_vendor_name_has_class_level_default():
+    """Mirrors email/fax precedent — Class.vendor_name is introspectable
+    before instantiation, so UI labels / health checks work without needing
+    a configured channel."""
+    from docstats.delivery.channels.direct import DirectTrustChannel
+
+    assert DirectTrustChannel.vendor_name == "DirectTrust HISP"
 
 
 @pytest.mark.asyncio
@@ -326,7 +378,9 @@ async def test_direct_send_missing_message_id_fatal(monkeypatch):
     with patch.object(httpx.AsyncClient, "post", new=AsyncMock(return_value=mock_response)):
         with pytest.raises(DeliveryError) as exc:
             await DirectTrustChannel().send(_FakeDelivery(), b"pdf")
-    assert exc.value.error_code == "missing_message_id"
+    # Match email/fax convention: shape-violating success responses bucket
+    # under vendor_bad_response, not a separate per-cause code.
+    assert exc.value.error_code == "vendor_bad_response"
     assert exc.value.retryable is False
 
 
@@ -343,8 +397,36 @@ async def test_direct_send_non_json_fatal(monkeypatch):
     with patch.object(httpx.AsyncClient, "post", new=AsyncMock(return_value=mock_response)):
         with pytest.raises(DeliveryError) as exc:
             await DirectTrustChannel().send(_FakeDelivery(), b"pdf")
-    assert exc.value.error_code == "malformed_response"
+    assert exc.value.error_code == "vendor_bad_response"
     assert exc.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_direct_send_4xx_redacts_credentials_and_from_address(monkeypatch):
+    """HISPs sometimes echo the auth credential or sender Direct address in
+    error bodies. The channel docstring promises no PHI in logs, so the
+    response excerpt that lands in DeliveryError must scrub both."""
+    _set_env(monkeypatch)
+    from docstats.delivery.channels.direct import DirectTrustChannel
+
+    leaky_body = (
+        "Auth failed for user hisp_user with password hisp_pass; "
+        "from=referrals@direct.referme.help; please contact support."
+    )
+    mock_response = httpx.Response(
+        401,
+        text=leaky_body,
+        request=httpx.Request("POST", "https://hisp.example.com/api/send"),
+    )
+    with patch.object(httpx.AsyncClient, "post", new=AsyncMock(return_value=mock_response)):
+        with pytest.raises(DeliveryError) as exc:
+            await DirectTrustChannel().send(_FakeDelivery(), b"pdf")
+    msg = str(exc.value)
+    assert "hisp_user" not in msg
+    assert "hisp_pass" not in msg
+    assert "referrals@direct.referme.help" not in msg
+    assert "[REDACTED:credential]" in msg
+    assert "[REDACTED:from-address]" in msg
 
 
 @pytest.mark.asyncio

@@ -1,10 +1,11 @@
 """Direct Trust delivery channel — Phase 9.D scaffolding.
 
 This is a vendor-agnostic skeleton that sits idle until a HISP contract
-activates it. Activation = setting the four required env vars on Railway:
+activates it. Activation = setting the required env vars on Railway:
 
-  - ``DIRECT_HISP_USERNAME``
-  - ``DIRECT_HISP_PASSWORD``
+  - ``DIRECT_HISP_USERNAME``      (Basic-auth username, OR omitted in bearer mode)
+  - ``DIRECT_HISP_PASSWORD``      (Basic-auth password — required when scheme=basic)
+  - ``DIRECT_HISP_TOKEN``         (Bearer token — required when scheme=bearer)
   - ``DIRECT_HISP_ENDPOINT``      (vendor's send-message URL)
   - ``DIRECT_HISP_FROM_ADDRESS``  (the org's Direct address)
 
@@ -20,9 +21,9 @@ PDF as attachment), Basic auth header, idempotency-key passthrough, and
 error classification matching Phase 9.E conventions
 (timeout/network/429/5xx → retryable; 4xx → fatal).
 
-The factory in ``delivery/registry.py`` keeps returning ``ChannelDisabledError``
-until the four env vars are set — see ``_direct_channel`` there. When a
-vendor is picked, the only changes required are:
+The factory in ``delivery/registry.py`` returns ``DirectTrustChannel()``,
+which raises ``ChannelDisabledError`` from ``__init__`` until the required
+env vars are set. When a vendor is picked, the only changes required are:
 
   1. Confirm the multipart form-field names this skeleton uses match what
      the vendor expects (DataMotion uses ``to``/``from``/``subject``/``files``;
@@ -30,7 +31,6 @@ vendor is picked, the only changes required are:
   2. Land vendor-specific webhook signature verification in
      ``webhook_verifiers/direct.py`` (does not exist yet — gated on the
      vendor pick).
-  3. Switch the registry factory from the disabled stub to ``DirectTrustChannel()``.
 
 Per CLAUDE.md "no PHI in logs" rule, the channel never logs the recipient
 address or packet bytes — only vendor message ids and HTTP status codes.
@@ -53,9 +53,11 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = 60.0  # Direct messages route through SMTP under the HISP; allow longer than email/fax
 _DEFAULT_VENDOR_NAME = "DirectTrust HISP"
+
+# Env vars required regardless of auth scheme. Auth-specific requirements
+# are enforced separately in __init__ — bearer mode needs DIRECT_HISP_TOKEN,
+# basic mode needs USERNAME + PASSWORD.
 _REQUIRED_ENV_VARS = (
-    "DIRECT_HISP_USERNAME",
-    "DIRECT_HISP_PASSWORD",
     "DIRECT_HISP_ENDPOINT",
     "DIRECT_HISP_FROM_ADDRESS",
 )
@@ -71,20 +73,46 @@ class DirectTrustChannel:
     """
 
     name = "direct"
+    # Class-level default mirrors email/fax (which use single-vendor literals).
+    # Per-instance override lands in __init__ when DIRECT_HISP_VENDOR is set,
+    # since Direct is intentionally vendor-agnostic until a HISP is picked.
+    vendor_name = _DEFAULT_VENDOR_NAME
 
     def __init__(self) -> None:
         missing = [v for v in _REQUIRED_ENV_VARS if not os.environ.get(v)]
+
+        scheme = os.environ.get("DIRECT_HISP_AUTH_SCHEME", "basic").strip().lower()
+        if scheme == "bearer":
+            if not os.environ.get("DIRECT_HISP_TOKEN"):
+                missing.append("DIRECT_HISP_TOKEN")
+        elif scheme == "basic":
+            if not os.environ.get("DIRECT_HISP_USERNAME"):
+                missing.append("DIRECT_HISP_USERNAME")
+            if not os.environ.get("DIRECT_HISP_PASSWORD"):
+                missing.append("DIRECT_HISP_PASSWORD")
+        else:
+            raise ChannelDisabledError(
+                "direct",
+                reason=f"DIRECT_HISP_AUTH_SCHEME must be 'basic' or 'bearer', got {scheme!r}",
+            )
+
         if missing:
             raise ChannelDisabledError(
                 "direct",
                 reason=f"missing env vars: {', '.join(missing)}",
             )
-        self._username = os.environ["DIRECT_HISP_USERNAME"]
-        self._password = os.environ["DIRECT_HISP_PASSWORD"]
+
+        self._auth_scheme = scheme
+        self._username = os.environ.get("DIRECT_HISP_USERNAME", "")
+        self._password = os.environ.get("DIRECT_HISP_PASSWORD", "")
+        self._token = os.environ.get("DIRECT_HISP_TOKEN", "")
         self._endpoint = os.environ["DIRECT_HISP_ENDPOINT"]
         self._from_address = os.environ["DIRECT_HISP_FROM_ADDRESS"]
-        self._auth_scheme = os.environ.get("DIRECT_HISP_AUTH_SCHEME", "basic").lower()
-        self.vendor_name = os.environ.get("DIRECT_HISP_VENDOR", _DEFAULT_VENDOR_NAME)
+        # Override the class-level default per-instance only when the env
+        # var is set — keeps `DirectTrustChannel.vendor_name` introspection
+        # working before instantiation, matching email/fax.
+        if os.environ.get("DIRECT_HISP_VENDOR"):
+            self.vendor_name = os.environ["DIRECT_HISP_VENDOR"]
 
     async def send(self, delivery: "Delivery", packet_bytes: bytes) -> DeliveryReceipt:
         if not packet_bytes:
@@ -115,6 +143,7 @@ class DirectTrustChannel:
             scheme=self._auth_scheme,
             username=self._username,
             password=self._password,
+            token=self._token,
             idempotency_key=delivery.idempotency_key,
         )
 
@@ -144,13 +173,13 @@ class DirectTrustChannel:
         if resp.status_code >= 500:
             raise DeliveryError(
                 "vendor_5xx",
-                f"HISP {resp.status_code}: {resp.text[:200]}",
+                f"HISP {resp.status_code}: {self._safe_excerpt(resp.text)}",
                 retryable=True,
             )
         if resp.status_code not in (200, 201, 202):
             raise DeliveryError(
                 "vendor_4xx",
-                f"HISP {resp.status_code}: {resp.text[:200]}",
+                f"HISP {resp.status_code}: {self._safe_excerpt(resp.text)}",
                 retryable=False,
             )
 
@@ -158,16 +187,19 @@ class DirectTrustChannel:
             data: dict[str, Any] = resp.json()
         except ValueError as exc:
             raise DeliveryError(
-                "malformed_response",
-                f"HISP returned non-JSON: {resp.text[:200]}",
+                # Match email/fax vocabulary: both use "vendor_bad_response"
+                # for non-JSON / shape-violating success-status responses
+                # so the dispatcher can class-bucket failures uniformly.
+                "vendor_bad_response",
+                f"HISP returned non-JSON: {self._safe_excerpt(resp.text)}",
                 retryable=False,
             ) from exc
 
         message_id = _extract_message_id(data)
         if not message_id:
             raise DeliveryError(
-                "missing_message_id",
-                f"HISP response missing message id: {str(data)[:200]}",
+                "vendor_bad_response",
+                f"HISP response missing message id: {self._safe_excerpt(str(data))}",
                 retryable=False,
             )
         return DeliveryReceipt(
@@ -176,6 +208,26 @@ class DirectTrustChannel:
             status="sent",
             vendor_response_excerpt=f"id={message_id}",
         )
+
+    def _safe_excerpt(self, body: str, *, limit: int = 200) -> str:
+        """Truncated response body with PHI + credentials redacted.
+
+        HISPs vary on what they echo in error bodies — some include the
+        Authorization header value, the recipient/from Direct address,
+        or the rejected payload bytes. The channel docstring promises
+        no PHI in logs, so we strip recipient/from addresses + any of
+        the auth-credential env values BEFORE truncating to ``limit``
+        chars. Replacement is verbose ("[REDACTED:reason]") so an
+        operator scanning logs can tell something was scrubbed.
+        """
+        redacted = body
+        for sensitive in (self._from_address,):
+            if sensitive:
+                redacted = redacted.replace(sensitive, "[REDACTED:from-address]")
+        for cred in (self._username, self._password, self._token):
+            if cred:
+                redacted = redacted.replace(cred, "[REDACTED:credential]")
+        return redacted[:limit]
 
 
 def _build_form_data(
@@ -195,12 +247,19 @@ def _build_form_data(
 
 
 def _build_headers(
-    *, scheme: str, username: str, password: str, idempotency_key: str | None
+    *,
+    scheme: str,
+    username: str,
+    password: str,
+    token: str,
+    idempotency_key: str | None,
 ) -> dict[str, str]:
     headers: dict[str, str] = {}
     if scheme == "bearer":
-        # Some HISPs use "Bearer <token>" — pack username only as the token.
-        headers["Authorization"] = f"Bearer {username}"
+        # Bearer token comes from DIRECT_HISP_TOKEN — username/password are
+        # not consulted in this branch (and are not required by __init__
+        # when scheme=bearer).
+        headers["Authorization"] = f"Bearer {token}"
     else:
         # Default: HTTP Basic. Build the Authorization header explicitly so
         # httpx multipart encoding stays untouched.
