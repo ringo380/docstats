@@ -557,7 +557,7 @@ class PostgresStorage(StorageBase):
         clinician_verified_method: str | None = None,
         clinician_verification_reasons: list[str] | None = None,
     ) -> int:
-        row = {
+        row: dict[str, Any] = {
             "email": normalize_email(email),
             "password_hash": password_hash,
             "account_type": account_type,

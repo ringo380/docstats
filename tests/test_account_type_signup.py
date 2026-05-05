@@ -225,8 +225,11 @@ def test_clinician_signup_rejected_creates_no_user_and_returns_generic(
     )
     assert resp.status_code == 200
     # Generic message — never confirms OIG exclusion specifically.
-    assert "couldn't verify your clinician credentials" in resp.text.lower()
-    assert "oig" not in resp.text.lower()
+    # Lowercase HTML, ignoring autoescape variants of the apostrophe.
+    body = resp.text.lower()
+    assert "verify your clinician credentials" in body
+    assert "oig" not in body
+    assert "exclud" not in body
     assert storage.get_user_by_email("doc@example.com") is None
 
 
