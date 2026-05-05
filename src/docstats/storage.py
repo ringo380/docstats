@@ -5417,34 +5417,34 @@ class Storage(StorageBase):
         raw_request_json: str | None = None,
     ) -> PriorAuthSubmission:
         scope_sql_clause(scope)  # raises ScopeRequired on anon
-        cur = self._conn.execute(
-            """INSERT INTO prior_auth_submissions
-               (scope_user_id, scope_organization_id, referral_id,
-                availity_payer_id, payer_name, member_id, service_type,
-                diagnosis_codes_json, procedure_codes_json, service_date,
-                place_of_service, status, idempotency_key, raw_request_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                scope.user_id if scope.is_solo else None,
-                scope.organization_id if scope.is_org else None,
-                referral_id,
-                availity_payer_id,
-                payer_name,
-                member_id,
-                service_type,
-                json.dumps(diagnosis_codes),
-                json.dumps(procedure_codes),
-                service_date,
-                place_of_service,
-                status,
-                idempotency_key,
-                raw_request_json,
-            ),
-        )
-        self._conn.commit()
-        row = self._conn.execute(
-            "SELECT * FROM prior_auth_submissions WHERE id = ?", (cur.lastrowid,)
-        ).fetchone()
+        with self._conn:
+            cur = self._conn.execute(
+                """INSERT INTO prior_auth_submissions
+                   (scope_user_id, scope_organization_id, referral_id,
+                    availity_payer_id, payer_name, member_id, service_type,
+                    diagnosis_codes_json, procedure_codes_json, service_date,
+                    place_of_service, status, idempotency_key, raw_request_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    scope.user_id if scope.is_solo else None,
+                    scope.organization_id if scope.is_org else None,
+                    referral_id,
+                    availity_payer_id,
+                    payer_name,
+                    member_id,
+                    service_type,
+                    json.dumps(diagnosis_codes),
+                    json.dumps(procedure_codes),
+                    service_date,
+                    place_of_service,
+                    status,
+                    idempotency_key,
+                    raw_request_json,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM prior_auth_submissions WHERE id = ?", (cur.lastrowid,)
+            ).fetchone()
         return self._row_to_prior_auth(row)
 
     def update_prior_auth_submission(

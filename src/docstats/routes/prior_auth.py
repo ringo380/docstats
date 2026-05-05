@@ -74,6 +74,37 @@ def _split_codes(raw: str | None) -> list[str]:
     return [tok.strip().upper() for tok in raw.replace(";", ",").split(",") if tok.strip()]
 
 
+# Loose match for free-text PHI tokens that vendors sometimes echo back in 4xx
+# bodies (member ids, names). Combined with explicit member-id substitution
+# this should keep the stored excerpt free of the most common PHI leakage.
+_PHI_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"\b\d{10}\b", "[REDACTED:npi]"),  # bare NPI
+    (r"\b\d{3}-?\d{2}-?\d{4}\b", "[REDACTED:ssn]"),
+    (r"\b(19|20)\d{2}-\d{2}-\d{2}\b", "[REDACTED:dob]"),
+)
+
+
+def _safe_error_excerpt(body: str, member_id: str | None = None, *, limit: int = 200) -> str:
+    """Redact echoed PHI / credentials from an Availity error body before storing.
+
+    The Availity 278 path sees patient first/last names, DOB, member id,
+    NPI, and ICD/CPT codes in submitted payloads. 4xx error responses
+    sometimes echo those tokens back; raw `str(e)` would land verbatim in
+    `prior_auth_submissions.error_message`. Strip the obvious ones first,
+    then truncate.
+    """
+    import re
+
+    text = body or ""
+    if member_id:
+        text = text.replace(member_id, "[REDACTED:member-id]")
+    for pat, repl in _PHI_PATTERNS:
+        text = re.sub(pat, repl, text)
+    if len(text) > limit:
+        text = text[:limit] + "…"
+    return text
+
+
 def _emit_pa_event(
     storage: StorageBase,
     scope: Scope,
@@ -256,18 +287,31 @@ async def submit_prior_auth(
             error_message="Prior authorization is not configured on this server.",
             submitted_at=now,
         )
+        audit_record(
+            storage,
+            action="auth.submit_unavailable",
+            request=request,
+            actor_user_id=current_user["id"],
+            scope_user_id=scope.user_id if scope.is_solo else None,
+            scope_organization_id=scope.organization_id,
+            entity_type="referral",
+            entity_id=str(referral_id),
+            metadata={"reason": "channel_disabled"},
+        )
     except AvailityUnavailableError as e:
         storage.update_prior_auth_submission(
             submission.id,  # type: ignore[arg-type]
             status="unavailable",
-            error_message=f"Clearinghouse temporarily unavailable: {e}",
+            error_message=_safe_error_excerpt(
+                f"Clearinghouse temporarily unavailable: {e}", member_id
+            ),
             submitted_at=now,
         )
     except AvailityError as e:
         storage.update_prior_auth_submission(
             submission.id,  # type: ignore[arg-type]
             status="error",
-            error_message=str(e),
+            error_message=_safe_error_excerpt(str(e), member_id),
             submitted_at=now,
         )
 
@@ -429,14 +473,15 @@ async def refresh_prior_auth_status(
     except AvailityUnavailableError as e:
         storage.update_prior_auth_submission(
             submission.id,  # type: ignore[arg-type]
-            error_message=f"Clearinghouse temporarily unavailable: {e}",
+            status="unavailable",
+            error_message=_safe_error_excerpt(str(e), submission.member_id),
             last_polled_at=now,
         )
     except AvailityError as e:
         storage.update_prior_auth_submission(
             submission.id,  # type: ignore[arg-type]
             status="error",
-            error_message=str(e),
+            error_message=_safe_error_excerpt(str(e), submission.member_id),
             last_polled_at=now,
         )
 

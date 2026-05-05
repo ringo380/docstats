@@ -1,19 +1,19 @@
--- Phase 11.E: Prior authorization submissions (X12 278)
+-- Migration 029: Prior authorization submissions (X12 278) — Phase 11.E
 --
 -- One row per submission attempt against Availity's prior-auth API.
 -- Rows are scope-owned (exactly one of scope_user_id / scope_organization_id
--- non-null, matching eligibility_checks).
+-- non-null, matching docstats_eligibility_checks).
 --
 -- Referral FK is RESTRICT — an in-flight auth blocks referral hard-delete
 -- (referrals are evidence; can still be soft-deleted).
 
-CREATE TABLE IF NOT EXISTS prior_auth_submissions (
+CREATE TABLE IF NOT EXISTS docstats_prior_auth_submissions (
     id                       BIGSERIAL PRIMARY KEY,
 
-    scope_user_id            INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    scope_organization_id    INTEGER REFERENCES organizations(id) ON DELETE SET NULL,
+    scope_user_id            INTEGER REFERENCES docstats_users(id) ON DELETE SET NULL,
+    scope_organization_id    INTEGER REFERENCES docstats_organizations(id) ON DELETE SET NULL,
 
-    referral_id              INTEGER NOT NULL REFERENCES referrals(id) ON DELETE RESTRICT,
+    referral_id              INTEGER NOT NULL REFERENCES docstats_referrals(id) ON DELETE RESTRICT,
 
     availity_payer_id        TEXT    NOT NULL,
     payer_name               TEXT,
@@ -47,16 +47,16 @@ CREATE TABLE IF NOT EXISTS prior_auth_submissions (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_prior_auth_idempotency
-    ON prior_auth_submissions (idempotency_key)
+    ON docstats_prior_auth_submissions (idempotency_key)
     WHERE idempotency_key IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS ix_prior_auth_referral
-    ON prior_auth_submissions (referral_id, created_at DESC);
+    ON docstats_prior_auth_submissions (referral_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS ix_prior_auth_scope_user
-    ON prior_auth_submissions (scope_user_id, created_at DESC)
+    ON docstats_prior_auth_submissions (scope_user_id, created_at DESC)
     WHERE scope_user_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS ix_prior_auth_scope_org
-    ON prior_auth_submissions (scope_organization_id, created_at DESC)
+    ON docstats_prior_auth_submissions (scope_organization_id, created_at DESC)
     WHERE scope_organization_id IS NOT NULL;
