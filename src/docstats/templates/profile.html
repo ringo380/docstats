@@ -25,6 +25,102 @@
     </div>
   </div>
 
+  {# ── Letter signature ── #}
+  <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
+    <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.5rem; color:var(--text-dim);">Letter signature</h2>
+    <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">
+      These fields populate the signature block on every referral letter and prior-auth packet you generate.
+      All optional &mdash; templates render gracefully when fields are blank.
+    </p>
+
+    {% if signature_saved %}
+    <div class="alert" style="margin-bottom:0.75rem; font-size:0.82rem; padding:8px 12px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.3); border-radius:var(--radius-sm); color:#15803d;">
+      Signature saved.
+    </div>
+    {% endif %}
+    {% if signature_error %}
+    <div class="alert alert-error" style="margin-bottom:0.75rem; font-size:0.82rem; padding:8px 12px; background:rgba(220,38,38,0.1); border:1px solid rgba(220,38,38,0.3); border-radius:var(--radius-sm); color:var(--red);">
+      {{ signature_error }}
+    </div>
+    {% endif %}
+
+    <form method="post" action="/profile/signature" style="display:flex; flex-direction:column; gap:0.75rem; font-size:0.85rem;">
+      <label>
+        <span style="display:block; color:var(--text-dim); margin-bottom:0.25rem;">Credentials <span style="color:var(--text-muted); font-weight:400;">(e.g. MD, FAAFP)</span></span>
+        <input type="text" name="credentials" maxlength="80" value="{{ user.credentials or '' }}"
+               placeholder="MD, FAAFP" autocomplete="off"
+               style="width:100%;">
+      </label>
+
+      <label>
+        <span style="display:block; color:var(--text-dim); margin-bottom:0.25rem;">Individual NPI <span style="color:var(--text-muted); font-weight:400;">(Type-1, 10 digits)</span></span>
+        <input type="text" name="individual_npi" inputmode="numeric" pattern="[0-9]{10}" maxlength="10"
+               value="{{ user.individual_npi or '' }}"
+               placeholder="1234567890" autocomplete="off"
+               style="width:100%; font-family:var(--font-mono);">
+      </label>
+
+      <div style="display:grid; grid-template-columns: 2fr 1fr; gap:0.5rem;">
+        <label>
+          <span style="display:block; color:var(--text-dim); margin-bottom:0.25rem;">State license #</span>
+          <input type="text" name="state_license_number" maxlength="40"
+                 value="{{ user.state_license_number or '' }}"
+                 placeholder="A1234567" autocomplete="off"
+                 style="width:100%; font-family:var(--font-mono);">
+        </label>
+        <label>
+          <span style="display:block; color:var(--text-dim); margin-bottom:0.25rem;">State</span>
+          <select name="state_license_state" style="width:100%;">
+            <option value="">—</option>
+            {% for code, name in us_states %}
+            <option value="{{ code }}" {% if user.state_license_state == code %}selected{% endif %}>{{ code }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+
+      <div>
+        <button type="submit" class="btn btn-primary" style="font-size:0.82rem; padding:6px 16px;">
+          Save signature fields
+        </button>
+        <span style="color:var(--text-muted); font-size:0.78rem; margin-left:0.5rem;">
+          Empty inputs clear the field.
+        </span>
+      </div>
+    </form>
+
+    <hr style="border:none; border-top:1px solid var(--border); margin:1rem 0;">
+
+    <div>
+      <h3 style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem;">Signature image</h3>
+      <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">
+        Optional. PNG or JPEG, ≤ 200 KB. Inlines into every rendered letter just above your typed name.
+      </p>
+
+      {% if signature_image_url %}
+      <div style="margin-bottom:0.75rem; padding:0.75rem; background:var(--bg-sunken); border:1px solid var(--border); border-radius:var(--radius-sm); display:flex; align-items:center; gap:1rem;">
+        <img src="{{ signature_image_url }}" alt="signature preview"
+             style="max-height:48px; max-width:200px; background:#fff; padding:4px; border-radius:var(--radius-sm);">
+        <button type="button"
+                hx-delete="/profile/signature/image"
+                hx-confirm="Remove your saved signature image?"
+                class="btn btn-secondary"
+                style="font-size:0.78rem; padding:4px 10px;">
+          Remove image
+        </button>
+      </div>
+      {% endif %}
+
+      <form method="post" action="/profile/signature/image" enctype="multipart/form-data"
+            style="display:flex; align-items:center; gap:0.5rem; font-size:0.85rem;">
+        <input type="file" name="file" accept="image/png,image/jpeg" required>
+        <button type="submit" class="btn btn-secondary" style="font-size:0.82rem; padding:6px 16px;">
+          Upload
+        </button>
+      </form>
+    </div>
+  </div>
+
   {# ── Connected EHRs (SMART-on-FHIR) ── #}
   {% if ehr_enabled %}
   <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">

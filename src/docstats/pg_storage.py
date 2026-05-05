@@ -657,6 +657,27 @@ class PostgresStorage(StorageBase):
             return
         self._t("users").update(fields).eq("id", user_id).execute()
 
+    def update_user_signature(
+        self,
+        user_id: int,
+        *,
+        credentials: str | None,
+        individual_npi: str | None,
+        state_license_number: str | None,
+        state_license_state: str | None,
+    ) -> None:
+        self._t("users").update(
+            {
+                "credentials": credentials,
+                "individual_npi": individual_npi,
+                "state_license_number": state_license_number,
+                "state_license_state": state_license_state,
+            }
+        ).eq("id", user_id).execute()
+
+    def set_user_signature_image_ref(self, user_id: int, ref: str | None) -> None:
+        self._t("users").update({"signature_image_ref": ref}).eq("id", user_id).execute()
+
     def record_terms_acceptance(
         self,
         user_id: int,

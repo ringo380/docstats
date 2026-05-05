@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import uuid
 from datetime import date, datetime, timezone
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, Request, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from docstats.auth import require_user
@@ -15,12 +18,18 @@ from docstats.domain import audit
 from docstats.domain.orgs import has_role_at_least
 from docstats.domain.staff_access import DEFAULT_TTL_SECONDS, TTL_OPTIONS
 from docstats.phi import require_phi_consent
-from docstats.routes._common import MAPBOX_TOKEN, get_client, render, saved_count
+from docstats.routes._common import MAPBOX_TOKEN, US_STATES, get_client, render, saved_count
 from docstats.routes.ehr import _ehr_vendor_ui_list
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
-from docstats.storage_files import StorageFileBackend, get_file_backend
+from docstats.storage_files import (
+    MimeSniffError,
+    StorageFileBackend,
+    StorageFileError,
+    get_file_backend,
+    sniff_mime,
+)
 from docstats.validators import require_valid_npi
 
 logger = logging.getLogger(__name__)
@@ -29,14 +38,44 @@ router = APIRouter(tags=["profile"])
 
 _CONFIRM_PHRASE = "DELETE MY ACCOUNT"
 
+# Signature image upload caps. Tighter than the attachment caps —
+# signatures inline into every rendered letter, so they need to be
+# small enough that page weight doesn't balloon.
+_SIGNATURE_MAX_BYTES = 200 * 1024  # 200 KB
+_SIGNATURE_ALLOWED_MIMES = frozenset({"image/png", "image/jpeg"})
+_SIGNATURE_MIME_TO_SUFFIX = {"image/png": "png", "image/jpeg": "jpg"}
+# Allow-list of state codes accepted on the signature form.
+_US_STATE_CODES = frozenset(code for code, _ in US_STATES)
+# Conservative validators applied at the route boundary; the DB also
+# enforces these via NOT VALID CHECK constraints (migration 026).
+_NPI_RE = re.compile(r"^[0-9]{10}$")
+_LICENSE_RE = re.compile(r"^[A-Za-z0-9\-]{1,40}$")
+_CREDENTIALS_MAX_LENGTH = 80
+_LICENSE_NUM_MAX_LENGTH = 40
+
+
+async def _signature_image_url(file_backend: StorageFileBackend, ref: str | None) -> str | None:
+    """Mint a 15-min signed URL so the profile page can preview the signature
+    image. Returns None when no image is set or the backend can't serve it."""
+    if not ref:
+        return None
+    try:
+        return await file_backend.signed_url(ref)
+    except Exception:
+        logger.exception("Failed to mint signature image URL for profile preview")
+        return None
+
 
 @router.get("/profile", response_class=HTMLResponse)
 async def profile(
     request: Request,
     ehr_error: str | None = None,
+    signature_saved: bool = False,
+    signature_error: str | None = None,
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
     client: NPPESClient = Depends(get_client),
+    file_backend: StorageFileBackend = Depends(get_file_backend),
 ):
     user_id = current_user["id"]
     pcp_provider = None
@@ -51,13 +90,21 @@ async def profile(
     ehr_vendors = _ehr_vendor_ui_list(user_id, storage)
     ehr_enabled = bool(ehr_vendors)
 
+    # Re-fetch the user row so we see the latest signature fields after a
+    # save round-trip (the cached current_user is from the session-load
+    # boundary).
+    fresh_user = storage.get_user_by_id(user_id) or current_user
+    signature_image_url = await _signature_image_url(
+        file_backend, fresh_user.get("signature_image_ref")
+    )
+
     return render(
         "profile.html",
         {
             "request": request,
             "active_page": "profile",
             "saved_count": saved_count(storage, user_id),
-            "user": current_user,
+            "user": fresh_user,
             "pcp_provider": pcp_provider,
             "mapbox_token": MAPBOX_TOKEN,
             "delete_error": None,
@@ -66,8 +113,201 @@ async def profile(
             "ehr_enabled": ehr_enabled,
             "ehr_error": ehr_error,
             "ehr_vendors": ehr_vendors,
+            "us_states": US_STATES,
+            "signature_image_url": signature_image_url,
+            "signature_saved": signature_saved,
+            "signature_error": signature_error,
         },
     )
+
+
+def _coerce_optional_form(value: str | None, *, max_length: int) -> str | None:
+    """Strip + truncate-check a form input, returning None on empty input."""
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > max_length:
+        raise HTTPException(
+            status_code=422, detail=f"Field is too long (max {max_length} characters)."
+        )
+    return cleaned
+
+
+@router.post("/profile/signature", response_class=HTMLResponse)
+async def profile_save_signature(
+    request: Request,
+    credentials: Annotated[str | None, Form(max_length=_CREDENTIALS_MAX_LENGTH)] = None,
+    individual_npi: Annotated[str | None, Form(max_length=10)] = None,
+    state_license_number: Annotated[str | None, Form(max_length=_LICENSE_NUM_MAX_LENGTH)] = None,
+    state_license_state: Annotated[str | None, Form(max_length=2)] = None,
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Replace the four signature TEXT fields. Empty inputs clear the field."""
+    user_id = current_user["id"]
+
+    creds = _coerce_optional_form(credentials, max_length=_CREDENTIALS_MAX_LENGTH)
+    npi_clean = _coerce_optional_form(individual_npi, max_length=10)
+    if npi_clean is not None and not _NPI_RE.match(npi_clean):
+        raise HTTPException(status_code=422, detail="Individual NPI must be exactly 10 digits.")
+    license_num = _coerce_optional_form(state_license_number, max_length=_LICENSE_NUM_MAX_LENGTH)
+    if license_num is not None and not _LICENSE_RE.match(license_num):
+        raise HTTPException(
+            status_code=422,
+            detail="State license number may only contain letters, numbers, and dashes.",
+        )
+    license_state = _coerce_optional_form(state_license_state, max_length=2)
+    if license_state is not None:
+        license_state = license_state.upper()
+        if license_state not in _US_STATE_CODES:
+            raise HTTPException(status_code=422, detail=f"Unknown state code {license_state!r}.")
+
+    storage.update_user_signature(
+        user_id,
+        credentials=creds,
+        individual_npi=npi_clean,
+        state_license_number=license_num,
+        state_license_state=license_state,
+    )
+    audit.record(
+        storage,
+        action="user.signature_updated",
+        request=request,
+        actor_user_id=user_id,
+        scope_user_id=user_id,
+        metadata={
+            "fields_set": [
+                k
+                for k, v in {
+                    "credentials": creds,
+                    "individual_npi": npi_clean,
+                    "state_license_number": license_num,
+                    "state_license_state": license_state,
+                }.items()
+                if v is not None
+            ],
+        },
+    )
+    if request.headers.get("HX-Request"):
+        resp = Response(status_code=200)
+        resp.headers["HX-Redirect"] = "/profile?signature_saved=1"
+        return resp
+    return RedirectResponse("/profile?signature_saved=1", status_code=303)
+
+
+@router.post("/profile/signature/image", response_class=HTMLResponse)
+async def profile_upload_signature_image(
+    request: Request,
+    file: Annotated[UploadFile, File(...)],
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+    file_backend: StorageFileBackend = Depends(get_file_backend),
+):
+    """Upload a PNG or JPEG signature image (≤200 KB)."""
+    user_id = current_user["id"]
+
+    raw_len = request.headers.get("content-length")
+    if raw_len:
+        try:
+            if int(raw_len) > _SIGNATURE_MAX_BYTES * 2:  # multipart envelope overhead
+                raise HTTPException(status_code=413, detail="Signature image too large.")
+        except ValueError:
+            pass
+
+    data = await file.read(_SIGNATURE_MAX_BYTES + 1)
+    if len(data) > _SIGNATURE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Signature image must be ≤ {_SIGNATURE_MAX_BYTES // 1024} KB.",
+        )
+    if not data:
+        raise HTTPException(status_code=422, detail="Signature image is empty.")
+
+    try:
+        mime = sniff_mime(data)
+    except MimeSniffError as exc:
+        raise HTTPException(status_code=415, detail=str(exc))
+    if mime not in _SIGNATURE_ALLOWED_MIMES:
+        raise HTTPException(
+            status_code=415,
+            detail="Signature image must be PNG or JPEG.",
+        )
+
+    suffix = _SIGNATURE_MIME_TO_SUFFIX[mime]
+    object_path = f"user-{user_id}/signature/{uuid.uuid4().hex}.{suffix}"
+
+    # Capture the prior ref (if any) so we can clean up the old object
+    # after the new one lands successfully.
+    fresh_user = storage.get_user_by_id(user_id) or {}
+    prior_ref = fresh_user.get("signature_image_ref")
+
+    try:
+        await file_backend.put(path=object_path, data=data, mime_type=mime)
+    except StorageFileError as exc:
+        logger.exception("Signature image upload failed for user %s", user_id)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    storage.set_user_signature_image_ref(user_id, object_path)
+
+    if prior_ref and prior_ref != object_path:
+        try:
+            await file_backend.delete(prior_ref)
+        except Exception:
+            logger.exception(
+                "Failed to delete prior signature image %s for user %s", prior_ref, user_id
+            )
+
+    audit.record(
+        storage,
+        action="user.signature_image_updated",
+        request=request,
+        actor_user_id=user_id,
+        scope_user_id=user_id,
+        metadata={"mime_type": mime, "size_bytes": len(data)},
+    )
+    if request.headers.get("HX-Request"):
+        resp = Response(status_code=200)
+        resp.headers["HX-Redirect"] = "/profile?signature_saved=1"
+        return resp
+    return RedirectResponse("/profile?signature_saved=1", status_code=303)
+
+
+@router.delete("/profile/signature/image", response_class=HTMLResponse)
+async def profile_clear_signature_image(
+    request: Request,
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+    file_backend: StorageFileBackend = Depends(get_file_backend),
+):
+    """Clear the user's signature image (best-effort blob delete)."""
+    user_id = current_user["id"]
+    fresh_user = storage.get_user_by_id(user_id) or {}
+    prior_ref = fresh_user.get("signature_image_ref")
+
+    storage.set_user_signature_image_ref(user_id, None)
+
+    if prior_ref:
+        try:
+            await file_backend.delete(prior_ref)
+        except Exception:
+            logger.exception(
+                "Failed to delete signature image %s for user %s during clear", prior_ref, user_id
+            )
+
+    audit.record(
+        storage,
+        action="user.signature_image_cleared",
+        request=request,
+        actor_user_id=user_id,
+        scope_user_id=user_id,
+    )
+    if request.headers.get("HX-Request"):
+        resp = Response(status_code=200)
+        resp.headers["HX-Redirect"] = "/profile?signature_saved=1"
+        return resp
+    return RedirectResponse("/profile?signature_saved=1", status_code=303)
 
 
 @router.post("/profile/pcp/{npi}", response_class=HTMLResponse)
