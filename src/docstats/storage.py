@@ -58,6 +58,7 @@ from docstats.domain.referrals import (
     ReferralEvent,
     ReferralMedication,
     ReferralResponse,
+    parse_cpt_codes,
 )
 from docstats.domain.eligibility import AvailityPayer, EligibilityCheck, EligibilityResult
 from docstats.domain.sessions import Session
@@ -232,6 +233,22 @@ def _row_to_referral(row: sqlite3.Row) -> Referral:
         external_source=row["external_source"],
         ehr_service_request_id=row["ehr_service_request_id"]
         if "ehr_service_request_id" in row.keys()
+        else None,
+        cpt_codes=parse_cpt_codes(row["cpt_codes"]) if "cpt_codes" in row.keys() else None,
+        place_of_service_code=row["place_of_service_code"]
+        if "place_of_service_code" in row.keys()
+        else None,
+        medical_necessity_text=row["medical_necessity_text"]
+        if "medical_necessity_text" in row.keys()
+        else None,
+        conservative_therapy_tried=row["conservative_therapy_tried"]
+        if "conservative_therapy_tried" in row.keys()
+        else None,
+        requested_start_date=row["requested_start_date"]
+        if "requested_start_date" in row.keys()
+        else None,
+        requested_end_date=row["requested_end_date"]
+        if "requested_end_date" in row.keys()
         else None,
         created_by_user_id=row["created_by_user_id"],
         created_at=created,
@@ -595,6 +612,8 @@ class Storage(StorageBase):
         self._migrate_eligibility_checks()
         self._migrate_availity_payers()
         self._migrate_staff_access_grants()
+        self._migrate_users_signature_fields()
+        self._migrate_referrals_authorization_fields()
         self._migrate_ehr_connections()
 
     def _migrate_saved_providers(self) -> None:
@@ -671,6 +690,43 @@ class Storage(StorageBase):
                 self._conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
             except sqlite3.OperationalError:
                 pass  # Column already exists
+        self._conn.commit()
+
+    def _migrate_users_signature_fields(self) -> None:
+        """Add letter-signature fields to users (mirrors migration 026)."""
+        cols = [
+            "credentials TEXT",
+            "individual_npi TEXT",
+            "state_license_number TEXT",
+            "state_license_state TEXT",
+            "signature_image_ref TEXT",
+        ]
+        for col in cols:
+            try:
+                self._conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass
+        self._conn.commit()
+
+    def _migrate_referrals_authorization_fields(self) -> None:
+        """Add prior-auth / medical-necessity fields to referrals (mirrors migration 027).
+
+        cpt_codes is stored as JSON-text on SQLite and as JSONB on Postgres;
+        ``parse_cpt_codes()`` normalizes both at the row-mapper boundary.
+        """
+        cols = [
+            "cpt_codes TEXT",
+            "place_of_service_code TEXT",
+            "medical_necessity_text TEXT",
+            "conservative_therapy_tried TEXT",
+            "requested_start_date TEXT",
+            "requested_end_date TEXT",
+        ]
+        for col in cols:
+            try:
+                self._conn.execute(f"ALTER TABLE referrals ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass
         self._conn.commit()
 
     def _migrate_enrichment_json(self) -> None:

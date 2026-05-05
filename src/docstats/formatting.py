@@ -440,29 +440,15 @@ def referral_letter_text(
             lines.append(f"Group NPI: {organization.npi}")
         lines.append("")
 
-        # cpt_codes / place_of_service_code land via migration 027 +
-        # follow-up Pydantic update; until then read defensively.
-        raw_cpt = getattr(referral, "cpt_codes", None)
+        from docstats.domain.referrals import parse_cpt_codes
+
+        cpt_list = parse_cpt_codes(getattr(referral, "cpt_codes", None))
         place_of_service = getattr(referral, "place_of_service_code", None)
-        if referral.requested_service or raw_cpt:
+        if referral.requested_service or cpt_list:
             lines.append("SERVICE REQUESTED")
             lines.append("-" * 72)
-            cpt_list: list[Any] = []
-            if isinstance(raw_cpt, str):
-                import json as _json
-
-                try:
-                    parsed = _json.loads(raw_cpt)
-                    if isinstance(parsed, list):
-                        cpt_list = parsed
-                except ValueError:
-                    cpt_list = []
-            elif isinstance(raw_cpt, list):
-                cpt_list = raw_cpt
             if cpt_list:
                 for code in cpt_list:
-                    if not isinstance(code, dict):
-                        continue
                     parts = [code.get("code", "—")]
                     if code.get("description"):
                         parts.append(code["description"])

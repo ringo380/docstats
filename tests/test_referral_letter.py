@@ -287,6 +287,80 @@ def test_medical_necessity_html_renders():
     assert "Medical Necessity Statement" in html
 
 
+# ─── parse_cpt_codes helper ────────────────────────────────────────
+
+
+def test_parse_cpt_codes_handles_json_text():
+    from docstats.domain.referrals import parse_cpt_codes
+
+    assert parse_cpt_codes('[{"code": "99213", "units": 1}]') == [{"code": "99213", "units": 1}]
+
+
+def test_parse_cpt_codes_passes_through_list():
+    from docstats.domain.referrals import parse_cpt_codes
+
+    assert parse_cpt_codes([{"code": "93000"}, "junk", {"code": "76700"}]) == [
+        {"code": "93000"},
+        {"code": "76700"},
+    ]
+
+
+def test_parse_cpt_codes_returns_empty_on_bad_json():
+    from docstats.domain.referrals import parse_cpt_codes
+
+    assert parse_cpt_codes("not json at all") == []
+    assert parse_cpt_codes(None) == []
+    assert parse_cpt_codes("") == []
+
+
+def test_parse_cpt_codes_drops_non_dict_entries():
+    from docstats.domain.referrals import parse_cpt_codes
+
+    assert parse_cpt_codes('["string", 42, {"code": "x"}, null]') == [{"code": "x"}]
+
+
+# ─── New referral fields land on Pydantic model ────────────────────
+
+
+def test_referral_model_accepts_new_prior_auth_fields():
+    """Migration 027 fields are nullable on the model; instantiate w/ values."""
+    r = _referral(
+        cpt_codes=[{"code": "99213", "units": 1}],
+        place_of_service_code="11",
+        medical_necessity_text="Patient requires consult.",
+        conservative_therapy_tried="6 weeks of PT, no improvement.",
+        requested_start_date="2026-06-01",
+        requested_end_date="2026-06-30",
+    )
+    assert r.cpt_codes == [{"code": "99213", "units": 1}]
+    assert r.place_of_service_code == "11"
+    assert r.medical_necessity_text.startswith("Patient")
+    assert r.requested_start_date == "2026-06-01"
+
+
+def test_letter_text_payer_mode_includes_cpt_codes():
+    insurance = SimpleNamespace(payer_name="Blue Shield CA", plan_type="HMO")
+    referral = _referral(
+        requested_service="Cardiology consult",
+        cpt_codes=[{"code": "99213", "description": "Office visit", "units": 1}],
+        place_of_service_code="11",
+        medical_necessity_text="Worsening chest pain over 8 weeks.",
+        conservative_therapy_tried="ASA + nitrates trialed; no improvement.",
+    )
+    text = referral_letter_text(
+        referral, _patient(), current_user=_user(), insurance_plan=insurance, include_payer=True
+    )
+    assert "SERVICE REQUESTED" in text
+    assert "99213" in text
+    assert "Office visit" in text
+    assert "Place of Service: 11" in text
+    assert "MEDICAL NECESSITY" in text
+    assert "CONSERVATIVE / STEP THERAPY" in text
+
+
+# ─── Existing template-render tests continue below ─────────────────
+
+
 @pytest.mark.parametrize(
     "template_name",
     [

@@ -32,7 +32,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Path, Query, Reques
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from docstats.domain.audit import record as audit_record
-from docstats.domain.referrals import STATUS_VALUES, URGENCY_VALUES
+from docstats.domain.referrals import STATUS_VALUES, URGENCY_VALUES, parse_cpt_codes
 from docstats.domain.rules import rules_based_completeness
 from docstats.enrichment import fetch_receiving_direct_endpoints
 from docstats.exports import (
@@ -75,7 +75,10 @@ router = APIRouter(prefix="/referrals", tags=["exports"])
 #
 # ``fetcher`` takes (storage, scope, referral, patient) and returns the
 # EXTRA kwargs passed to the renderer (beyond the common base). The base
-# kwargs are: referral, patient, generated_at, generated_by_label.
+# kwargs are: referral, patient, generated_at, generated_by_label,
+# organization, current_user (and signature_image_url, currently always
+# None until the user-profile signature wiring lands). All renderers
+# accept these uniformly; see ``_render_one`` for the canonical call.
 
 
 def _fetch_for_summary(
@@ -130,7 +133,13 @@ def _fetch_for_medical_necessity(
     referral: Any,
     patient: Any,
 ) -> dict[str, Any]:
-    """Pull diagnoses/meds/allergies/attachments + payer plan + CPT JSON."""
+    """Pull diagnoses/meds/allergies/attachments + payer plan + CPT JSON.
+
+    The row mapper has already normalized ``cpt_codes`` via
+    ``parse_cpt_codes()`` so the value is either ``None`` or a
+    ``list[dict]`` here; defensive parse is kept for the transition
+    window where storage may still hold raw JSON text.
+    """
     insurance_plan: Any = None
     if getattr(referral, "payer_plan_id", None):
         try:
@@ -141,27 +150,13 @@ def _fetch_for_medical_necessity(
                 referral.id,
                 referral.payer_plan_id,
             )
-    raw_codes = getattr(referral, "cpt_codes", None)
-    cpt_codes: list[dict[str, Any]] = []
-    if raw_codes:
-        if isinstance(raw_codes, str):
-            import json as _json
-
-            try:
-                parsed = _json.loads(raw_codes)
-                if isinstance(parsed, list):
-                    cpt_codes = [c for c in parsed if isinstance(c, dict)]
-            except ValueError:
-                logger.warning("malformed cpt_codes JSON on referral %s", referral.id)
-        elif isinstance(raw_codes, list):
-            cpt_codes = [c for c in raw_codes if isinstance(c, dict)]
     return {
         "diagnoses": storage.list_referral_diagnoses(scope, referral.id),
         "medications": storage.list_referral_medications(scope, referral.id),
         "allergies": storage.list_referral_allergies(scope, referral.id),
         "attachments": storage.list_referral_attachments(scope, referral.id),
         "insurance_plan": insurance_plan,
-        "cpt_codes": cpt_codes,
+        "cpt_codes": parse_cpt_codes(getattr(referral, "cpt_codes", None)),
     }
 
 
@@ -234,20 +229,137 @@ def _safe_pdf_filename(referral_id: int, stem: str) -> str:
     return f"referral-{referral_id}-{stem}.pdf"
 
 
-def _resolve_letterhead_org(storage: StorageBase, scope: Scope, current_user: dict) -> Any:
-    """Pick the Organization that should render on the letterhead.
+def _count_pdf_pages(blob: bytes) -> int:
+    """Return the page count of a PDF blob; 0 on parse failure.
 
-    Priority: scope-bound org (if user is operating inside an org) →
-    user's active_org_id (fallback for solo→org transitions) → None
-    (templates render a "Practice information not configured" stub).
+    Used by the two-pass packet renderer to populate the fax cover's
+    "Pages: N of M" line correctly.
     """
-    org_id = scope.organization_id if scope.is_org else current_user.get("active_org_id")
-    if not org_id:
+    try:
+        from io import BytesIO
+
+        from pypdf import PdfReader  # type: ignore[import-untyped]
+
+        return len(PdfReader(BytesIO(blob)).pages)
+    except Exception:
+        logger.exception("Failed to count pages of a packet part")
+        return 0
+
+
+async def _render_packet_parts(
+    *,
+    parts_order: list[str],
+    storage: StorageBase,
+    scope: Scope,
+    referral: Any,
+    patient: Any,
+    generated_at: datetime,
+    generated_by_label: str | None,
+    organization: Any,
+    current_user: dict | None,
+    signature_image_url: str | None,
+    attachment_pdf_bytes: list[bytes],
+) -> list[bytes]:
+    """Render a packet's component parts in declared order.
+
+    Two-pass: render every non-fax-cover part first, sum their page
+    counts, then render the fax cover with ``total_pages = sum + 1``
+    so the cover sheet's "Pages (including cover)" line is accurate
+    instead of the legacy "1" placeholder. (Resolves the gap flagged
+    in PR #100 where packet flows always reported total_pages=1.)
+    """
+    loop = asyncio.get_running_loop()
+    rendered: dict[int, list[bytes]] = {}
+    fax_cover_index: int | None = None
+
+    for i, name in enumerate(parts_order):
+        if name == ARTIFACT_FAX_COVER:
+            fax_cover_index = i
+            continue  # rendered at the end with the real total_pages
+        if name == ARTIFACT_ATTACHMENT_PDFS:
+            rendered[i] = list(attachment_pdf_bytes)
+            continue
+        part = await loop.run_in_executor(
+            None,
+            lambda n=name: _render_one(  # type: ignore[misc]
+                storage=storage,
+                scope=scope,
+                referral=referral,
+                patient=patient,
+                generated_at=generated_at,
+                generated_by_label=generated_by_label,
+                artifact=n,
+                organization=organization,
+                current_user=current_user,
+                signature_image_url=signature_image_url,
+            ),
+        )
+        rendered[i] = [part]
+
+    if fax_cover_index is not None:
+        other_pages = sum(_count_pdf_pages(b) for parts in rendered.values() for b in parts)
+        fax_blob = await loop.run_in_executor(
+            None,
+            lambda: render_fax_cover(
+                referral=referral,
+                patient=patient,
+                generated_at=generated_at,
+                generated_by_label=generated_by_label,
+                organization=organization,
+                current_user=current_user,
+                signature_image_url=signature_image_url,
+                total_pages=other_pages + 1,
+            ),
+        )
+        rendered[fax_cover_index] = [fax_blob]
+
+    out: list[bytes] = []
+    for i in range(len(parts_order)):
+        out.extend(rendered.get(i, []))
+    return out
+
+
+async def _resolve_signature_image_url(
+    file_backend: StorageFileBackend, current_user: dict
+) -> str | None:
+    """Mint a short-lived signed URL for the requesting clinician's
+    saved signature image, or None if they haven't uploaded one.
+
+    The signature image lives in the same private bucket as referral
+    attachments; the signature partial uses the URL as an ``<img src>``
+    inside WeasyPrint, which fetches it during render. Use a short
+    expiry (15 min default in ``signed_url``) — the bytes are inlined
+    into the PDF and the URL never reaches the user.
+    """
+    ref = current_user.get("signature_image_ref")
+    if not ref:
         return None
     try:
-        return storage.get_organization(int(org_id))
+        return await file_backend.signed_url(ref)
+    except Exception:
+        logger.exception(
+            "Failed to mint signed URL for signature image (user_id=%s)", current_user.get("id")
+        )
+        return None
+
+
+def _resolve_letterhead_org(storage: StorageBase, scope: Scope) -> Any:
+    """Pick the Organization that should render on the letterhead.
+
+    Uses the scope-bound org only. The previous implementation also
+    fell back to ``current_user["active_org_id"]`` when ``scope.is_org``
+    was False, but that bypassed the scope resolver's membership
+    re-check (per CLAUDE.md "scope falls back to solo if active_org_id
+    stale" — using the cookie value as a backup re-introduces the leak
+    the resolver protects against). Solo scopes always render with
+    "(Practice information not configured)".
+    """
+    if not scope.is_org or scope.organization_id is None:
+        return None
+    try:
+        return storage.get_organization(int(scope.organization_id))
     except Exception:  # storage outage during render shouldn't abort the export
-        logger.exception("letterhead org lookup failed for org_id=%s", org_id)
+        logger.exception("letterhead org lookup failed for org_id=%s", scope.organization_id)
         return None
 
 
@@ -262,6 +374,7 @@ def _render_one(
     artifact: str,
     organization: Any = None,
     current_user: dict | None = None,
+    signature_image_url: str | None = None,
 ) -> bytes:
     """Render a single artifact by name. Raises KeyError if unknown."""
     fetcher, renderer, _stem, _label = _ARTIFACT_BUNDLES[artifact]
@@ -273,6 +386,7 @@ def _render_one(
         generated_by_label=generated_by_label,
         organization=organization,
         current_user=current_user,
+        signature_image_url=signature_image_url,
         **extra,
     )
 
@@ -405,6 +519,7 @@ async def referrals_batch_export(
     current_user: dict = Depends(require_phi_consent),
     scope: Scope = Depends(get_scope),
     storage: StorageBase = Depends(get_storage),
+    file_backend: StorageFileBackend = Depends(get_file_backend),
 ) -> Response:
     """Concatenate N referrals' PDFs into a single download.
 
@@ -444,7 +559,8 @@ async def referrals_batch_export(
 
     generated_at = datetime.now(tz=timezone.utc)
     generated_by_label = _generated_by_label(current_user)
-    letterhead_org = _resolve_letterhead_org(storage, scope, current_user)
+    letterhead_org = _resolve_letterhead_org(storage, scope)
+    signature_image_url = await _resolve_signature_image_url(file_backend, current_user)
     loop = asyncio.get_running_loop()
 
     pdf_parts: list[bytes] = []
@@ -465,23 +581,42 @@ async def referrals_batch_export(
 
         try:
             if artifact == ARTIFACT_PACKET:
-                sub_parts: list[bytes] = []
-                for name in parts_order:
-                    part = await loop.run_in_executor(
-                        None,
-                        lambda n=name, r=ref, p=pat: _render_one(  # type: ignore[misc]
-                            storage=storage,
-                            scope=scope,
-                            referral=r,
-                            patient=p,
-                            generated_at=generated_at,
-                            generated_by_label=generated_by_label,
-                            artifact=n,
-                            organization=letterhead_org,
-                            current_user=current_user,
-                        ),
-                    )
-                    sub_parts.append(part)
+                # Pre-fetch per-referral attachment PDF bytes if the
+                # caller asked for them — the splice happens inside
+                # ``_render_packet_parts`` at the position the include
+                # list specified, alongside the two-pass fax-cover
+                # page-count computation.
+                attachment_pdf_bytes: list[bytes] = []
+                if ARTIFACT_ATTACHMENT_PDFS in parts_order:
+                    try:
+                        attachment_pdf_bytes = [
+                            data
+                            for _aid, data in await fetch_attachment_pdfs(
+                                storage=storage,
+                                scope=scope,
+                                referral=ref,
+                                file_backend=file_backend,
+                            )
+                        ]
+                    except Exception:
+                        logger.exception(
+                            "Batch attachment-pdf fetch failed for referral %s",
+                            rid,
+                        )
+
+                sub_parts = await _render_packet_parts(
+                    parts_order=parts_order,
+                    storage=storage,
+                    scope=scope,
+                    referral=ref,
+                    patient=pat,
+                    generated_at=generated_at,
+                    generated_by_label=generated_by_label,
+                    organization=letterhead_org,
+                    current_user=current_user,
+                    signature_image_url=signature_image_url,
+                    attachment_pdf_bytes=attachment_pdf_bytes,
+                )
                 merged = await loop.run_in_executor(
                     None,
                     lambda r=ref, p=pat, parts=sub_parts: render_packet(  # type: ignore[misc]
@@ -506,6 +641,7 @@ async def referrals_batch_export(
                         artifact=artifact,
                         organization=letterhead_org,
                         current_user=current_user,
+                        signature_image_url=signature_image_url,
                     ),
                 )
                 pdf_parts.append(part)
@@ -555,6 +691,23 @@ async def referrals_batch_export(
             "skipped": skipped,
         },
     )
+
+    # Per-referral timeline event so the patient/referral detail page
+    # surfaces the bulk export — without this loop the batch flow would
+    # only leave a single workspace-level audit row and no per-referral
+    # signal. (Resolves the gap flagged in PR #102.)
+    batch_note = f"batch:{artifact}"
+    for rid in rendered_ids:
+        try:
+            storage.record_referral_event(
+                scope,
+                rid,
+                event_type="exported",
+                actor_user_id=current_user["id"],
+                note=batch_note,
+            )
+        except Exception:
+            logger.exception("Failed to record batch export event for referral %s", rid)
 
     filename = f"referrals-batch-{generated_at.strftime('%Y%m%d-%H%M%S')}.pdf"
     return Response(
@@ -738,7 +891,8 @@ async def referral_export_pdf(
 
     generated_at = datetime.now(tz=timezone.utc)
     generated_by_label = _generated_by_label(current_user)
-    letterhead_org = _resolve_letterhead_org(storage, scope, current_user)
+    letterhead_org = _resolve_letterhead_org(storage, scope)
+    signature_image_url = await _resolve_signature_image_url(file_backend, current_user)
     loop = asyncio.get_running_loop()
 
     if artifact == ARTIFACT_PACKET:
@@ -769,34 +923,19 @@ async def referral_export_pdf(
                 # which docs should have been included.
 
         try:
-            parts: list[bytes] = []
-            # The fax-cover total_pages hint is a "close-enough" approximation:
-            # a full count would require rendering everything twice, so we
-            # punt until 5.E's batch export. Renderer falls back to "1" when
-            # None.
-            for name in parts_order:
-                if name == ARTIFACT_ATTACHMENT_PDFS:
-                    # Splice the pre-fetched attachment PDFs at this
-                    # position so callers control ordering (e.g.
-                    # fax_cover, summary, attachments_checklist,
-                    # attachment_pdfs).
-                    parts.extend(attachment_pdf_bytes)
-                    continue
-                part = await loop.run_in_executor(
-                    None,
-                    lambda n=name: _render_one(  # type: ignore[misc]
-                        storage=storage,
-                        scope=scope,
-                        referral=referral,
-                        patient=patient,
-                        generated_at=generated_at,
-                        generated_by_label=generated_by_label,
-                        artifact=n,
-                        organization=letterhead_org,
-                        current_user=current_user,
-                    ),
-                )
-                parts.append(part)
+            parts = await _render_packet_parts(
+                parts_order=parts_order,
+                storage=storage,
+                scope=scope,
+                referral=referral,
+                patient=patient,
+                generated_at=generated_at,
+                generated_by_label=generated_by_label,
+                organization=letterhead_org,
+                current_user=current_user,
+                signature_image_url=signature_image_url,
+                attachment_pdf_bytes=attachment_pdf_bytes,
+            )
             pdf_bytes = await loop.run_in_executor(
                 None,
                 lambda: render_packet(
@@ -836,6 +975,7 @@ async def referral_export_pdf(
                     artifact=artifact,
                     organization=letterhead_org,
                     current_user=current_user,
+                    signature_image_url=signature_image_url,
                 ),
             )
         except Exception:

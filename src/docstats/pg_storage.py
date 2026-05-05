@@ -60,6 +60,7 @@ from docstats.domain.referrals import (
     ReferralEvent,
     ReferralMedication,
     ReferralResponse,
+    parse_cpt_codes,
 )
 from docstats.domain.eligibility import AvailityPayer, EligibilityCheck, EligibilityResult
 from docstats.domain.sessions import Session
@@ -206,6 +207,12 @@ def _row_to_referral(row: dict) -> Referral:
         external_reference_id=row.get("external_reference_id"),
         external_source=row["external_source"],
         ehr_service_request_id=row.get("ehr_service_request_id"),
+        cpt_codes=parse_cpt_codes(row.get("cpt_codes")),
+        place_of_service_code=row.get("place_of_service_code"),
+        medical_necessity_text=row.get("medical_necessity_text"),
+        conservative_therapy_tried=row.get("conservative_therapy_tried"),
+        requested_start_date=row.get("requested_start_date"),
+        requested_end_date=row.get("requested_end_date"),
         created_by_user_id=row.get("created_by_user_id"),
         created_at=created,
         updated_at=updated,
