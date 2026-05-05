@@ -124,6 +124,41 @@ def require_user(user: dict | None = Depends(get_current_user)) -> dict:
     return user
 
 
+def require_verified_clinician(user: dict = Depends(require_user)) -> dict:
+    """FastAPI dependency for clinician-only PHI routes.
+
+    Returns 403 with an HTML "verification pending" page when the
+    caller is logged in but their account is either:
+
+      - a patient (no PHI workflow access at all)
+      - a clinician with status != 'verified' (pending_review or
+        rejected — gated until an admin promotes)
+
+    Pairs with :func:`require_phi_consent` (which gates PHI access on
+    HIPAA acceptance). The two are independent — both must pass.
+    """
+    if user.get("account_type") != "clinician":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "patient_account",
+                "message": "This feature is for verified clinician accounts only.",
+            },
+        )
+    if user.get("clinician_verification_status") != "verified":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "clinician_unverified",
+                "message": (
+                    "Your clinician credentials are still under review. "
+                    "PHI features unlock once an admin verifies your account."
+                ),
+            },
+        )
+    return user
+
+
 def require_user_api(user: dict | None = Depends(get_current_user)) -> dict:
     """FastAPI dependency for API endpoints that require authentication.
 

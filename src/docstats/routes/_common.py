@@ -91,6 +91,24 @@ def get_client() -> NPPESClient:
     return _client
 
 
+_oig_client: object | None = None
+
+
+def get_oig_client() -> object:
+    """Lazy singleton for the OIG LEIE exclusion client.
+
+    Returned as ``object`` to keep this module free of the optional
+    dependency at import time (the LEIE CSV download lives behind a
+    longer-running httpx call). Callers narrow the type at use site.
+    """
+    global _oig_client
+    if _oig_client is None:
+        from docstats.oig_client import OIGClient
+
+        _oig_client = OIGClient()
+    return _oig_client
+
+
 def _storage_for_request(request: Request) -> StorageBase:
     override = getattr(request.app, "dependency_overrides", {}).get(get_storage)
     if override is not None:

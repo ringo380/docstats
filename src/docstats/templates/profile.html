@@ -15,19 +15,46 @@
       <div><span style="color:var(--text-dim); min-width:80px; display:inline-block;">GitHub</span> {{ user.github_login }}</div>
       {% endif %}
       <div><span style="color:var(--text-dim); min-width:80px; display:inline-block;">Joined</span> {{ user.created_at[:10] }}</div>
+      <div style="margin-top:0.5rem;">
+        <span style="color:var(--text-dim); min-width:80px; display:inline-block;">Account</span>
+        {% if user.account_type == 'clinician' %}
+          <span>Clinician</span>
+          {% if user.clinician_verification_status == 'verified' %}
+            <span style="color:#15803d; font-size:0.78rem; margin-left:6px;">(verified)</span>
+          {% elif user.clinician_verification_status == 'pending_review' %}
+            <span style="color:#b07a10; font-size:0.78rem; margin-left:6px;">(verification pending)</span>
+          {% endif %}
+          <form method="post" action="/auth/downgrade-to-patient" style="display:inline; margin-left:8px;"
+                onsubmit="return confirm('Switch to patient mode? You can re-upgrade later — your NPI and license info are preserved.');">
+            <button type="submit" class="btn btn-secondary" style="font-size:0.75rem; padding:3px 8px;">Switch to patient mode</button>
+          </form>
+        {% else %}
+          <span>Patient</span>
+          <a href="/auth/upgrade-to-clinician" class="btn btn-secondary" style="font-size:0.75rem; padding:3px 8px; margin-left:8px;">I'm a clinician — verify my NPI</a>
+        {% endif %}
+      </div>
     </div>
   </div>
 
+  {% if user.account_type != 'clinician' %}
   <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
     <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.75rem; color:var(--text-dim);">Primary Care Provider</h2>
     <div id="pcp-section">
       {% include "_pcp_section.html" %}
     </div>
   </div>
+  {% endif %}
 
-  {# ── Letter signature ── #}
+  {# ── Letter signature (clinician only) ── #}
+  {% if user.account_type == 'clinician' %}
   <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
     <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.5rem; color:var(--text-dim);">Letter signature</h2>
+    {% if user.clinician_verification_status == 'pending_review' %}
+    <div style="margin-bottom:0.75rem; padding:8px 12px; background:#fff7e0; border:1px solid #b07a10; border-radius:var(--radius-sm); font-size:0.82rem; color:#7a4b00;">
+      <strong>Verification pending.</strong> You can edit your signature fields now;
+      they'll start signing referral letters once an admin verifies your credentials.
+    </div>
+    {% endif %}
     <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">
       These fields populate the signature block on every referral letter and prior-auth packet you generate.
       All optional &mdash; templates render gracefully when fields are blank.
@@ -120,9 +147,10 @@
       </form>
     </div>
   </div>
+  {% endif %}{# /Letter signature card (clinician only) #}
 
-  {# ── Connected EHRs (SMART-on-FHIR) ── #}
-  {% if ehr_enabled %}
+  {# ── Connected EHRs (SMART-on-FHIR) — clinicians only ── #}
+  {% if ehr_enabled and user.account_type == 'clinician' %}
   <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
     <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.5rem; color:var(--text-dim);">Connected EHRs</h2>
     <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">

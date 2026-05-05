@@ -33,10 +33,12 @@
             <span class="nav-badge nav-badge-assigned" title="Open referrals assigned to you">{% if assigned_open_count > 99 %}99+{% else %}{{ assigned_open_count }}{% endif %}</span>
           {% endif %}
         </a>
-        {% if user.active_org_id %}
+        {% if user.active_org_id or user.account_type == 'clinician' %}
         <a href="/patients" class="nav-link {% if active_page == 'patients' %}active{% endif %}">Patients</a>
         {% endif %}
+        {% if user.account_type == 'clinician' or user.active_org_id %}
         <a href="/imports" class="nav-link {% if active_page == 'imports' %}active{% endif %}">Imports</a>
+        {% endif %}
         <a href="/rolodex" class="nav-link {% if active_page == 'rolodex' %}active{% endif %}">
           Rolodex
           {% if saved_count and saved_count > 0 %}
@@ -59,6 +61,9 @@
             <button class="profile-trigger" id="profile-trigger" type="button" aria-expanded="false" aria-haspopup="true">
               <span class="profile-avatar"><svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg"><circle cx="14" cy="14" r="14" fill="#276749"/><text x="14" y="15" text-anchor="middle" dominant-baseline="central" fill="#c6f6d5" font-family="-apple-system,BlinkMacSystemFont,'Inter',sans-serif" font-size="11" font-weight="600">{{ initials }}</text></svg></span>
               <span>{{ uname }}</span>
+              {% if user.clinician_verification_status == 'pending_review' %}
+                <span class="nav-badge" title="Clinician verification pending" style="background:#b07a10; color:#fff;">pending</span>
+              {% endif %}
               <svg class="profile-chevron" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5L6 7.5L9 4.5"/></svg>
             </button>
             <div class="profile-dropdown" role="menu">

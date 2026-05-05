@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Choose your account type — referme.help{% endblock %}
+{% block content %}
+<div class="auth-shell">
+  <div class="auth-heading">
+    <h1 class="auth-title">Are you a patient or a clinician?</h1>
+    <p class="auth-subtitle">We'll tailor referme.help based on your role. You can switch later from your profile.</p>
+  </div>
+
+  {% if error %}
+    <div class="flash flash-error">{{ error }}</div>
+  {% endif %}
+
+  <div class="auth-card">
+    <form method="post" action="/auth/account-type" class="auth-form" id="picker-form">
+      <div class="audience-tabs" role="tablist" aria-label="Account type">
+        <button type="button"
+                class="audience-tab {% if account_type != 'clinician' %}is-active{% endif %}"
+                data-account-type="patient">I'm a patient</button>
+        <button type="button"
+                class="audience-tab {% if account_type == 'clinician' %}is-active{% endif %}"
+                data-account-type="clinician">I'm a healthcare provider</button>
+      </div>
+      <input type="hidden" name="account_type" id="account-type-input" value="{{ account_type or 'patient' }}">
+
+      <div id="clinician-fields" {% if account_type != 'clinician' %}style="display:none;"{% endif %}>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.5rem;">
+          <div>
+            <label for="first_name">First name</label>
+            <input type="text" id="first_name" name="first_name" maxlength="100"
+                   value="{{ form.first_name or '' }}">
+          </div>
+          <div>
+            <label for="last_name">Last name</label>
+            <input type="text" id="last_name" name="last_name" maxlength="100"
+                   value="{{ form.last_name or '' }}">
+          </div>
+        </div>
+        <div>
+          <label for="individual_npi">
+            Individual NPI <span class="auth-hint">(Type-1, 10 digits)</span>
+          </label>
+          <input type="text" id="individual_npi" name="individual_npi" inputmode="numeric"
+                 pattern="[0-9]{10}" maxlength="10" value="{{ form.individual_npi or '' }}"
+                 style="font-family:var(--font-mono);">
+        </div>
+        <div style="display:grid; grid-template-columns:2fr 1fr; gap:0.5rem;">
+          <div>
+            <label for="state_license_number">
+              State license <span class="auth-hint">(optional)</span>
+            </label>
+            <input type="text" id="state_license_number" name="state_license_number"
+                   maxlength="40" value="{{ form.state_license_number or '' }}"
+                   style="font-family:var(--font-mono);">
+          </div>
+          <div>
+            <label for="state_license_state">State</label>
+            <select id="state_license_state" name="state_license_state">
+              <option value="">—</option>
+              {% for code, name in us_states %}
+                <option value="{{ code }}" {% if form.state_license_state == code %}selected{% endif %}>{{ code }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label for="credentials">
+            Credentials <span class="auth-hint">(optional)</span>
+          </label>
+          <input type="text" id="credentials" name="credentials" maxlength="80"
+                 placeholder="MD, FAAFP" value="{{ form.credentials or '' }}">
+        </div>
+        <label class="auth-attest">
+          <input type="checkbox" name="attestation" value="on">
+          <span>I attest that I am the licensed clinician identified by this NPI.</span>
+        </label>
+      </div>
+
+      <button type="submit" class="btn btn-primary auth-submit-btn" id="picker-submit">Continue</button>
+    </form>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var tabs = document.querySelectorAll('.audience-tab');
+    var input = document.getElementById('account-type-input');
+    var clinFields = document.getElementById('clinician-fields');
+    var submit = document.getElementById('picker-submit');
+    function applyType(t) {
+      input.value = t;
+      tabs.forEach(function (b) {
+        b.classList.toggle('is-active', b.getAttribute('data-account-type') === t);
+      });
+      var isClin = t === 'clinician';
+      clinFields.style.display = isClin ? '' : 'none';
+      submit.textContent = isClin ? 'Verify & continue' : 'Continue';
+      ['first_name', 'last_name', 'individual_npi', 'state_license_state'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.required = isClin;
+      });
+      var attest = document.querySelector('.auth-attest input[type=checkbox]');
+      if (attest) attest.required = isClin;
+    }
+    tabs.forEach(function (b) {
+      b.addEventListener('click', function () {
+        applyType(b.getAttribute('data-account-type'));
+      });
+    });
+    applyType(input.value || 'patient');
+  })();
+</script>
+
+<style>
+  .audience-tabs { display:flex; gap:0; border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden; margin-bottom:0.75rem; }
+  .audience-tab { flex:1 1 50%; padding:8px 12px; background:transparent; color:var(--text-dim); border:0; cursor:pointer; font-size:0.85rem; font-weight:500; }
+  .audience-tab.is-active { background:var(--green); color:#fff; }
+  .auth-attest { display:flex; align-items:flex-start; gap:0.5rem; font-size:0.82rem; color:var(--text-muted); margin-top:0.5rem; }
+  .auth-attest input { margin-top:3px; }
+  #clinician-fields > div { margin-bottom:0.6rem; }
+</style>
+{% endblock %}

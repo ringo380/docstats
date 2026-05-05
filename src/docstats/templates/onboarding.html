@@ -3,6 +3,16 @@
 {% block content %}
 <div style="max-width: 560px; margin: 0 auto; padding-top: 2rem;">
 
+  {# ── Pending-review banner (clinicians only) ── #}
+  {% if user.account_type == 'clinician' and user.clinician_verification_status == 'pending_review' %}
+  <div style="background:#fff7e0; border:1px solid #b07a10; border-radius:var(--radius-sm); padding:10px 14px; margin-bottom:1.25rem; font-size:0.82rem; color:#7a4b00; line-height:1.45;">
+    <strong>Verification pending.</strong>
+    Your clinician credentials are under review. You can complete onboarding now;
+    PHI features (referrals workspace, EHR connections) will unlock once an
+    admin verifies your account.
+  </div>
+  {% endif %}
+
   {# ── Progress dots ── #}
   <div class="wizard-progress" id="wizard-progress">
     <div class="wizard-dot active current" data-step="1"></div>
@@ -72,8 +82,53 @@
   </div>
 
   {# ══════════════════════════════════════════════════════════════ #}
-  {# Step 3 — PCP Selection                                        #}
+  {# Step 3 — branches on account_type:                            #}
+  {#   patient  → PCP selection                                    #}
+  {#   clinician → practice-card confirmation                      #}
   {# ══════════════════════════════════════════════════════════════ #}
+  {% if user.account_type == 'clinician' %}
+  <div class="wizard-step" id="step-3" {% if initial_step != 3 %}style="display:none;"{% endif %}>
+    <div style="text-align:center; margin-bottom:0.5rem;">
+      <span class="badge-pill">Step 3 of 4</span>
+    </div>
+    <div style="text-align:center; margin-bottom:1.25rem;">
+      <h1 style="font-size:1.5rem; font-weight:700; margin-bottom:0.3rem; letter-spacing:-0.02em;">Confirm your practice</h1>
+      <p style="color:var(--text-muted); font-size:0.88rem;">We pulled this from the CMS NPI Registry when you signed up.</p>
+    </div>
+
+    <div class="card" style="padding:1rem 1.25rem; margin-bottom:1rem; font-size:0.88rem;">
+      <div style="display:flex; flex-direction:column; gap:0.4rem;">
+        {% if user.first_name and user.last_name %}
+          <div><span style="color:var(--text-dim); min-width:90px; display:inline-block;">Provider</span> <strong>{{ user.first_name }} {{ user.last_name }}{% if user.credentials %}, {{ user.credentials }}{% endif %}</strong></div>
+        {% endif %}
+        {% if user.individual_npi %}
+          <div><span style="color:var(--text-dim); min-width:90px; display:inline-block;">Individual NPI</span> <span style="font-family:var(--font-mono);">{{ user.individual_npi }}</span></div>
+        {% endif %}
+        {% if user.state_license_state %}
+          <div><span style="color:var(--text-dim); min-width:90px; display:inline-block;">License</span> {{ user.state_license_number or '—' }} ({{ user.state_license_state }})</div>
+        {% endif %}
+        <div><span style="color:var(--text-dim); min-width:90px; display:inline-block;">Status</span>
+          {% if user.clinician_verification_status == 'verified' %}
+            <span style="color:#15803d; font-weight:600;">Verified</span>
+          {% elif user.clinician_verification_status == 'pending_review' %}
+            <span style="color:#b07a10; font-weight:600;">Under review</span>
+          {% else %}
+            <span style="color:var(--text-dim);">{{ user.clinician_verification_status }}</span>
+          {% endif %}
+        </div>
+      </div>
+      <p style="font-size:0.78rem; color:var(--text-muted); margin-top:0.75rem; margin-bottom:0;">
+        You can edit your signature block (credentials, license number, signature image)
+        anytime from your <a href="/profile">/profile</a> page after onboarding.
+      </p>
+    </div>
+
+    <button type="button" class="btn btn-primary" style="width:100%;"
+            hx-get="/onboarding/skip-pcp" hx-swap="none">
+      Continue
+    </button>
+  </div>
+  {% else %}
   <div class="wizard-step" id="step-3" {% if initial_step != 3 %}style="display:none;"{% endif %}>
     <div style="text-align:center; margin-bottom:0.5rem;">
       <span class="badge-pill">Step 3 of 4</span>
@@ -152,6 +207,7 @@
       &mdash; you can set your PCP later from your profile.
     </p>
   </div>
+  {% endif %}
 
   {# ══════════════════════════════════════════════════════════════ #}
   {# Step 4 — Terms & Privacy                                      #}

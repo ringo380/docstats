@@ -614,6 +614,7 @@ class Storage(StorageBase):
         self._migrate_staff_access_grants()
         self._migrate_users_signature_fields()
         self._migrate_referrals_authorization_fields()
+        self._migrate_users_account_type()
         self._migrate_ehr_connections()
 
     def _migrate_saved_providers(self) -> None:
@@ -700,6 +701,26 @@ class Storage(StorageBase):
             "state_license_number TEXT",
             "state_license_state TEXT",
             "signature_image_ref TEXT",
+        ]
+        for col in cols:
+            try:
+                self._conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass
+        self._conn.commit()
+
+    def _migrate_users_account_type(self) -> None:
+        """Add account_type + clinician verification fields (mirrors migration 028).
+
+        ``clinician_verification_reasons`` is JSON-text on SQLite (versus
+        JSONB on Postgres); the row-mapper deserializes both shapes.
+        """
+        cols = [
+            "account_type TEXT NOT NULL DEFAULT 'patient'",
+            "clinician_verification_status TEXT NOT NULL DEFAULT 'not_applicable'",
+            "clinician_verified_at TEXT",
+            "clinician_verified_method TEXT",
+            "clinician_verification_reasons TEXT",
         ]
         for col in cols:
             try:
@@ -1390,30 +1411,92 @@ class Storage(StorageBase):
 
     # --- User CRUD ---
 
-    def create_user(self, email: str, password_hash: str) -> int:
-        """Create a new email/password user. Returns the new user id."""
+    def create_user(
+        self,
+        email: str,
+        password_hash: str,
+        *,
+        account_type: str = "patient",
+        first_name: str | None = None,
+        last_name: str | None = None,
+        individual_npi: str | None = None,
+        credentials: str | None = None,
+        state_license_number: str | None = None,
+        state_license_state: str | None = None,
+        clinician_verification_status: str = "not_applicable",
+        clinician_verified_at: str | None = None,
+        clinician_verified_method: str | None = None,
+        clinician_verification_reasons: list[str] | None = None,
+    ) -> int:
+        """Create a new email/password user. Returns the new user id.
+
+        Clinician fields are written when account_type='clinician'; the
+        verification verdict and method come from
+        ``domain.identity.verify_clinician``. Patient signups can leave
+        all clinician kwargs at their defaults.
+        """
+        reasons_json = (
+            json.dumps(clinician_verification_reasons)
+            if clinician_verification_reasons is not None
+            else None
+        )
         cursor = self._conn.execute(
-            "INSERT INTO users (email, password_hash) VALUES (?, ?)",
-            (normalize_email(email), password_hash),
+            """
+            INSERT INTO users (
+                email, password_hash, account_type, first_name, last_name,
+                individual_npi, credentials, state_license_number, state_license_state,
+                clinician_verification_status, clinician_verified_at,
+                clinician_verified_method, clinician_verification_reasons
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalize_email(email),
+                password_hash,
+                account_type,
+                first_name,
+                last_name,
+                individual_npi,
+                credentials,
+                state_license_number,
+                state_license_state,
+                clinician_verification_status,
+                clinician_verified_at,
+                clinician_verified_method,
+                reasons_json,
+            ),
         )
         self._conn.commit()
         return cursor.lastrowid  # type: ignore[return-value]
 
+    def _hydrate_user_row(self, row: sqlite3.Row | None) -> dict | None:
+        if row is None:
+            return None
+        d = dict(row)
+        # SQLite stores clinician_verification_reasons as JSON-text;
+        # decode so callers always see a list[str] | None.
+        raw = d.get("clinician_verification_reasons")
+        if isinstance(raw, str):
+            try:
+                d["clinician_verification_reasons"] = json.loads(raw) if raw else None
+            except ValueError:
+                d["clinician_verification_reasons"] = None
+        return d
+
     def get_user_by_id(self, user_id: int) -> dict | None:
         row = self._conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        return dict(row) if row else None
+        return self._hydrate_user_row(row)
 
     def get_user_by_email(self, email: str) -> dict | None:
         row = self._conn.execute(
             "SELECT * FROM users WHERE email = ?", (normalize_email(email),)
         ).fetchone()
-        return dict(row) if row else None
+        return self._hydrate_user_row(row)
 
     def get_user_by_github_id(self, github_id: str) -> dict | None:
         row = self._conn.execute(
             "SELECT * FROM users WHERE github_id = ?", (str(github_id),)
         ).fetchone()
-        return dict(row) if row else None
+        return self._hydrate_user_row(row)
 
     def upsert_github_user(
         self,
@@ -1548,6 +1631,51 @@ class Storage(StorageBase):
 
     def set_user_signature_image_ref(self, user_id: int, ref: str | None) -> None:
         self._conn.execute("UPDATE users SET signature_image_ref=? WHERE id=?", (ref, user_id))
+        self._conn.commit()
+
+    def update_user_account_type(
+        self,
+        user_id: int,
+        *,
+        account_type: str,
+        clinician_verification_status: str = "not_applicable",
+        clinician_verified_at: str | None = None,
+        clinician_verified_method: str | None = None,
+        clinician_verification_reasons: list[str] | None = None,
+    ) -> None:
+        """Replace account_type + verification verdict columns.
+
+        Used by the upgrade/downgrade routes and by the GitHub OAuth
+        post-callback account-type picker. Patient downgrades pass
+        account_type='patient' with status='not_applicable' and the
+        rest None — that resets verification to a clean slate while
+        leaving the user's stored NPI/credentials in place so a
+        re-upgrade is fast.
+        """
+        reasons_json = (
+            json.dumps(clinician_verification_reasons)
+            if clinician_verification_reasons is not None
+            else None
+        )
+        self._conn.execute(
+            """
+            UPDATE users
+               SET account_type=?,
+                   clinician_verification_status=?,
+                   clinician_verified_at=?,
+                   clinician_verified_method=?,
+                   clinician_verification_reasons=?
+             WHERE id=?
+            """,
+            (
+                account_type,
+                clinician_verification_status,
+                clinician_verified_at,
+                clinician_verified_method,
+                reasons_json,
+                user_id,
+            ),
+        )
         self._conn.commit()
 
     def record_terms_acceptance(
