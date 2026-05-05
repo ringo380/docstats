@@ -16,7 +16,7 @@ from docstats.auth import get_current_user
 from docstats.storage import Storage, get_storage
 from docstats.storage_files import get_file_backend
 from docstats.storage_files.factory import reset_memory_singleton_for_tests
-from docstats.storage_files.memory_store import MemoryFileBackend
+from docstats.storage_files.memory_store import InMemoryFileBackend
 from docstats.web import app
 
 
@@ -67,16 +67,16 @@ def storage(tmp_path: Path) -> Storage:
 
 
 @pytest.fixture
-def memory_backend(monkeypatch: pytest.MonkeyPatch) -> MemoryFileBackend:
+def memory_backend(monkeypatch: pytest.MonkeyPatch) -> InMemoryFileBackend:
     monkeypatch.setenv("ATTACHMENT_STORAGE_BACKEND", "memory")
     reset_memory_singleton_for_tests()
     backend = get_file_backend()
-    assert isinstance(backend, MemoryFileBackend)
+    assert isinstance(backend, InMemoryFileBackend)
     return backend
 
 
 @pytest.fixture
-def client(storage: Storage, memory_backend: MemoryFileBackend) -> TestClient:
+def client(storage: Storage, memory_backend: InMemoryFileBackend) -> TestClient:
     user_id = 42
     _seed_user(storage, user_id, "ryan@example.com")
     user_row = _make_user_row(user_id, "ryan@example.com")
@@ -201,7 +201,7 @@ def test_save_signature_records_audit(client: TestClient, storage: Storage) -> N
 
 
 def test_upload_signature_image_persists_ref_and_object(
-    client: TestClient, storage: Storage, memory_backend: MemoryFileBackend
+    client: TestClient, storage: Storage, memory_backend: InMemoryFileBackend
 ) -> None:
     png = _png_bytes()
     resp = client.post(
@@ -243,7 +243,7 @@ def test_upload_signature_image_rejects_too_large(client: TestClient) -> None:
 
 
 def test_upload_replaces_prior_image_and_cleans_old_blob(
-    client: TestClient, storage: Storage, memory_backend: MemoryFileBackend
+    client: TestClient, storage: Storage, memory_backend: InMemoryFileBackend
 ) -> None:
     png = _png_bytes()
     client.post(
@@ -265,7 +265,7 @@ def test_upload_replaces_prior_image_and_cleans_old_blob(
 
 
 def test_clear_signature_image_removes_ref_and_blob(
-    client: TestClient, storage: Storage, memory_backend: MemoryFileBackend
+    client: TestClient, storage: Storage, memory_backend: InMemoryFileBackend
 ) -> None:
     png = _png_bytes()
     client.post(
