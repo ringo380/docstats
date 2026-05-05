@@ -90,12 +90,25 @@ async def profile(
     ehr_vendors = _ehr_vendor_ui_list(user_id, storage)
     ehr_enabled = bool(ehr_vendors)
 
-    # Re-fetch the user row so we see the latest signature fields after a
-    # save round-trip (the cached current_user is from the session-load
-    # boundary).
-    fresh_user = storage.get_user_by_id(user_id) or current_user
+    # Re-fetch only the signature fields so the page reflects edits made
+    # earlier in the same request, but keep the rest of ``current_user``
+    # intact — get_current_user computes ``is_org_admin`` (and similar
+    # session-derived flags) that aren't on the users row, and merging
+    # the storage row wholesale would drop them.
+    sig_keys = (
+        "credentials",
+        "individual_npi",
+        "state_license_number",
+        "state_license_state",
+        "signature_image_ref",
+    )
+    fresh_row = storage.get_user_by_id(user_id) or {}
+    user_for_template: dict = {**current_user}
+    for k in sig_keys:
+        if k in fresh_row:
+            user_for_template[k] = fresh_row.get(k)
     signature_image_url = await _signature_image_url(
-        file_backend, fresh_user.get("signature_image_ref")
+        file_backend, user_for_template.get("signature_image_ref")
     )
 
     return render(
@@ -104,7 +117,7 @@ async def profile(
             "request": request,
             "active_page": "profile",
             "saved_count": saved_count(storage, user_id),
-            "user": fresh_user,
+            "user": user_for_template,
             "pcp_provider": pcp_provider,
             "mapbox_token": MAPBOX_TOKEN,
             "delete_error": None,

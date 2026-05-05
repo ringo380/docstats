@@ -176,6 +176,7 @@ def test_save_signature_normalizes_state_to_uppercase(client: TestClient, storag
             "state_license_number": "Z9",
             "state_license_state": "ca",
         },
+        follow_redirects=False,
     )
     assert resp.status_code == 303
     row = storage.get_user_by_id(42)
