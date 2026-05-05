@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from docstats.models import NPIResult, NPIResponse, SavedProvider, SearchHistoryEntry
+
+if TYPE_CHECKING:
+    from docstats.domain.orgs import Organization
+    from docstats.domain.patients import Patient
+    from docstats.domain.referrals import (
+        Referral,
+        ReferralAllergy,
+        ReferralAttachment,
+        ReferralDiagnosis,
+        ReferralMedication,
+    )
 
 console = Console()
 
@@ -236,5 +250,353 @@ def referral_export(
     lines.append(f"Status: {result.status}")
     lines.append("")
     lines.append("=" * 50)
+
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# AMA-style referral letter — plaintext
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _user_typed_name(user: dict[str, Any] | None) -> str:
+    if not user:
+        return "Requesting Clinician"
+    first = (user.get("first_name") or "").strip()
+    last = (user.get("last_name") or "").strip()
+    if first and last:
+        name = f"{first} {last}"
+    else:
+        name = user.get("display_name") or user.get("email") or "Requesting Clinician"
+    creds = user.get("credentials")
+    if creds:
+        name = f"{name}, {creds}"
+    return name
+
+
+def _patient_age(dob: str | None, as_of: datetime | None = None) -> int | None:
+    if not dob:
+        return None
+    try:
+        birth = datetime.strptime(dob, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    today = (as_of or datetime.now(tz=timezone.utc)).date()
+    years = today.year - birth.year
+    if (today.month, today.day) < (birth.month, birth.day):
+        years -= 1
+    return max(years, 0)
+
+
+def referral_letter_text(
+    referral: "Referral",
+    patient: "Patient",
+    *,
+    organization: "Organization | None" = None,
+    current_user: dict[str, Any] | None = None,
+    diagnoses: list["ReferralDiagnosis"] | None = None,
+    medications: list["ReferralMedication"] | None = None,
+    allergies: list["ReferralAllergy"] | None = None,
+    attachments: list["ReferralAttachment"] | None = None,
+    insurance_plan: Any | None = None,
+    include_payer: bool = False,
+    generated_at: datetime | None = None,
+) -> str:
+    """Plaintext rendering of an AMA-style referral letter.
+
+    Mirrors the structure of the rendered PDF (Bunik 7-domain narrative)
+    in monospace plain text. Suitable for the "Copy as text" button on
+    the referral detail page or for piping into legacy systems that
+    accept text-only referrals.
+
+    ``include_payer=True`` flips the body into Scenario B
+    (Medical Necessity / Prior Auth) flavor: payer destination block,
+    CPT/HCPCS list, conservative-therapy summary, medical-necessity
+    statement.
+    """
+    now = generated_at or datetime.now(tz=timezone.utc)
+    diagnoses = list(diagnoses or [])
+    medications = list(medications or [])
+    allergies = list(allergies or [])
+    attachments = list(attachments or [])
+
+    lines: list[str] = []
+    sep = "=" * 72
+
+    # Letterhead
+    lines.append(sep)
+    if organization:
+        lines.append(organization.name.upper())
+        addr_parts: list[str] = []
+        if organization.address_line1:
+            addr_parts.append(organization.address_line1)
+        if organization.address_line2:
+            addr_parts.append(organization.address_line2)
+        csz: list[str] = []
+        if organization.address_city:
+            csz.append(organization.address_city)
+        if organization.address_state:
+            csz.append(organization.address_state)
+        if csz:
+            csz_line = ", ".join(csz)
+            if organization.address_zip:
+                csz_line += " " + organization.address_zip
+            addr_parts.append(csz_line)
+        if addr_parts:
+            lines.append(" · ".join(addr_parts))
+        contact: list[str] = []
+        if organization.phone:
+            contact.append(f"Phone: {organization.phone}")
+        if organization.fax:
+            contact.append(f"Fax: {organization.fax}")
+        if organization.npi:
+            contact.append(f"NPI: {organization.npi}")
+        if contact:
+            lines.append(" · ".join(contact))
+    elif referral.referring_organization:
+        lines.append(referral.referring_organization)
+    else:
+        lines.append("(Practice information not configured)")
+    lines.append(sep)
+    lines.append("")
+    lines.append(now.strftime("%B %d, %Y"))
+    lines.append("")
+
+    # Addressee — Referral domain carries receiving_organization_name +
+    # receiving_provider_npi but no provider name field; an explicit
+    # provider name comes through optional getattr (future schema add)
+    # or stays anonymous and we fall back to the org/specialty.
+    receiving_provider_name = getattr(referral, "receiving_provider_name", None)
+    if include_payer:
+        target = "Utilization Management / Prior Authorization"
+        if insurance_plan:
+            target = f"{insurance_plan.payer_name} — {target}"
+        lines.append(f"To: {target}")
+    else:
+        if receiving_provider_name:
+            lines.append(receiving_provider_name)
+        if referral.receiving_organization_name:
+            lines.append(referral.receiving_organization_name)
+        if referral.specialty_desc and not receiving_provider_name:
+            lines.append(f"{referral.specialty_desc} Department")
+    lines.append("")
+
+    # RE: line
+    age = _patient_age(patient.date_of_birth, as_of=now)
+    re_parts = [patient.display_name]
+    if patient.date_of_birth:
+        dob_part = f"DOB {patient.date_of_birth}"
+        if age is not None:
+            dob_part += f" (age {age})"
+        re_parts.append(dob_part)
+    if patient.sex:
+        re_parts.append(patient.sex)
+    if patient.mrn:
+        re_parts.append(f"MRN {patient.mrn}")
+    lines.append(f"RE: {' · '.join(re_parts)}")
+    lines.append("")
+
+    # Salutation
+    if include_payer:
+        lines.append("To Whom It May Concern:")
+    else:
+        if receiving_provider_name:
+            last_name = receiving_provider_name.split(" ")[-1]
+            lines.append(f"Dear Dr. {last_name}:")
+        else:
+            lines.append("Dear Colleague:")
+    lines.append("")
+
+    # Body sections
+    if include_payer:
+        lines.append("REQUEST TYPE")
+        lines.append("-" * 72)
+        if referral.urgency in ("urgent", "stat"):
+            lines.append("Expedited review (≤72 hours)")
+        else:
+            lines.append("Routine review (≤14 days)")
+        lines.append("")
+
+        lines.append("MEMBER")
+        lines.append("-" * 72)
+        lines.append(patient.display_name)
+        if patient.date_of_birth:
+            lines.append(f"DOB: {patient.date_of_birth}")
+        if patient.mrn:
+            lines.append(f"MRN: {patient.mrn}")
+        if insurance_plan:
+            lines.append(
+                f"Plan: {insurance_plan.payer_name}"
+                + (f" — {insurance_plan.plan_type}" if insurance_plan.plan_type else "")
+            )
+        lines.append("")
+
+        lines.append("REQUESTING PROVIDER")
+        lines.append("-" * 72)
+        lines.append(_user_typed_name(current_user))
+        if current_user and current_user.get("individual_npi"):
+            lines.append(f"Individual NPI: {current_user['individual_npi']}")
+        if organization and organization.npi:
+            lines.append(f"Group NPI: {organization.npi}")
+        lines.append("")
+
+        from docstats.domain.referrals import parse_cpt_codes
+
+        cpt_list = parse_cpt_codes(getattr(referral, "cpt_codes", None))
+        place_of_service = getattr(referral, "place_of_service_code", None)
+        if referral.requested_service or cpt_list:
+            lines.append("SERVICE REQUESTED")
+            lines.append("-" * 72)
+            if cpt_list:
+                for code in cpt_list:
+                    parts = [code.get("code", "—")]
+                    if code.get("description"):
+                        parts.append(code["description"])
+                    if code.get("units"):
+                        parts.append(f"x{code['units']}")
+                    lines.append("  " + " · ".join(parts))
+            elif referral.requested_service:
+                lines.append(f"  {referral.requested_service}")
+            if place_of_service:
+                lines.append(f"  Place of Service: {place_of_service}")
+            lines.append("")
+
+    lines.append("REASON FOR REFERRAL")
+    lines.append("-" * 72)
+    lines.append(referral.reason or "(See clinical question below.)")
+    if referral.clinical_question:
+        lines.append("")
+        lines.append(f"Specific clinical question: {referral.clinical_question}")
+    lines.append("")
+    lines.append(f"Urgency: {referral.urgency.upper()}")
+    lines.append("")
+
+    if referral.diagnosis_primary_icd or referral.diagnosis_primary_text or diagnoses:
+        lines.append("WORKING DIAGNOSIS")
+        lines.append("-" * 72)
+        if referral.diagnosis_primary_icd or referral.diagnosis_primary_text:
+            primary = ""
+            if referral.diagnosis_primary_icd:
+                primary = referral.diagnosis_primary_icd
+            if referral.diagnosis_primary_text:
+                primary += (" — " if primary else "") + referral.diagnosis_primary_text
+            lines.append(f"Primary: {primary}")
+        secondary = [d for d in diagnoses if not d.is_primary]
+        for d in secondary:
+            line = f"  - {d.icd10_code}"
+            if d.icd10_desc:
+                line += f" — {d.icd10_desc}"
+            lines.append(line)
+        lines.append("")
+
+    if medications:
+        lines.append("CURRENT MEDICATIONS")
+        lines.append("-" * 72)
+        for m in medications:
+            parts = [m.name]
+            if m.dose:
+                parts.append(m.dose)
+            if m.route:
+                parts.append(m.route)
+            if m.frequency:
+                parts.append(m.frequency)
+            lines.append("  - " + ", ".join(parts))
+        lines.append("")
+
+    lines.append("ALLERGIES")
+    lines.append("-" * 72)
+    if allergies:
+        for a in allergies:
+            line = f"  - {a.substance}"
+            if a.reaction:
+                line += f" — {a.reaction}"
+            if a.severity:
+                line += f" ({a.severity})"
+            lines.append(line)
+    else:
+        lines.append("  No known drug allergies (NKDA).")
+    lines.append("")
+
+    if include_payer:
+        lines.append("MEDICAL NECESSITY")
+        lines.append("-" * 72)
+        nec = getattr(referral, "medical_necessity_text", None)
+        if nec:
+            lines.append(nec)
+        else:
+            lines.append("(Medical necessity narrative not entered.)")
+        lines.append("")
+        lines.append("CONSERVATIVE / STEP THERAPY")
+        lines.append("-" * 72)
+        cons = getattr(referral, "conservative_therapy_tried", None)
+        if cons:
+            lines.append(cons)
+        else:
+            lines.append("(Conservative therapy history not entered.)")
+        lines.append("")
+    else:
+        # Insurance one-liner (Scenario A)
+        lines.append("INSURANCE / AUTHORIZATION")
+        lines.append("-" * 72)
+        if insurance_plan:
+            plan_line = insurance_plan.payer_name
+            if insurance_plan.plan_type:
+                plan_line += f" ({insurance_plan.plan_type})"
+            lines.append(plan_line)
+        if referral.authorization_number:
+            lines.append(
+                f"Authorization #: {referral.authorization_number}"
+                f" · status: {referral.authorization_status.replace('_', ' ')}"
+            )
+        else:
+            lines.append(f"Authorization status: {referral.authorization_status.replace('_', ' ')}")
+        lines.append("")
+
+    if attachments:
+        lines.append("ENCLOSURES")
+        lines.append("-" * 72)
+        for att in attachments:
+            note = att.kind.replace("_", " ")
+            if att.date_of_service:
+                note += f", {att.date_of_service}"
+            if att.checklist_only:
+                note += ", to follow"
+            lines.append(f"  - {att.label} ({note})")
+        lines.append("")
+
+    # Closing + signature
+    if include_payer:
+        lines.append("I attest that the requested service is medically necessary for this patient")
+        lines.append("and that the information provided is accurate.")
+    else:
+        lines.append("Please don't hesitate to contact our office with any questions about this")
+        lines.append("patient or the records enclosed. We appreciate your evaluation.")
+    lines.append("")
+    lines.append("Sincerely,")
+    lines.append("")
+    lines.append("")
+    lines.append(_user_typed_name(current_user))
+    if current_user:
+        if current_user.get("individual_npi"):
+            lines.append(f"NPI: {current_user['individual_npi']}")
+        if current_user.get("state_license_number"):
+            lic = f"License: {current_user['state_license_number']}"
+            if current_user.get("state_license_state"):
+                lic += f" ({current_user['state_license_state']})"
+            lines.append(lic)
+    if organization:
+        sig_contact: list[str] = []
+        if organization.phone:
+            sig_contact.append(f"Phone: {organization.phone}")
+        if organization.fax:
+            sig_contact.append(f"Fax: {organization.fax}")
+        if sig_contact:
+            lines.append(" · ".join(sig_contact))
+    if current_user and current_user.get("email"):
+        lines.append(f"Direct: {current_user['email']}")
+    lines.append("")
+    lines.append(sep)
+    lines.append("CONFIDENTIAL — Protected Health Information (HIPAA, 45 CFR §164)")
+    lines.append(sep)
 
     return "\n".join(lines)

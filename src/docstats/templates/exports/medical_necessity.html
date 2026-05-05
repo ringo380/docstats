@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Medical Necessity / Prior Authorization — Referral #{{ referral.id }}</title>
+</head>
+<body class="letter-style">
+
+{% include "_partials/_continuation_header.html" %}
+
+{% include "_partials/_letterhead.html" %}
+
+<div class="date-line">{{ generated_at.strftime('%B %d, %Y') }}</div>
+
+<div class="payer-target">
+  <span class="label">Submitted to:</span>
+  {% if insurance_plan %}
+    <strong>{{ insurance_plan.payer_name }}</strong>
+    {% if insurance_plan.plan_type %}({{ insurance_plan.plan_type }}){% endif %}
+    — Utilization Management / Prior Authorization
+  {% else %}
+    <strong>(Payer not configured)</strong> — Utilization Management / Prior Authorization
+  {% endif %}
+</div>
+
+<p>
+  <strong>Re:</strong> Prior Authorization request &mdash;
+  {% if referral.urgency in ('urgent', 'stat') %}
+    <span class="urgency urgency-urgent">EXPEDITED REVIEW (≤72 hours)</span>
+  {% else %}
+    Routine review (≤14 days)
+  {% endif %}
+</p>
+
+<section>
+  <h2>Member Information</h2>
+  <p>
+    <strong>{{ patient.display_name }}</strong>
+    {% if patient.date_of_birth %}<br>DOB: {{ patient.date_of_birth }}{% if patient_age is not none %} (age {{ patient_age }}){% endif %}{% endif %}
+    {% if patient.sex %}<br>Sex: {{ patient.sex }}{% endif %}
+    {% if patient.mrn %}<br>MRN: {{ patient.mrn }}{% endif %}
+  </p>
+  {% if patient.phone or patient.address_line1 %}
+  <p>
+    {% if patient_phone %}Phone: {{ patient_phone }}<br>{% endif %}
+    {% if patient.address_line1 %}{{ patient.address_line1 }}{% endif %}
+    {% if patient.address_line2 %}, {{ patient.address_line2 }}{% endif %}
+    {% if patient.address_city %}<br>{{ patient.address_city }}{% endif %}
+    {% if patient.address_state %}, {{ patient.address_state }}{% endif %}
+    {% if patient.address_zip %} {{ patient.address_zip }}{% endif %}
+  </p>
+  {% endif %}
+  {% if insurance_plan %}
+  <p>
+    <strong>Plan:</strong> {{ insurance_plan.payer_name }}
+    {% if insurance_plan.plan_type %} — {{ insurance_plan.plan_type }}{% endif %}
+  </p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Requesting Provider</h2>
+  <p>
+    {% set _name = (current_user.first_name and current_user.last_name and (current_user.first_name ~ ' ' ~ current_user.last_name))
+                    or current_user.display_name
+                    or referral.referring_provider_name
+                    or '—' %}
+    <strong>{{ _name }}{% if current_user.credentials %}, {{ current_user.credentials }}{% endif %}</strong>
+    {% if current_user.individual_npi %}<br>Individual NPI: {{ current_user.individual_npi }}{% endif %}
+    {% if organization and organization.npi %}<br>Group NPI: {{ organization.npi }}{% endif %}
+    {% if current_user.state_license_number %}
+      <br>State license: {{ current_user.state_license_number }}{% if current_user.state_license_state %} ({{ current_user.state_license_state }}){% endif %}
+    {% endif %}
+  </p>
+  {% if organization %}
+  <p>
+    {{ organization.name }}<br>
+    {% if organization.address_line1 %}{{ organization.address_line1 }}{% endif %}
+    {% if organization.address_line2 %}, {{ organization.address_line2 }}{% endif %}
+    {% if organization.address_city %}<br>{{ organization.address_city }}{% endif %}
+    {% if organization.address_state %}, {{ organization.address_state }}{% endif %}
+    {% if organization.address_zip %} {{ organization.address_zip }}{% endif %}
+    {% if organization.phone %}<br>Phone: {{ organization.phone }}{% endif %}
+    {% if organization.fax %} · Fax: {{ organization.fax }}{% endif %}
+  </p>
+  {% endif %}
+</section>
+
+{% if referral.receiving_organization_name or referral.receiving_provider_name %}
+<section>
+  <h2>Servicing Provider / Facility</h2>
+  <p>
+    {% if referral.receiving_provider_name %}<strong>{{ referral.receiving_provider_name }}</strong><br>{% endif %}
+    {% if referral.receiving_organization_name %}{{ referral.receiving_organization_name }}<br>{% endif %}
+    {% if referral.receiving_provider_npi %}NPI: {{ referral.receiving_provider_npi }}<br>{% endif %}
+    {% if referral.specialty_desc %}Specialty: {{ referral.specialty_desc }}<br>{% endif %}
+    {% if referral.place_of_service_code %}Place of Service: {{ referral.place_of_service_code }}{% endif %}
+  </p>
+</section>
+{% endif %}
+
+<section>
+  <h2>Service Requested</h2>
+  {% if cpt_codes %}
+  <table class="svc-table">
+    <thead>
+      <tr>
+        <th style="width:6em">CPT/HCPCS</th>
+        <th>Description</th>
+        <th style="width:4em">Units</th>
+        <th style="width:5em">Modifier</th>
+        <th style="width:7em">Frequency</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for code in cpt_codes %}
+      <tr>
+        <td class="svc-code">{{ code.code or '—' }}</td>
+        <td>{{ code.description or referral.requested_service or '—' }}</td>
+        <td>{{ code.units or '1' }}</td>
+        <td>{{ code.modifier or '—' }}</td>
+        <td>{{ code.frequency or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% elif referral.requested_service %}
+  <p>{{ referral.requested_service }}</p>
+  <p class="muted"><em>(CPT/HCPCS codes not yet entered — please attach for processing.)</em></p>
+  {% else %}
+  <p class="muted"><em>(Service description and CPT/HCPCS codes not yet entered.)</em></p>
+  {% endif %}
+  {% if referral.requested_start_date or referral.requested_end_date %}
+  <p>
+    <strong>Anticipated dates of service:</strong>
+    {% if referral.requested_start_date %}{{ referral.requested_start_date }}{% else %}—{% endif %}
+    {% if referral.requested_end_date %}through {{ referral.requested_end_date }}{% endif %}
+  </p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Diagnosis</h2>
+  {% if referral.diagnosis_primary_icd or referral.diagnosis_primary_text %}
+  <p>
+    <strong>Primary:</strong>
+    {% if referral.diagnosis_primary_icd %}{{ referral.diagnosis_primary_icd }}{% endif %}
+    {% if referral.diagnosis_primary_text %}{% if referral.diagnosis_primary_icd %} — {% endif %}{{ referral.diagnosis_primary_text }}{% endif %}
+  </p>
+  {% endif %}
+  {% set _secondary = diagnoses | rejectattr('is_primary') | list if diagnoses else [] %}
+  {% if _secondary %}
+  <p><strong>Secondary diagnoses:</strong></p>
+  <ul>
+    {% for d in _secondary %}
+      <li>{{ d.icd10_code }}{% if d.icd10_desc %} — {{ d.icd10_desc }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Medical Necessity Statement</h2>
+  <div class="necessity-box">
+    {% if referral.reason or referral.clinical_question %}
+    <p class="prose"><strong>Clinical context:</strong>
+      {{ referral.reason }}
+      {% if referral.clinical_question %} {{ referral.clinical_question }}{% endif %}
+    </p>
+    {% endif %}
+    {% if referral.medical_necessity_text %}
+    <p class="prose">{{ referral.medical_necessity_text }}</p>
+    {% else %}
+    <p class="muted"><em>(Medical necessity narrative not entered. Recommended: explain why this service is medically necessary, the expected clinical benefit, and the risk of withholding it.)</em></p>
+    {% endif %}
+  </div>
+  <h2 style="margin-top:10pt;">Conservative Therapy / Step Therapy</h2>
+  {% if referral.conservative_therapy_tried %}
+  <p class="prose">{{ referral.conservative_therapy_tried }}</p>
+  {% else %}
+  <p class="muted"><em>(Conservative therapy history not entered. Most payers require documentation of prior treatments tried, with dates and outcomes — this is the leading cause of prior-auth denials.)</em></p>
+  {% endif %}
+</section>
+
+{% if medications or allergies %}
+<section>
+  <h2>Relevant Clinical Background</h2>
+  {% if medications %}
+  <p><strong>Current medications:</strong></p>
+  <ul>
+    {% for m in medications %}
+      <li>{{ m.name }}{% if m.dose %} {{ m.dose }}{% endif %}{% if m.route %}, {{ m.route }}{% endif %}{% if m.frequency %}, {{ m.frequency }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if allergies %}
+  <p><strong>Allergies:</strong></p>
+  <ul>
+    {% for a in allergies %}
+      <li>{{ a.substance }}{% if a.reaction %} — {{ a.reaction }}{% endif %}{% if a.severity %} ({{ a.severity }}){% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if attachments %}
+<section>
+  <h2>Supporting Documentation</h2>
+  <p>The following supporting records are submitted with this prior-authorization request:</p>
+  <ul>
+    {% for a in attachments %}
+      <li>{{ a.label }} <span class="muted">({{ a.kind|replace('_', ' ') }}{% if a.date_of_service %}, {{ a.date_of_service }}{% endif %}{% if a.checklist_only %} — to follow{% endif %})</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<p style="margin-top:14pt;">
+  I attest that the requested service is medically necessary for this patient and that the
+  information provided is accurate to the best of my knowledge. Please contact our office with
+  any questions about this request.
+</p>
+
+{% include "_partials/_signature_block.html" %}
+
+{% include "_partials/_phi_footer.html" %}
+
+</body>
+</html>

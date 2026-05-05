@@ -43,6 +43,13 @@ class UserRecord(TypedDict, total=False):
     role_hint: str | None
     created_at: str
     last_login_at: str | None
+    # Letter-signature fields (migration 026). All optional; templates
+    # render gracefully when absent.
+    credentials: str | None
+    individual_npi: str | None
+    state_license_number: str | None
+    state_license_state: str | None
+    signature_image_ref: str | None
     # Computed by ``auth.get_current_user`` (NOT a users column): True when
     # the caller has an active_org_id AND has_role_at_least(membership.role,
     # "admin") for that org. Declared here so templates (base.html nav) can

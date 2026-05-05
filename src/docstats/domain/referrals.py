@@ -34,7 +34,7 @@ isolation.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final
+from typing import Any, Final
 
 from pydantic import BaseModel
 
@@ -262,6 +262,18 @@ class Referral(BaseModel):
     # EHR write-back: Epic FHIR ServiceRequest.id written on referral creation.
     ehr_service_request_id: str | None = None
 
+    # Prior authorization / Medical Necessity letter fields (migration 027).
+    # ``cpt_codes`` is a list of {code, description, units, modifier,
+    # frequency, duration?} dicts. Stored as JSONB in Postgres and as a
+    # JSON-text TEXT column in SQLite. Use ``parse_cpt_codes()`` below
+    # to normalize either shape into a list[dict].
+    cpt_codes: list[dict[str, Any]] | None = None
+    place_of_service_code: str | None = None
+    medical_necessity_text: str | None = None
+    conservative_therapy_tried: str | None = None
+    requested_start_date: str | None = None
+    requested_end_date: str | None = None
+
     created_by_user_id: int | None = None
     created_at: datetime
     updated_at: datetime
@@ -270,6 +282,29 @@ class Referral(BaseModel):
     @property
     def is_terminal(self) -> bool:
         return self.status in TERMINAL_STATUSES
+
+
+def parse_cpt_codes(raw: Any) -> list[dict[str, Any]]:
+    """Normalize ``cpt_codes`` from the storage layer into a list[dict].
+
+    Migration 027 stores this column as JSONB on Postgres (decoded to a
+    list by supabase-py) and as JSON text on SQLite. Either shape
+    arrives here; malformed JSON is logged-and-dropped by callers.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [c for c in raw if isinstance(c, dict)]
+    if isinstance(raw, str):
+        import json as _json
+
+        try:
+            parsed = _json.loads(raw)
+        except ValueError:
+            return []
+        if isinstance(parsed, list):
+            return [c for c in parsed if isinstance(c, dict)]
+    return []
 
 
 class ReferralEvent(BaseModel):

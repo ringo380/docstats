@@ -1,0 +1,37 @@
+{# Signature block — renders typed name + credentials + NPI + license + contact.
+   Vars (all optional except current_user):
+     current_user        -- UserRecord dict (signature owner)
+     organization        -- Organization (for fallback contact)
+     signature_image_url -- str | None (signed URL to PNG image)
+     closing             -- str (default "Sincerely,")
+#}
+<div class="signature-block">
+  <p class="signature-closing">{{ closing or 'Sincerely,' }}</p>
+  {% if signature_image_url %}
+    <img class="signature-img" src="{{ signature_image_url }}" alt="">
+  {% else %}
+    <div class="signature-gap"></div>
+  {% endif %}
+  <div class="signature-name">
+    {% set _name = (current_user.first_name and current_user.last_name and (current_user.first_name ~ ' ' ~ current_user.last_name))
+                    or current_user.display_name
+                    or current_user.email
+                    or 'Requesting Clinician' %}
+    {{ _name }}{% if current_user.credentials %}, {{ current_user.credentials }}{% endif %}
+  </div>
+  <div class="signature-meta">
+    {% if current_user.individual_npi %}<div>NPI: {{ current_user.individual_npi }}</div>{% endif %}
+    {% if current_user.state_license_number %}
+      <div>License: {{ current_user.state_license_number }}{% if current_user.state_license_state %} ({{ current_user.state_license_state }}){% endif %}</div>
+    {% endif %}
+    {% if organization %}
+      {% if organization.phone or organization.fax %}
+        <div>
+          {% if organization.phone %}Phone: {{ organization.phone }}{% endif %}
+          {% if organization.fax %}{% if organization.phone %} · {% endif %}Fax: {{ organization.fax }}{% endif %}
+        </div>
+      {% endif %}
+    {% endif %}
+    {% if current_user.email %}<div>Direct: {{ current_user.email }}</div>{% endif %}
+  </div>
+</div>

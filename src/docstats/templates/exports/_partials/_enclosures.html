@@ -1,0 +1,17 @@
+{# Enclosures block — itemizes attachments by kind + date.
+   Vars:
+     attachments -- list[ReferralAttachment] (may be empty)
+#}
+{% if attachments %}
+<div class="enclosures">
+  <div class="enclosures-label">Enclosures:</div>
+  <ul>
+    {% for a in attachments %}
+      <li>
+        {{ a.label }}
+        <span class="muted">({{ a.kind|replace('_', ' ') }}{% if a.date_of_service %}, {{ a.date_of_service }}{% endif %}{% if a.checklist_only %} — to follow{% endif %})</span>
+      </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}

@@ -26,6 +26,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from docstats.domain.orgs import Organization
     from docstats.domain.patients import Patient
     from docstats.domain.referrals import (
         Referral,
@@ -57,6 +58,15 @@ ARTIFACT_ATTACHMENTS_CHECKLIST = "attachments"
 ARTIFACT_MISSING_INFO = "missing_info"
 ARTIFACT_FAX_COVER = "fax_cover"
 ARTIFACT_PACKET = "packet"
+# Medical Necessity / Prior Authorization letter (Scenario B in the AMA
+# referral-letter overhaul). Renders payer-facing service request with
+# CPT/HCPCS, POS, conservative-therapy summary, and the medical
+# necessity narrative. Requires migration 027 (cpt_codes,
+# place_of_service_code, medical_necessity_text, conservative_therapy_tried).
+# Renders gracefully when those fields are NULL — the letter just shows
+# the empty-state placeholders so a coordinator can still print and
+# hand-fill.
+ARTIFACT_MEDICAL_NECESSITY = "medical_necessity"
 # Phase 10.D — splices real PDF attachment bytes into a packet.  This is a
 # "pseudo-artifact": it can only appear inside ``?include=`` for a packet
 # render; it's not renderable on its own via ``?artifact=``.  Non-PDF
@@ -117,8 +127,19 @@ def _base_context(
     patient: "Patient",
     generated_at: datetime,
     generated_by_label: str | None,
+    organization: "Organization | None" = None,
+    current_user: dict[str, Any] | None = None,
+    signature_image_url: str | None = None,
 ) -> dict[str, Any]:
-    """Context keys every artifact template expects (header/footer/meta)."""
+    """Context keys every artifact template expects (header/footer/meta).
+
+    ``organization`` populates the letterhead block on letter-style
+    artifacts. ``current_user`` is the requesting clinician dict (with
+    optional ``credentials`` / ``individual_npi`` / ``state_license_*``
+    fields populated from migration 026); used by the signature block.
+    Both are optional so existing renderers keep working when callers
+    don't pass them.
+    """
     return {
         "referral": referral,
         "patient": patient,
@@ -126,6 +147,9 @@ def _base_context(
         "patient_phone": _fmt_phone(patient.phone),
         "generated_at": generated_at,
         "generated_by_label": generated_by_label,
+        "organization": organization,
+        "current_user": current_user or {},
+        "signature_image_url": signature_image_url,
     }
 
 
@@ -142,8 +166,17 @@ def render_referral_summary(
     attachments: list["ReferralAttachment"] | None = None,
     generated_at: datetime | None = None,
     generated_by_label: str | None = None,
+    organization: "Organization | None" = None,
+    current_user: dict[str, Any] | None = None,
+    signature_image_url: str | None = None,
 ) -> bytes:
-    """Clinical summary artifact — the 5.A anchor artifact."""
+    """AMA-style consultation request letter (Phase 5.A redesigned).
+
+    Renders as a Bunik 7-domain narrative letter rather than the
+    structured form it was originally. ``organization`` drives the
+    letterhead, ``current_user`` drives the signature block — both are
+    optional and the template degrades gracefully when absent.
+    """
     attachments = list(attachments or [])
     now = generated_at or datetime.now(tz=timezone.utc)
     context = _base_context(
@@ -151,6 +184,9 @@ def render_referral_summary(
         patient=patient,
         generated_at=now,
         generated_by_label=generated_by_label,
+        organization=organization,
+        current_user=current_user,
+        signature_image_url=signature_image_url,
     )
     context.update(
         {
@@ -174,6 +210,9 @@ def render_scheduling_summary(
     patient: "Patient",
     generated_at: datetime | None = None,
     generated_by_label: str | None = None,
+    organization: "Organization | None" = None,
+    current_user: dict[str, Any] | None = None,
+    signature_image_url: str | None = None,
 ) -> bytes:
     """Receiving-side front-desk artifact.
 
@@ -187,6 +226,9 @@ def render_scheduling_summary(
         patient=patient,
         generated_at=now,
         generated_by_label=generated_by_label,
+        organization=organization,
+        current_user=current_user,
+        signature_image_url=signature_image_url,
     )
     return _render_pdf("scheduling_summary.html", context)
 
@@ -200,6 +242,9 @@ def render_patient_summary(
     patient: "Patient",
     generated_at: datetime | None = None,
     generated_by_label: str | None = None,
+    organization: "Organization | None" = None,
+    current_user: dict[str, Any] | None = None,
+    signature_image_url: str | None = None,
 ) -> bytes:
     """Plain-language summary the coordinator can hand or email to the patient.
 
@@ -212,6 +257,9 @@ def render_patient_summary(
         patient=patient,
         generated_at=now,
         generated_by_label=generated_by_label,
+        organization=organization,
+        current_user=current_user,
+        signature_image_url=signature_image_url,
     )
     return _render_pdf("patient_summary.html", context)
 
@@ -226,6 +274,9 @@ def render_attachments_checklist(
     attachments: list["ReferralAttachment"] | None = None,
     generated_at: datetime | None = None,
     generated_by_label: str | None = None,
+    organization: "Organization | None" = None,
+    current_user: dict[str, Any] | None = None,
+    signature_image_url: str | None = None,
 ) -> bytes:
     """Single-page checklist — what's attached, what's pending.
 
@@ -239,6 +290,9 @@ def render_attachments_checklist(
         patient=patient,
         generated_at=now,
         generated_by_label=generated_by_label,
+        organization=organization,
+        current_user=current_user,
+        signature_image_url=signature_image_url,
     )
     context.update(
         {
@@ -260,6 +314,9 @@ def render_missing_info(
     completeness: "CompletenessReportV2",
     generated_at: datetime | None = None,
     generated_by_label: str | None = None,
+    organization: "Organization | None" = None,
+    current_user: dict[str, Any] | None = None,
+    signature_image_url: str | None = None,
 ) -> bytes:
     """Coordinator-facing gap report — what's required vs recommended vs filled.
 
@@ -273,6 +330,9 @@ def render_missing_info(
         patient=patient,
         generated_at=now,
         generated_by_label=generated_by_label,
+        organization=organization,
+        current_user=current_user,
+        signature_image_url=signature_image_url,
     )
     context.update(
         {
@@ -295,6 +355,9 @@ def render_fax_cover(
     total_pages: int | None = None,
     generated_at: datetime | None = None,
     generated_by_label: str | None = None,
+    organization: "Organization | None" = None,
+    current_user: dict[str, Any] | None = None,
+    signature_image_url: str | None = None,
 ) -> bytes:
     """Single-page fax cover sheet.
 
@@ -308,6 +371,9 @@ def render_fax_cover(
         patient=patient,
         generated_at=now,
         generated_by_label=generated_by_label,
+        organization=organization,
+        current_user=current_user,
+        signature_image_url=signature_image_url,
     )
     context.update(
         {
@@ -328,6 +394,56 @@ def _pick_fax(referral: "Referral", side: str) -> str | None:
     the cover sheet as a faxable front page.
     """
     return None
+
+
+# ---------- Medical Necessity / Prior Auth letter ----------
+
+
+def render_medical_necessity(
+    *,
+    referral: "Referral",
+    patient: "Patient",
+    diagnoses: list["ReferralDiagnosis"] | None = None,
+    medications: list["ReferralMedication"] | None = None,
+    allergies: list["ReferralAllergy"] | None = None,
+    attachments: list["ReferralAttachment"] | None = None,
+    insurance_plan: Any | None = None,
+    cpt_codes: list[dict[str, Any]] | None = None,
+    generated_at: datetime | None = None,
+    generated_by_label: str | None = None,
+    organization: "Organization | None" = None,
+    current_user: dict[str, Any] | None = None,
+    signature_image_url: str | None = None,
+) -> bytes:
+    """Payer-facing prior-authorization / medical-necessity letter.
+
+    Sections per CMS PA conventions + AAFP letter-of-medical-necessity
+    template: payer block, member block, requesting-provider block,
+    service-requested table (CPT/HCPCS), diagnosis (ICD-10), medical
+    necessity narrative + step-therapy, supporting documents,
+    provider signature.
+    """
+    now = generated_at or datetime.now(tz=timezone.utc)
+    context = _base_context(
+        referral=referral,
+        patient=patient,
+        generated_at=now,
+        generated_by_label=generated_by_label,
+        organization=organization,
+        current_user=current_user,
+        signature_image_url=signature_image_url,
+    )
+    context.update(
+        {
+            "diagnoses": list(diagnoses or []),
+            "medications": list(medications or []),
+            "allergies": list(allergies or []),
+            "attachments": list(attachments or []),
+            "insurance_plan": insurance_plan,
+            "cpt_codes": list(cpt_codes or []),
+        }
+    )
+    return _render_pdf("medical_necessity.html", context)
 
 
 # ---------- Packet bundle (5.C) ----------

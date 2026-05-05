@@ -1,0 +1,40 @@
+{# Letterhead block — renders practice/org stationery on page 1.
+   Vars expected (all optional):
+     organization  -- docstats.domain.orgs.Organization OR None
+     referral      -- fallback for org-less letters: uses
+                      referral.referring_organization (text only)
+   When neither is present, falls back to "(Practice information not configured)" so the
+   template never renders blank — coordinators can spot the gap.
+#}
+<header class="letterhead">
+{% if organization %}
+  <div class="letterhead-org">{{ organization.name }}</div>
+  <div class="letterhead-meta">
+    {% set _addr_parts = [] %}
+    {% if organization.address_line1 %}{% set _ = _addr_parts.append(organization.address_line1) %}{% endif %}
+    {% if organization.address_line2 %}{% set _ = _addr_parts.append(organization.address_line2) %}{% endif %}
+    {% set _city_state_zip = [] %}
+    {% if organization.address_city %}{% set _ = _city_state_zip.append(organization.address_city) %}{% endif %}
+    {% if organization.address_state %}{% set _ = _city_state_zip.append(organization.address_state) %}{% endif %}
+    {% if _city_state_zip %}
+      {% set _csz = _city_state_zip | join(', ') %}
+      {% if organization.address_zip %}{% set _csz = _csz ~ ' ' ~ organization.address_zip %}{% endif %}
+      {% set _ = _addr_parts.append(_csz) %}
+    {% endif %}
+    {% if _addr_parts %}<div>{{ _addr_parts | join(' · ') }}</div>{% endif %}
+    <div>
+      {% if organization.phone %}Phone: {{ organization.phone }}{% endif %}
+      {% if organization.fax %}<span class="sep"></span>Fax: {{ organization.fax }}{% endif %}
+      {% if organization.npi %}<span class="sep"></span>NPI: {{ organization.npi }}{% endif %}
+    </div>
+  </div>
+{% elif referral and referral.referring_organization %}
+  <div class="letterhead-org">{{ referral.referring_organization }}</div>
+  <div class="letterhead-meta">
+    {% if referral.referring_provider_name %}<div>{{ referral.referring_provider_name }}{% if referral.referring_provider_npi %} — NPI {{ referral.referring_provider_npi }}{% endif %}</div>{% endif %}
+  </div>
+{% else %}
+  <div class="letterhead-org">(Practice information not configured)</div>
+  <div class="letterhead-meta">Configure your organization in /admin/settings to populate the letterhead.</div>
+{% endif %}
+</header>

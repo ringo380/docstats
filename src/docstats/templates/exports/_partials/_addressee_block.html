@@ -1,0 +1,42 @@
+{# Addressee block + RE: line + salutation.
+   Vars:
+     generated_at      -- datetime
+     referral          -- Referral
+     patient           -- Patient
+     patient_age       -- int | None (precomputed)
+     recipient_name    -- str | None (override; falls back to receiving_organization_name)
+
+   The Referral domain currently carries receiving_organization_name +
+   receiving_provider_npi but NO provider name; the fallback salutation
+   is "Dear Colleague:" until either the schema gains a name or the
+   caller passes recipient_name explicitly.
+#}
+<div class="date-line">{{ generated_at.strftime('%B %d, %Y') }}</div>
+
+<div class="addressee-block">
+  {% if recipient_name %}
+    <div class="recipient-name">{{ recipient_name }}</div>
+  {% endif %}
+  {% if referral.receiving_organization_name %}
+    <div>{{ referral.receiving_organization_name }}</div>
+  {% endif %}
+  {% if referral.specialty_desc and not recipient_name %}
+    <div>{{ referral.specialty_desc }} Department</div>
+  {% endif %}
+</div>
+
+<div class="re-line">
+  <span class="re-label">RE:</span>
+  {{ patient.display_name }}
+  {%- if patient.date_of_birth %} · DOB {{ patient.date_of_birth }}{% if patient_age is not none %} (age {{ patient_age }}){% endif %}{% endif %}
+  {%- if patient.sex %} · {{ patient.sex }}{% endif %}
+  {%- if patient.mrn %} · MRN {{ patient.mrn }}{% endif %}
+</div>
+
+<div class="salutation">
+  {% if recipient_name %}
+    Dear Dr. {{ recipient_name.split(' ') | last }}:
+  {% else %}
+    Dear Colleague:
+  {% endif %}
+</div>
