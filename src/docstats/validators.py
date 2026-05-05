@@ -46,6 +46,36 @@ def validate_npi(npi: str) -> str:
     return npi
 
 
+def npi_luhn_ok(npi: str) -> bool:
+    """Return True if ``npi`` passes the NPI Luhn check digit (CMS algorithm).
+
+    The NPI check digit is computed by prepending the NUCC industry
+    identifier prefix ``80840`` to the 9-digit base, then running standard
+    Luhn over the resulting 14 digits to derive a check digit which forms
+    the NPI's 10th character. Validation reverses the process by running
+    Luhn over the 15-digit ``80840 + NPI`` and confirming the sum is a
+    multiple of 10.
+
+    Returns False (rather than raising) for any input that doesn't match
+    the 10-digit format — callers compose this with ``validate_npi``.
+    """
+    if not NPI_PATTERN.match(npi or ""):
+        return False
+    s = "80840" + npi
+    total = 0
+    # Walk right-to-left; double every second position starting at index 1
+    # (i.e. position 2 in 1-indexed-from-right). Position 1 (the check
+    # digit) is summed as-is; doubled values > 9 collapse via -9.
+    for i, ch in enumerate(reversed(s)):
+        n = int(ch)
+        if i % 2 == 1:
+            n *= 2
+            if n > 9:
+                n -= 9
+        total += n
+    return total % 10 == 0
+
+
 def validate_email(email: str) -> str:
     """Return normalized email if valid, raise ValidationError otherwise."""
     email = (email or "").strip().lower()

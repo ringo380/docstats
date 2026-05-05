@@ -17,11 +17,22 @@ router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
 
 def _onboarding_step(user: dict, *, pcp_skipped: bool = False) -> int:
-    """Determine which onboarding step a user should be on."""
+    """Determine which onboarding step a user should be on.
+
+    Clinicians don't have a PCP step — for them step 3 is the practice
+    confirmation card, which the template renders unconditionally when
+    they land on step 3. They auto-advance from step 2 (DOB) to step 3
+    only if their basic identity is complete; otherwise we still gate
+    on the per-step requirements.
+    """
     if not (user.get("first_name") and user.get("last_name")):
         return 1
     if not user.get("date_of_birth"):
         return 2
+    # Patients: require pcp_npi or explicit skip. Clinicians: no PCP
+    # step — they confirm their practice card and continue.
+    if user.get("account_type") == "clinician":
+        return 4 if pcp_skipped else 3
     if not user.get("pcp_npi") and not pcp_skipped:
         return 3
     return 4

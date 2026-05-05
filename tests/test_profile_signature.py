@@ -21,6 +21,8 @@ from docstats.web import app
 
 
 def _make_user_row(user_id: int, email: str) -> dict:
+    # account_type='clinician' so the /profile Letter signature card
+    # is visible — patient accounts hide the card by design.
     return {
         "id": user_id,
         "email": email,
@@ -35,14 +37,16 @@ def _make_user_row(user_id: int, email: str) -> dict:
         "terms_accepted_at": "2026-01-01",
         "active_org_id": None,
         "is_org_admin": False,
+        "account_type": "clinician",
+        "clinician_verification_status": "verified",
     }
 
 
 def _seed_user(storage: Storage, user_id: int, email: str) -> None:
     """Insert a minimal users row into SQLite so storage.get_user_by_id works."""
     storage._conn.execute(
-        "INSERT INTO users (id, email, password_hash, first_name, last_name) VALUES (?, ?, ?, ?, ?)",
-        (user_id, email, "hashed", "Ryan", "Robson"),
+        "INSERT INTO users (id, email, password_hash, first_name, last_name, account_type, clinician_verification_status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (user_id, email, "hashed", "Ryan", "Robson", "clinician", "verified"),
     )
     storage._conn.commit()
 

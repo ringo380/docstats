@@ -4,7 +4,7 @@
 <div class="auth-shell">
   <div class="auth-heading">
     <h1 class="auth-title">Create your account</h1>
-    <p class="auth-subtitle">Save and manage provider referrals</p>
+    <p class="auth-subtitle">Coordinate referrals — for patients and clinicians</p>
   </div>
 
   {% if error %}
@@ -12,23 +12,114 @@
   {% endif %}
 
   <div class="auth-card">
-    <form method="post" action="/auth/signup" class="auth-form">
+    {# ── Audience picker (segmented control) ── #}
+    <div class="audience-tabs" role="tablist" aria-label="Account type">
+      <button type="button"
+              class="audience-tab {% if account_type != 'clinician' %}is-active{% endif %}"
+              data-account-type="patient"
+              aria-selected="{% if account_type != 'clinician' %}true{% else %}false{% endif %}">
+        I'm a patient
+      </button>
+      <button type="button"
+              class="audience-tab {% if account_type == 'clinician' %}is-active{% endif %}"
+              data-account-type="clinician"
+              aria-selected="{% if account_type == 'clinician' %}true{% else %}false{% endif %}">
+        I'm a healthcare provider
+      </button>
+    </div>
+
+    <p class="audience-help" id="audience-help-patient" {% if account_type == 'clinician' %}style="display:none;"{% endif %}>
+      Track your referrals, manage your primary care provider, and share securely with specialists.
+    </p>
+    <p class="audience-help" id="audience-help-clinician" {% if account_type != 'clinician' %}style="display:none;"{% endif %}>
+      Send and track referrals on behalf of patients. We verify clinicians via the CMS NPI Registry at signup.
+    </p>
+
+    <form method="post" action="/auth/signup" class="auth-form" id="signup-form">
+      <input type="hidden" name="account_type" id="account-type-input" value="{{ account_type }}">
+
       <div>
         <label for="email">Email</label>
-        <input type="email" id="email" name="email" required autocomplete="email" placeholder="you@example.com">
+        <input type="email" id="email" name="email" required autocomplete="email"
+               value="{{ form.email or '' }}" placeholder="you@example.com">
       </div>
       <div>
         <label for="password">
           Password
           <span class="auth-hint">(min. 8 characters)</span>
         </label>
-        <input type="password" id="password" name="password" required autocomplete="new-password" minlength="8" placeholder="••••••••">
+        <input type="password" id="password" name="password" required autocomplete="new-password"
+               minlength="8" placeholder="••••••••">
       </div>
       <div>
         <label for="confirm_password">Confirm password</label>
-        <input type="password" id="confirm_password" name="confirm_password" required autocomplete="new-password" placeholder="••••••••">
+        <input type="password" id="confirm_password" name="confirm_password" required
+               autocomplete="new-password" placeholder="••••••••">
       </div>
-      <button type="submit" class="btn btn-primary auth-submit-btn">Create Account</button>
+
+      {# ── Clinician-only fields ── #}
+      <div id="clinician-fields" {% if account_type != 'clinician' %}style="display:none;"{% endif %}>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.5rem;">
+          <div>
+            <label for="first_name">First name</label>
+            <input type="text" id="first_name" name="first_name" maxlength="100"
+                   autocomplete="given-name" value="{{ form.first_name or '' }}">
+          </div>
+          <div>
+            <label for="last_name">Last name</label>
+            <input type="text" id="last_name" name="last_name" maxlength="100"
+                   autocomplete="family-name" value="{{ form.last_name or '' }}">
+          </div>
+        </div>
+
+        <div>
+          <label for="individual_npi">
+            Individual NPI <span class="auth-hint">(Type-1, 10 digits)</span>
+          </label>
+          <input type="text" id="individual_npi" name="individual_npi" inputmode="numeric"
+                 pattern="[0-9]{10}" maxlength="10" autocomplete="off"
+                 placeholder="1234567890" value="{{ form.individual_npi or '' }}"
+                 style="font-family:var(--font-mono);">
+        </div>
+
+        <div style="display:grid; grid-template-columns:2fr 1fr; gap:0.5rem;">
+          <div>
+            <label for="state_license_number">
+              State license <span class="auth-hint">(optional)</span>
+            </label>
+            <input type="text" id="state_license_number" name="state_license_number"
+                   maxlength="40" autocomplete="off" placeholder="A1234567"
+                   value="{{ form.state_license_number or '' }}"
+                   style="font-family:var(--font-mono);">
+          </div>
+          <div>
+            <label for="state_license_state">State</label>
+            <select id="state_license_state" name="state_license_state">
+              <option value="">—</option>
+              {% for code, name in us_states %}
+                <option value="{{ code }}" {% if form.state_license_state == code %}selected{% endif %}>{{ code }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label for="credentials">
+            Credentials <span class="auth-hint">(e.g. MD, FAAFP — optional)</span>
+          </label>
+          <input type="text" id="credentials" name="credentials" maxlength="80"
+                 autocomplete="off" placeholder="MD, FAAFP" value="{{ form.credentials or '' }}">
+        </div>
+
+        <label class="auth-attest">
+          <input type="checkbox" name="attestation" value="on">
+          <span>I attest that I am the licensed clinician identified by this NPI.</span>
+        </label>
+      </div>
+
+      <button type="submit" class="btn btn-primary auth-submit-btn" id="signup-submit">
+        {% if account_type == 'clinician' %}Verify &amp; create account{% else %}Create Account{% endif %}
+      </button>
     </form>
 
     {% if github_enabled %}
@@ -46,4 +137,59 @@
     Already have an account? <a href="/auth/login">Log in</a>
   </p>
 </div>
+
+<script>
+  // Audience tab toggle — flips the hidden account_type input + reveals
+  // the clinician-only fields. No htmx swap needed; pure DOM.
+  (function () {
+    var tabs = document.querySelectorAll('.audience-tab');
+    var input = document.getElementById('account-type-input');
+    var clinicianFields = document.getElementById('clinician-fields');
+    var helpPatient = document.getElementById('audience-help-patient');
+    var helpClinician = document.getElementById('audience-help-clinician');
+    var submit = document.getElementById('signup-submit');
+
+    function applyType(t) {
+      input.value = t;
+      tabs.forEach(function (b) {
+        var on = b.getAttribute('data-account-type') === t;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      var isClin = t === 'clinician';
+      clinicianFields.style.display = isClin ? '' : 'none';
+      helpPatient.style.display = isClin ? 'none' : '';
+      helpClinician.style.display = isClin ? '' : 'none';
+      submit.textContent = isClin ? 'Verify & create account' : 'Create Account';
+      // Mark clinician fields as required only when visible — otherwise
+      // a hidden empty NPI input would block patient signups.
+      ['first_name', 'last_name', 'individual_npi', 'state_license_state'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.required = isClin;
+      });
+      var attest = document.querySelector('.auth-attest input[type=checkbox]');
+      if (attest) attest.required = isClin;
+    }
+
+    tabs.forEach(function (b) {
+      b.addEventListener('click', function () {
+        applyType(b.getAttribute('data-account-type'));
+      });
+    });
+
+    // Initialize required-state on page load (e.g. server rendered
+    // with account_type=clinician on URL ?type=clinician).
+    applyType(input.value || 'patient');
+  })();
+</script>
+
+<style>
+  .audience-tabs { display:flex; gap:0; border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden; margin-bottom:0.5rem; }
+  .audience-tab { flex:1 1 50%; padding:8px 12px; background:transparent; color:var(--text-dim); border:0; cursor:pointer; font-size:0.85rem; font-weight:500; }
+  .audience-tab.is-active { background:var(--green); color:#fff; }
+  .audience-help { font-size:0.78rem; color:var(--text-muted); margin:0 0 0.75rem 0; }
+  .auth-attest { display:flex; align-items:flex-start; gap:0.5rem; font-size:0.82rem; color:var(--text-muted); margin-top:0.5rem; }
+  .auth-attest input { margin-top:3px; }
+  #clinician-fields > div { margin-bottom:0.6rem; }
+</style>
 {% endblock %}

@@ -64,7 +64,23 @@ class StorageBase(ABC):
     # --- User CRUD ---
 
     @abstractmethod
-    def create_user(self, email: str, password_hash: str) -> int: ...
+    def create_user(
+        self,
+        email: str,
+        password_hash: str,
+        *,
+        account_type: str = "patient",
+        first_name: str | None = None,
+        last_name: str | None = None,
+        individual_npi: str | None = None,
+        credentials: str | None = None,
+        state_license_number: str | None = None,
+        state_license_state: str | None = None,
+        clinician_verification_status: str = "not_applicable",
+        clinician_verified_at: str | None = None,
+        clinician_verified_method: str | None = None,
+        clinician_verification_reasons: list[str] | None = None,
+    ) -> int: ...
 
     @abstractmethod
     def get_user_by_id(self, user_id: int) -> dict | None: ...
@@ -130,6 +146,23 @@ class StorageBase(ABC):
     @abstractmethod
     def set_user_signature_image_ref(self, user_id: int, ref: str | None) -> None:
         """Set or clear the user's signature_image_ref. Pass None to clear."""
+        ...
+
+    @abstractmethod
+    def update_user_account_type(
+        self,
+        user_id: int,
+        *,
+        account_type: str,
+        clinician_verification_status: str = "not_applicable",
+        clinician_verified_at: str | None = None,
+        clinician_verified_method: str | None = None,
+        clinician_verification_reasons: list[str] | None = None,
+    ) -> None:
+        """Replace the account_type + clinician verification verdict columns
+        (migration 028). Used by the audience picker on first GitHub
+        OAuth sign-in and by the upgrade/downgrade routes.
+        """
         ...
 
     @abstractmethod

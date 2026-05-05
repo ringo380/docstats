@@ -540,25 +540,71 @@ class PostgresStorage(StorageBase):
 
     # --- User CRUD ---
 
-    def create_user(self, email: str, password_hash: str) -> int:
-        result = (
-            self._t("users")
-            .insert({"email": normalize_email(email), "password_hash": password_hash})
-            .execute()
-        )
+    def create_user(
+        self,
+        email: str,
+        password_hash: str,
+        *,
+        account_type: str = "patient",
+        first_name: str | None = None,
+        last_name: str | None = None,
+        individual_npi: str | None = None,
+        credentials: str | None = None,
+        state_license_number: str | None = None,
+        state_license_state: str | None = None,
+        clinician_verification_status: str = "not_applicable",
+        clinician_verified_at: str | None = None,
+        clinician_verified_method: str | None = None,
+        clinician_verification_reasons: list[str] | None = None,
+    ) -> int:
+        row: dict[str, Any] = {
+            "email": normalize_email(email),
+            "password_hash": password_hash,
+            "account_type": account_type,
+            "clinician_verification_status": clinician_verification_status,
+        }
+        for k, v in {
+            "first_name": first_name,
+            "last_name": last_name,
+            "individual_npi": individual_npi,
+            "credentials": credentials,
+            "state_license_number": state_license_number,
+            "state_license_state": state_license_state,
+            "clinician_verified_at": clinician_verified_at,
+            "clinician_verified_method": clinician_verified_method,
+            # Postgres column is JSONB; supabase-py serializes lists/dicts.
+            "clinician_verification_reasons": clinician_verification_reasons,
+        }.items():
+            if v is not None:
+                row[k] = v
+        result = self._t("users").insert(row).execute()
         return int(result.data[0]["id"])
+
+    def _hydrate_user_row(self, row: dict | None) -> dict | None:
+        if row is None:
+            return None
+        # Postgres returns JSONB as a parsed list/dict via supabase-py;
+        # in the rare case it arrives as a string (e.g. test stubs),
+        # decode for symmetry with the SQLite hydrator.
+        raw = row.get("clinician_verification_reasons")
+        if isinstance(raw, str):
+            try:
+                row["clinician_verification_reasons"] = json.loads(raw) if raw else None
+            except ValueError:
+                row["clinician_verification_reasons"] = None
+        return row
 
     def get_user_by_id(self, user_id: int) -> dict | None:
         result = self._t("users").select("*").eq("id", user_id).execute()
-        return result.data[0] if result.data else None
+        return self._hydrate_user_row(result.data[0] if result.data else None)
 
     def get_user_by_email(self, email: str) -> dict | None:
         result = self._t("users").select("*").eq("email", normalize_email(email)).execute()
-        return result.data[0] if result.data else None
+        return self._hydrate_user_row(result.data[0] if result.data else None)
 
     def get_user_by_github_id(self, github_id: str) -> dict | None:
         result = self._t("users").select("*").eq("github_id", str(github_id)).execute()
-        return result.data[0] if result.data else None
+        return self._hydrate_user_row(result.data[0] if result.data else None)
 
     def upsert_github_user(
         self,
@@ -677,6 +723,26 @@ class PostgresStorage(StorageBase):
 
     def set_user_signature_image_ref(self, user_id: int, ref: str | None) -> None:
         self._t("users").update({"signature_image_ref": ref}).eq("id", user_id).execute()
+
+    def update_user_account_type(
+        self,
+        user_id: int,
+        *,
+        account_type: str,
+        clinician_verification_status: str = "not_applicable",
+        clinician_verified_at: str | None = None,
+        clinician_verified_method: str | None = None,
+        clinician_verification_reasons: list[str] | None = None,
+    ) -> None:
+        self._t("users").update(
+            {
+                "account_type": account_type,
+                "clinician_verification_status": clinician_verification_status,
+                "clinician_verified_at": clinician_verified_at,
+                "clinician_verified_method": clinician_verified_method,
+                "clinician_verification_reasons": clinician_verification_reasons,
+            }
+        ).eq("id", user_id).execute()
 
     def record_terms_acceptance(
         self,

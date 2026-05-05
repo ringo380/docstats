@@ -50,6 +50,16 @@ class UserRecord(TypedDict, total=False):
     state_license_number: str | None
     state_license_state: str | None
     signature_image_ref: str | None
+    # Account type + clinician verification (migration 028). Default
+    # ``patient`` so existing rows backfill correctly. Status ladder:
+    # not_applicable (patients) → verified | pending_review | rejected
+    # (clinicians; rejected is captured in the audit log, not on a row,
+    # so storage rows never carry that value in practice).
+    account_type: str
+    clinician_verification_status: str
+    clinician_verified_at: str | None
+    clinician_verified_method: str | None
+    clinician_verification_reasons: list[str] | None
     # Computed by ``auth.get_current_user`` (NOT a users column): True when
     # the caller has an active_org_id AND has_role_at_least(membership.role,
     # "admin") for that org. Declared here so templates (base.html nav) can
