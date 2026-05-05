@@ -1,0 +1,131 @@
+{# Appointment-address wizard modal.
+
+   Single template, three steps. Posts back to /provider/{npi}/appt-wizard
+   with a hidden ``step`` field indicating which step's form was submitted.
+   The route advances and re-renders this template with the next step.
+
+   Variables:
+     npi               - provider NPI (path param echo)
+     step              - 1 | 2 | 3
+     provider          - SavedProvider | None (current row state for prefill)
+     addr              - NPIResult.location_address (NPPES practice address)
+     mapbox_token      - public Mapbox token; empty string disables typeahead
+     visit_location_type - 'practice' | 'televisit' | 'custom' (carried across
+                            steps; chosen at step 1)
+     appt_address, appt_suite, appt_phone, appt_fax - in-flight wizard values
+                            re-echoed via hidden inputs across steps so the
+                            server stays the only state holder
+     error             - optional inline error message
+   #}
+<div class="modal-backdrop" id="appt-wizard-modal" data-npi="{{ npi }}">
+  <div class="modal-card">
+    <header class="modal-header">
+      <h2>Appointment details</h2>
+      <button class="modal-close" type="button"
+              hx-delete="/provider/{{ npi }}/appt-wizard"
+              hx-target="#modal-root"
+              hx-swap="innerHTML"
+              aria-label="Close">&#x2715;</button>
+    </header>
+    <ol class="wizard-steps" aria-hidden="true">
+      <li class="{% if step == 1 %}current{% elif step > 1 %}done{% endif %}">1 &middot; Where</li>
+      <li class="{% if step == 2 %}current{% elif step > 2 %}done{% endif %}">2 &middot; Address</li>
+      <li class="{% if step == 3 %}current{% endif %}">3 &middot; Contact</li>
+    </ol>
+
+    {% if error %}<p class="wizard-error">{{ error }}</p>{% endif %}
+
+    <form class="wizard-form"
+          hx-post="/provider/{{ npi }}/appt-wizard"
+          hx-target="#modal-root"
+          hx-swap="innerHTML">
+
+      {# Hidden state carried across steps so the server can stay the source
+         of truth without per-step persistence. #}
+      <input type="hidden" name="step" value="{{ step }}">
+      {% if step != 1 %}<input type="hidden" name="visit_location_type" value="{{ visit_location_type or '' }}">{% endif %}
+      {% if step == 3 %}
+        <input type="hidden" name="appt_address" value="{{ appt_address or '' }}">
+        <input type="hidden" name="appt_suite" value="{{ appt_suite or '' }}">
+      {% endif %}
+
+      {# ---------- STEP 1: choose visit type ---------- #}
+      {% if step == 1 %}
+        <p class="wizard-intro">Where do you visit
+          {% if provider and provider.display_name %}<strong>{{ provider.display_name }}</strong>{% else %}this provider{% endif %}
+          for appointments?</p>
+        <div class="wizard-options">
+          <label class="wizard-option {% if visit_location_type == 'practice' %}selected{% endif %}">
+            <input type="radio" name="visit_location_type" value="practice"
+                   {% if visit_location_type == 'practice' or not visit_location_type %}checked{% endif %}>
+            <div class="wizard-option-body">
+              <div class="wizard-option-label">At the practice address</div>
+              {% if addr %}
+                <div class="wizard-option-meta">
+                  {{ addr.address_1 | strip_us }}{% if addr.address_2 %}, {{ addr.address_2 }}{% endif %},
+                  {{ addr.city }}, {{ addr.state }} {{ addr.formatted_postal }}
+                </div>
+              {% else %}
+                <div class="wizard-option-meta">No NPPES practice address on file.</div>
+              {% endif %}
+            </div>
+          </label>
+          <label class="wizard-option {% if visit_location_type == 'televisit' %}selected{% endif %}">
+            <input type="radio" name="visit_location_type" value="televisit"
+                   {% if visit_location_type == 'televisit' %}checked{% endif %}>
+            <div class="wizard-option-body">
+              <div class="wizard-option-label">Telehealth / virtual visits</div>
+              <div class="wizard-option-meta">Referral letters still print the practice address as the doctor's office of record.</div>
+            </div>
+          </label>
+          <label class="wizard-option {% if visit_location_type == 'custom' %}selected{% endif %}">
+            <input type="radio" name="visit_location_type" value="custom"
+                   {% if visit_location_type == 'custom' %}checked{% endif %}>
+            <div class="wizard-option-body">
+              <div class="wizard-option-label">A different location</div>
+              <div class="wizard-option-meta">A satellite clinic, hospital, or another office.</div>
+            </div>
+          </label>
+        </div>
+        <div class="wizard-actions">
+          <button type="submit" class="btn btn-primary">Next &rarr;</button>
+        </div>
+
+      {# ---------- STEP 2: address (custom only) ---------- #}
+      {% elif step == 2 %}
+        <p class="wizard-intro">Enter the address where you visit this provider.</p>
+        {% include "_mapbox_address_input.html" %}
+        <label class="wizard-field">
+          <span>Suite / room (optional)</span>
+          <input type="text" name="appt_suite" maxlength="100"
+                 value="{{ appt_suite or '' }}"
+                 placeholder="Suite 6A, Room 201, &hellip;">
+        </label>
+        <div class="wizard-actions">
+          <button type="submit" class="btn btn-secondary" name="step" value="back-to-1" formnovalidate>&larr; Back</button>
+          <button type="submit" class="btn btn-primary">Next &rarr;</button>
+        </div>
+
+      {# ---------- STEP 3: contact + notes ---------- #}
+      {% elif step == 3 %}
+        <p class="wizard-intro">Office contact (optional). Pre-filled from NPPES &mdash; edit if your appointment line differs.</p>
+        <label class="wizard-field">
+          <span>Phone</span>
+          <input type="tel" name="appt_phone" maxlength="40"
+                 value="{{ appt_phone or '' }}"
+                 placeholder="(555) 123-4567">
+        </label>
+        <label class="wizard-field">
+          <span>Fax</span>
+          <input type="tel" name="appt_fax" maxlength="40"
+                 value="{{ appt_fax or '' }}"
+                 placeholder="(555) 987-6543">
+        </label>
+        <div class="wizard-actions">
+          <button type="submit" class="btn btn-secondary" name="step" value="back" formnovalidate>&larr; Back</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      {% endif %}
+    </form>
+  </div>
+</div>

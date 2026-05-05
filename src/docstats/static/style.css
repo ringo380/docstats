@@ -675,6 +675,130 @@
   }
   .add-provider-row:hover { border-color: var(--green); color: var(--green); text-decoration: none; }
 
+  /* ── Appt summary card + wizard modal ─────────────────────────────── */
+  .appt-summary { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .appt-icon { font-size: 0.85rem; }
+  .appt-text { flex: 1; }
+  .appt-edit-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 0 2px;
+    font-size: 0.85rem;
+    margin-left: 4px;
+  }
+  .appt-edit-btn:hover { color: var(--green); }
+  .appt-meta { font-size: 0.72rem; color: var(--text-dim); padding-left: 4px; }
+  .appt-cta-btn { align-self: flex-start; font-size: 0.75rem; }
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(7, 11, 18, 0.78);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 16px;
+  }
+  .modal-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    width: 100%;
+    max-width: 520px;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 20px 22px;
+  }
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .modal-header h2 { margin: 0; font-size: 1.05rem; }
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 1.1rem;
+    padding: 0 4px;
+  }
+  .modal-close:hover { color: var(--red); }
+  .wizard-steps {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 14px;
+    display: flex;
+    gap: 8px;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .wizard-steps li.current { color: var(--green); font-weight: 600; }
+  .wizard-steps li.done { color: var(--text-muted); }
+  .wizard-error {
+    background: #2a1212;
+    border: 1px solid #6b1f1f;
+    color: #f5b3b3;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+    margin: 0 0 12px;
+  }
+  .wizard-intro { font-size: 0.88rem; color: var(--text-muted); margin: 0 0 12px; }
+  .wizard-options { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+  .wizard-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .wizard-option:hover { border-color: var(--green); }
+  .wizard-option.selected { border-color: var(--green); background: rgba(104, 211, 145, 0.06); }
+  .wizard-option input[type="radio"] { margin-top: 3px; }
+  .wizard-option-body { flex: 1; }
+  .wizard-option-label { font-size: 0.9rem; color: var(--text); font-weight: 500; }
+  .wizard-option-meta { font-size: 0.78rem; color: var(--text-dim); margin-top: 2px; }
+  .wizard-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 12px;
+    position: relative;
+  }
+  .wizard-field span {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .wizard-field input[type="text"], .wizard-field input[type="tel"] {
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.9rem;
+  }
+  .wizard-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .wizard-actions .btn-secondary { margin-right: auto; }
+
   /* ── Export ───────────────────────────────────────────────────────── */
   .export-actions { display: flex; gap: 8px; margin-bottom: 1.5rem; flex-wrap: wrap; }
   .referral-doc {

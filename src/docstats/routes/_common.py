@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 
 TEMPLATE_DIR = Path(__file__).parents[1] / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+# Strip a trailing ", United States" from any address rendered in the UI.
+# Mapbox suggestions and saved appt addresses both have it; it adds noise
+# without helping a US-only audience. The full string is still stored.
+from docstats.formatting import strip_us as _strip_us  # noqa: E402
+
+templates.env.filters["strip_us"] = _strip_us
 MAPBOX_TOKEN = os.environ.get("MAPBOX_PUBLIC_TOKEN", "")
 
 US_STATES = [

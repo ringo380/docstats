@@ -51,6 +51,7 @@ _CSV_FIELDNAMES = [
     "Appointment Phone",
     "Appointment Fax",
     "Televisit",
+    "Visit Location Type",
     "Saved At",
     "OIG Excluded",
     "Medicare Enrolled",
@@ -135,6 +136,7 @@ async def export_all(
             appt_phone=p.appt_phone,
             appt_fax=p.appt_fax,
             is_televisit=p.is_televisit,
+            visit_location_type=p.visit_location_type,
         )
         referrals.append(
             {
@@ -145,6 +147,7 @@ async def export_all(
                 "appt_phone": p.appt_phone,
                 "appt_fax": p.appt_fax,
                 "is_televisit": p.is_televisit,
+                "visit_location_type": p.visit_location_type,
                 "pcp_name": pcp_name,
             }
         )
@@ -190,6 +193,7 @@ async def export_all_pdf(
                     appt_phone=p.appt_phone,
                     appt_fax=p.appt_fax,
                     is_televisit=p.is_televisit,
+                    visit_location_type=p.visit_location_type,
                     pcp_name=pcp_name,
                     signature_image_url=signature_image_url,
                 )

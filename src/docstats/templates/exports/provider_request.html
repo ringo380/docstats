@@ -104,16 +104,17 @@
 </section>
 {% endif %}
 
-{% if is_televisit %}
+{% if visit_location_type == 'televisit' %}
 <section>
   <h2>Appointment Format</h2>
   <p>This provider is seen via telehealth / virtual visit.</p>
+  <p class="muted"><em>The practice address above remains the doctor's office of record.</em></p>
 </section>
-{% elif appt_address %}
+{% elif visit_location_type == 'custom' and appt_address %}
 <section>
   <h2>My Appointment Location</h2>
   <p>
-    {{ appt_address }}{% if appt_suite %}<br>{{ appt_suite }}{% endif %}
+    {{ appt_address | strip_us }}{% if appt_suite %}<br>{{ appt_suite }}{% endif %}
   </p>
   {% if appt_phone or appt_fax %}
   <p>

@@ -420,6 +420,19 @@ class StorageBase(ABC):
     ) -> bool: ...
 
     @abstractmethod
+    def set_visit_details(
+        self,
+        npi: str,
+        user_id: int,
+        *,
+        visit_location_type: str,
+        appt_address: str | None = None,
+        appt_suite: str | None = None,
+        appt_phone: str | None = None,
+        appt_fax: str | None = None,
+    ) -> bool: ...
+
+    @abstractmethod
     def update_enrichment(self, npi: str, enrichment_json: str, user_id: int) -> bool: ...
 
     # --- Search history ---

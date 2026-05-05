@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,20 @@ from rich.panel import Panel
 from rich.table import Table
 
 from docstats.models import NPIResult, NPIResponse, SavedProvider, SearchHistoryEntry
+
+# Mapbox Geocoding returns US results with a trailing ", United States" in
+# place_name. Patients are domestic, so we strip it for display in both the
+# rolodex UI and exported letters. The full string is still stored verbatim
+# for fidelity.
+_TRAILING_US_RE = re.compile(r",\s*United States\s*$", re.IGNORECASE)
+
+
+def strip_us(value: str | None) -> str | None:
+    """Strip a trailing ``", United States"`` from a Mapbox-style address."""
+    if not value:
+        return value
+    return _TRAILING_US_RE.sub("", value)
+
 
 if TYPE_CHECKING:
     from docstats.domain.orgs import Organization
@@ -179,6 +194,7 @@ def referral_export(
     appt_phone: str | None = None,
     appt_fax: str | None = None,
     is_televisit: bool = False,
+    visit_location_type: str | None = None,
 ) -> str:
     """Generate a plain-text referral-ready summary.
 
@@ -225,18 +241,30 @@ def referral_export(
             lines.append(f"  {mail.address_2}")
         lines.append(f"  {mail.city}, {mail.state} {mail.formatted_postal}")
 
-    if is_televisit:
+    # Resolve effective visit type: prefer explicit visit_location_type
+    # (set by the appointment-address wizard), but fall back to the legacy
+    # is_televisit / appt_address shape so any caller that hasn't migrated
+    # still produces the same output.
+    effective = visit_location_type
+    if effective is None:
+        if is_televisit:
+            effective = "televisit"
+        elif appt_address:
+            effective = "custom"
+
+    if effective == "televisit":
         lines.append("")
         lines.append("-" * 50)
         lines.append("TELEVISIT")
         lines.append("-" * 50)
         lines.append("  This provider is seen via telehealth/virtual visit.")
-    elif appt_address:
+        lines.append("  Practice address above is the doctor's office of record.")
+    elif effective == "custom" and appt_address:
         lines.append("")
         lines.append("-" * 50)
         lines.append("MY APPOINTMENT LOCATION")
         lines.append("-" * 50)
-        lines.append(f"  {appt_address}")
+        lines.append(f"  {strip_us(appt_address)}")
         if appt_suite:
             lines.append(f"  {appt_suite}")
         if appt_phone:
@@ -616,6 +644,7 @@ def provider_request_letter_text(
     appt_phone: str | None = None,
     appt_fax: str | None = None,
     is_televisit: bool = False,
+    visit_location_type: str | None = None,
     generated_at: datetime | None = None,
 ) -> str:
     """Plaintext patient-to-PCP referral request letter.
@@ -713,16 +742,25 @@ def provider_request_letter_text(
         lines.append(f"  {mail.city}, {mail.state} {mail.formatted_postal}")
         lines.append("")
 
-    # Appointment location / televisit
-    if is_televisit:
+    # Appointment location / televisit. visit_location_type wins; fall back
+    # to legacy fields when callers haven't been migrated to the wizard.
+    effective = visit_location_type
+    if effective is None:
+        if is_televisit:
+            effective = "televisit"
+        elif appt_address:
+            effective = "custom"
+
+    if effective == "televisit":
         lines.append("APPOINTMENT FORMAT")
         lines.append("-" * 72)
         lines.append("  This provider is seen via telehealth / virtual visit.")
+        lines.append("  The practice address above remains the doctor's office of record.")
         lines.append("")
-    elif appt_address:
+    elif effective == "custom" and appt_address:
         lines.append("MY APPOINTMENT LOCATION")
         lines.append("-" * 72)
-        lines.append(f"  {appt_address}")
+        lines.append(f"  {strip_us(appt_address)}")
         if appt_suite:
             lines.append(f"  {appt_suite}")
         if appt_phone:

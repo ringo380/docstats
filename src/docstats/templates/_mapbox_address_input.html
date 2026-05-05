@@ -1,0 +1,89 @@
+{# Mapbox typeahead address input. Used by the appointment-address wizard
+   (step 2). Bound to the surrounding form's hidden ``appt_address`` field;
+   on suggestion click, the chosen ``place_name`` populates the visible
+   text input AND the hidden field.
+
+   Variables: npi, mapbox_token, appt_address (current value, may be None).
+   Falls back to a plain text field when no token is configured. #}
+<div class="wizard-field">
+  <span>Address</span>
+  {% if mapbox_token %}
+    <input type="text"
+           id="mapbox-wizard-{{ npi }}"
+           autocomplete="off"
+           placeholder="Address or facility name&hellip;"
+           value="{{ appt_address or '' }}"
+           required>
+    <input type="hidden" name="appt_address" id="appt-val-{{ npi }}" value="{{ appt_address or '' }}">
+    <input type="hidden" name="appt_phone_suggestion" id="appt-phone-sugg-{{ npi }}" value="">
+    <ul id="appt-sugg-{{ npi }}" class="suggestions-list" style="display:none;"></ul>
+    <script>
+      (function() {
+        var TOKEN = {{ mapbox_token | tojson }};
+        var input = document.getElementById('mapbox-wizard-{{ npi }}');
+        var hidden = document.getElementById('appt-val-{{ npi }}');
+        var hiddenPhone = document.getElementById('appt-phone-sugg-{{ npi }}');
+        var list = document.getElementById('appt-sugg-{{ npi }}');
+        if (!input || !TOKEN) return;
+        function stripUS(s) {
+          return (s || '').replace(/,\s*United States\s*$/i, '');
+        }
+        // Free-typed text counts as the address; suggestion click overrides.
+        input.addEventListener('input', function() {
+          hidden.value = input.value;
+        });
+        var t;
+        input.addEventListener('input', function() {
+          clearTimeout(t);
+          var q = input.value.trim();
+          if (q.length < 3) { list.style.display = 'none'; return; }
+          t = setTimeout(function() {
+            fetch('https://api.mapbox.com/geocoding/v5/mapbox.places/' +
+              encodeURIComponent(q) + '.json?country=US&types=poi,address,place,postcode&access_token=' + TOKEN)
+              .then(function(r) { return r.json(); })
+              .then(function(data) {
+                while (list.firstChild) list.removeChild(list.firstChild);
+                if (!data.features || !data.features.length) {
+                  list.style.display = 'none'; return;
+                }
+                data.features.forEach(function(f) {
+                  var li = document.createElement('li');
+                  var displayName = stripUS(f.place_name);
+                  var isPoi = f.place_type && f.place_type.indexOf('poi') !== -1;
+                  if (isPoi && f.text) {
+                    var name = document.createElement('strong');
+                    name.textContent = f.text;
+                    li.appendChild(name);
+                    var addr = document.createElement('span');
+                    addr.textContent = ' — ' + stripUS(f.place_name.replace(f.text + ', ', ''));
+                    addr.style.color = 'var(--text-dim)';
+                    addr.style.fontSize = '0.75rem';
+                    li.appendChild(addr);
+                  } else {
+                    li.textContent = displayName;
+                  }
+                  li.addEventListener('click', function() {
+                    // Display the trimmed value, but submit the full string
+                    // so we don't lose ", United States" from storage.
+                    input.value = displayName;
+                    hidden.value = f.place_name;
+                    hiddenPhone.value = (f.properties && f.properties.tel) ? f.properties.tel : '';
+                    list.style.display = 'none';
+                  });
+                  list.appendChild(li);
+                });
+                list.style.display = 'block';
+              });
+          }, 300);
+        });
+        document.addEventListener('click', function(e) {
+          if (!input.contains(e.target) && !list.contains(e.target)) list.style.display = 'none';
+        });
+      })();
+    </script>
+  {% else %}
+    <input type="text" name="appt_address" maxlength="300"
+           value="{{ appt_address or '' }}"
+           placeholder="Address or facility name&hellip;" required>
+  {% endif %}
+</div>

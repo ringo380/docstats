@@ -1,0 +1,50 @@
+{# Per-provider appointment summary card.
+
+   Variables (set by routes/providers.py::_render_appt_summary):
+     npi, provider (SavedProvider), addr (NPIResult location_address)
+   The container id ``appt-{npi}`` is the OOB swap target the wizard finishes
+   onto, so the rolodex card refreshes in place after the wizard closes. #}
+<div class="appt-summary" id="appt-{{ npi }}">
+  {% set vlt = provider.visit_location_type if provider else None %}
+  {% if vlt == 'practice' %}
+    <div class="appt-chip">
+      <span class="appt-icon">&#x1f4cd;</span>
+      <span class="appt-text">Visits at practice
+        {% if addr %} &middot; {{ addr.address_1 | strip_us }}, {{ addr.city }}, {{ addr.state }}{% endif %}
+      </span>
+      <button class="appt-edit-btn" type="button"
+              hx-get="/provider/{{ npi }}/appt-wizard"
+              hx-target="#modal-root"
+              hx-swap="innerHTML" title="Edit appointment details">&#x270e;</button>
+    </div>
+  {% elif vlt == 'televisit' %}
+    <div class="appt-chip televisit-chip">
+      <span class="appt-icon">&#x1f4bb;</span>
+      <span class="appt-text">Telehealth visits</span>
+      <button class="appt-edit-btn" type="button"
+              hx-get="/provider/{{ npi }}/appt-wizard"
+              hx-target="#modal-root"
+              hx-swap="innerHTML" title="Edit appointment details">&#x270e;</button>
+    </div>
+  {% elif vlt == 'custom' %}
+    <div class="appt-chip">
+      <span class="appt-icon">&#x1f4cd;</span>
+      <span class="appt-text">{{ provider.appt_address | strip_us }}{% if provider.appt_suite %} &middot; {{ provider.appt_suite }}{% endif %}</span>
+      <button class="appt-edit-btn" type="button"
+              hx-get="/provider/{{ npi }}/appt-wizard"
+              hx-target="#modal-root"
+              hx-swap="innerHTML" title="Edit appointment details">&#x270e;</button>
+    </div>
+    {% if provider.appt_phone or provider.appt_fax %}
+      <div class="appt-meta">
+        {% if provider.appt_phone %}Phone: {{ provider.appt_phone }}{% endif %}
+        {% if provider.appt_fax %}{% if provider.appt_phone %} &middot; {% endif %}Fax: {{ provider.appt_fax }}{% endif %}
+      </div>
+    {% endif %}
+  {% else %}
+    <button class="btn btn-secondary btn-sm appt-cta-btn" type="button"
+            hx-get="/provider/{{ npi }}/appt-wizard"
+            hx-target="#modal-root"
+            hx-swap="innerHTML">+ Add appointment details</button>
+  {% endif %}
+</div>

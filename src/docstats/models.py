@@ -331,6 +331,9 @@ class SavedProvider(BaseModel):
     appt_phone: str | None = None
     appt_fax: str | None = None
     is_televisit: bool = False
+    # 'practice' | 'televisit' | 'custom'; NULL = wizard not yet completed
+    # for this provider. Drives the rolodex summary card and export branching.
+    visit_location_type: str | None = None
     enrichment_json: str | None = None  # serialized EnrichmentData
     saved_at: datetime | None = None
     updated_at: datetime | None = None
@@ -380,6 +383,7 @@ class SavedProvider(BaseModel):
             "Appointment Phone": self.appt_phone or "",
             "Appointment Fax": self.appt_fax or "",
             "Televisit": "Yes" if self.is_televisit else "",
+            "Visit Location Type": self.visit_location_type or "",
             "Saved At": self.saved_at.isoformat() if self.saved_at else "",
         }
         # Enrichment fields (when available)

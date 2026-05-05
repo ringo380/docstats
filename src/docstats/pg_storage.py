@@ -534,6 +534,7 @@ class PostgresStorage(StorageBase):
             appt_phone=row.get("appt_phone"),
             appt_fax=row.get("appt_fax"),
             is_televisit=bool(row.get("is_televisit", False)),
+            visit_location_type=row.get("visit_location_type"),
             enrichment_json=row.get("enrichment_json"),
             saved_at=_parse_ts(row.get("saved_at")),
             updated_at=_parse_ts(row.get("updated_at")),
@@ -800,6 +801,7 @@ class PostgresStorage(StorageBase):
         appt_phone = existing.appt_phone if existing else None
         appt_fax = existing.appt_fax if existing else None
         is_televisit = existing.is_televisit if existing else False
+        visit_location_type = existing.visit_location_type if existing else None
         enrichment_json = existing.enrichment_json if existing else None
         merged_notes = (
             provider.notes if provider.notes is not None else (existing.notes if existing else None)
@@ -825,6 +827,7 @@ class PostgresStorage(StorageBase):
                 "appt_phone": appt_phone,
                 "appt_fax": appt_fax,
                 "is_televisit": is_televisit,
+                "visit_location_type": visit_location_type,
                 "enrichment_json": enrichment_json,
                 "saved_at": provider.saved_at.isoformat() if provider.saved_at else now,
                 "updated_at": now,
@@ -913,6 +916,40 @@ class PostgresStorage(StorageBase):
         result = (
             self._t("saved_providers")
             .update({"is_televisit": is_televisit})
+            .eq("npi", npi)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return len(result.data) > 0
+
+    def set_visit_details(
+        self,
+        npi: str,
+        user_id: int,
+        *,
+        visit_location_type: str,
+        appt_address: str | None = None,
+        appt_suite: str | None = None,
+        appt_phone: str | None = None,
+        appt_fax: str | None = None,
+    ) -> bool:
+        """Atomic write of every per-provider visit field (mirrors SQLite)."""
+        if visit_location_type not in ("practice", "televisit", "custom"):
+            raise ValueError(f"Invalid visit_location_type: {visit_location_type!r}")
+        is_televisit = visit_location_type == "televisit"
+        result = (
+            self._t("saved_providers")
+            .update(
+                {
+                    "visit_location_type": visit_location_type,
+                    "appt_address": appt_address.strip() if appt_address else None,
+                    "appt_suite": appt_suite.strip() if appt_suite else None,
+                    "appt_phone": appt_phone.strip() if appt_phone else None,
+                    "appt_fax": appt_fax.strip() if appt_fax else None,
+                    "is_televisit": is_televisit,
+                    "updated_at": _now_iso(),
+                }
+            )
             .eq("npi", npi)
             .eq("user_id", user_id)
             .execute()

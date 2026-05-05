@@ -593,6 +593,7 @@ class Storage(StorageBase):
         self._migrate_appt_suite()
         self._migrate_is_televisit()
         self._migrate_appt_phone_fax()
+        self._migrate_visit_location_type()
         self._migrate_audit_events()
         self._migrate_orgs_and_memberships()
         self._migrate_organization_stale_threshold()
@@ -786,6 +787,28 @@ class Storage(StorageBase):
                 self._conn.commit()
             except sqlite3.OperationalError:
                 pass  # Column already exists
+
+    def _migrate_visit_location_type(self) -> None:
+        """Add visit_location_type to saved_providers (mirrors migration 030).
+
+        Backfills 'televisit' and 'custom' for rows that already had user-
+        supplied details so the wizard does not re-prompt them. Rows that
+        were never configured stay NULL (UI shows the "Add appointment
+        details" CTA).
+        """
+        try:
+            self._conn.execute("ALTER TABLE saved_providers ADD COLUMN visit_location_type TEXT")
+            self._conn.execute(
+                "UPDATE saved_providers SET visit_location_type = 'televisit' "
+                "WHERE is_televisit = 1 AND visit_location_type IS NULL"
+            )
+            self._conn.execute(
+                "UPDATE saved_providers SET visit_location_type = 'custom' "
+                "WHERE appt_address IS NOT NULL AND visit_location_type IS NULL"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
     def _migrate_audit_events(self) -> None:
         """Create the append-only audit_events table if absent."""
@@ -1736,8 +1759,8 @@ class Storage(StorageBase):
                 (user_id, npi, display_name, entity_type, specialty, phone, fax,
                  address_line1, address_city, address_state, address_zip,
                  raw_json, notes, appt_address, appt_suite, appt_phone, appt_fax,
-                 is_televisit, saved_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_televisit, visit_location_type, saved_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, npi) DO UPDATE SET
                 display_name=excluded.display_name,
                 entity_type=excluded.entity_type,
@@ -1771,6 +1794,7 @@ class Storage(StorageBase):
                 None,  # appt_phone: always NULL on initial save; preserved on conflict
                 None,  # appt_fax: always NULL on initial save; preserved on conflict
                 0,  # is_televisit: always 0 on initial save; preserved on conflict
+                None,  # visit_location_type: NULL on initial save; preserved on conflict
                 provider.saved_at.isoformat() if provider.saved_at else datetime.now().isoformat(),
                 provider.updated_at.isoformat()
                 if provider.updated_at
@@ -1884,6 +1908,55 @@ class Storage(StorageBase):
         cursor = self._conn.execute(
             "UPDATE saved_providers SET appt_phone = ?, appt_fax = ? WHERE npi = ? AND user_id = ?",
             (phone.strip() if phone else None, fax.strip() if fax else None, npi, user_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def set_visit_details(
+        self,
+        npi: str,
+        user_id: int,
+        *,
+        visit_location_type: str,
+        appt_address: str | None = None,
+        appt_suite: str | None = None,
+        appt_phone: str | None = None,
+        appt_fax: str | None = None,
+    ) -> bool:
+        """Atomic write of every per-provider visit field.
+
+        Sole mutation path used by the appointment-address wizard. Replaces
+        the prior set_appt_address / set_appt_suite / set_appt_contact /
+        set_televisit / clear_appt_address fan-out. Caller is responsible
+        for normalizing values to the chosen ``visit_location_type``:
+
+        - 'practice' / 'televisit': appt_address/appt_suite SHOULD be
+          None (the visit address is the NPPES practice address).
+        - 'custom': appt_address is required; appt_suite optional.
+
+        ``appt_phone`` / ``appt_fax`` are stored regardless of type — the
+        user may want to record an appointment-line number even when
+        visiting at the practice address.
+        """
+        if visit_location_type not in ("practice", "televisit", "custom"):
+            raise ValueError(f"Invalid visit_location_type: {visit_location_type!r}")
+        is_televisit = visit_location_type == "televisit"
+        cursor = self._conn.execute(
+            "UPDATE saved_providers SET "
+            "visit_location_type = ?, appt_address = ?, appt_suite = ?, "
+            "appt_phone = ?, appt_fax = ?, is_televisit = ?, updated_at = ? "
+            "WHERE npi = ? AND user_id = ?",
+            (
+                visit_location_type,
+                appt_address.strip() if appt_address else None,
+                appt_suite.strip() if appt_suite else None,
+                appt_phone.strip() if appt_phone else None,
+                appt_fax.strip() if appt_fax else None,
+                int(is_televisit),
+                datetime.now().isoformat(),
+                npi,
+                user_id,
+            ),
         )
         self._conn.commit()
         return cursor.rowcount > 0
@@ -5553,6 +5626,9 @@ class Storage(StorageBase):
             appt_phone=row["appt_phone"] if "appt_phone" in row.keys() else None,
             appt_fax=row["appt_fax"] if "appt_fax" in row.keys() else None,
             is_televisit=bool(row["is_televisit"]) if "is_televisit" in row.keys() else False,
+            visit_location_type=(
+                row["visit_location_type"] if "visit_location_type" in row.keys() else None
+            ),
             enrichment_json=row["enrichment_json"] if "enrichment_json" in row.keys() else None,
             saved_at=datetime.fromisoformat(row["saved_at"]) if row["saved_at"] else None,
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,

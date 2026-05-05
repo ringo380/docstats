@@ -283,6 +283,108 @@ def test_save_provider_preserves_appt_contact(storage: Storage, user_id: int):
     assert provider.appt_fax == "555-5678"
 
 
+# --- visit_location_type / set_visit_details tests ---
+
+
+def test_visit_location_type_column_exists(storage: Storage):
+    cols = [r[1] for r in storage._conn.execute("PRAGMA table_info(saved_providers)")]
+    assert "visit_location_type" in cols
+
+
+def test_visit_location_type_defaults_to_none(storage: Storage, user_id: int):
+    """New saves leave visit_location_type NULL until the wizard runs."""
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.visit_location_type is None
+
+
+def test_set_visit_details_practice(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_visit_details(
+        "1234567890",
+        user_id,
+        visit_location_type="practice",
+        appt_phone="(555) 123-4567",
+    )
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.visit_location_type == "practice"
+    assert provider.is_televisit is False
+    assert provider.appt_address is None
+    assert provider.appt_phone == "(555) 123-4567"
+
+
+def test_set_visit_details_televisit(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_visit_details(
+        "1234567890",
+        user_id,
+        visit_location_type="televisit",
+    )
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.visit_location_type == "televisit"
+    assert provider.is_televisit is True
+
+
+def test_set_visit_details_custom(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_visit_details(
+        "1234567890",
+        user_id,
+        visit_location_type="custom",
+        appt_address="1 Shrader St, San Francisco, CA 94117",
+        appt_suite="Suite 6A",
+        appt_phone="(415) 555-1234",
+        appt_fax="(415) 555-5678",
+    )
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.visit_location_type == "custom"
+    assert provider.is_televisit is False
+    assert provider.appt_address == "1 Shrader St, San Francisco, CA 94117"
+    assert provider.appt_suite == "Suite 6A"
+    assert provider.appt_phone == "(415) 555-1234"
+    assert provider.appt_fax == "(415) 555-5678"
+
+
+def test_set_visit_details_strips_whitespace(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_visit_details(
+        "1234567890",
+        user_id,
+        visit_location_type="custom",
+        appt_address="  123 Main St  ",
+        appt_suite="  Rm 1  ",
+    )
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.appt_address == "123 Main St"
+    assert provider.appt_suite == "Rm 1"
+
+
+def test_set_visit_details_invalid_type_raises(storage: Storage, user_id: int):
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    with pytest.raises(ValueError):
+        storage.set_visit_details(
+            "1234567890",
+            user_id,
+            visit_location_type="not-a-real-type",
+        )
+
+
+def test_save_provider_preserves_visit_location_type(storage: Storage, user_id: int):
+    """Re-saving must not reset the wizard-set visit_location_type."""
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_visit_details("1234567890", user_id, visit_location_type="televisit")
+    storage.save_provider(result, user_id)
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.visit_location_type == "televisit"
+
+
 # --- search_providers tests ---
 
 

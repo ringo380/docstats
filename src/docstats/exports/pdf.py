@@ -48,6 +48,12 @@ _env = Environment(
     lstrip_blocks=True,
 )
 
+# Strip ", United States" from any rendered address. Same filter used by
+# the rolodex UI templates (see routes/_common.py).
+from docstats.formatting import strip_us as _strip_us  # noqa: E402
+
+_env.filters["strip_us"] = _strip_us
+
 
 # Artifact identifiers — used as the ``?artifact=`` query value + the filename
 # stem in ``Content-Disposition``. Keep these short, kebab-less, and stable.
@@ -512,6 +518,7 @@ def render_provider_request_letter(
     appt_phone: str | None = None,
     appt_fax: str | None = None,
     is_televisit: bool = False,
+    visit_location_type: str | None = None,
     pcp_name: str | None = None,
     signature_image_url: str | None = None,
     generated_at: datetime | None = None,
@@ -523,6 +530,14 @@ def render_provider_request_letter(
     sender, identified via ``current_user``.
     """
     now = generated_at or datetime.now(tz=timezone.utc)
+    # Resolve effective visit type; legacy callers without the wizard data
+    # fall through the same way the formatting module does.
+    effective = visit_location_type
+    if effective is None:
+        if is_televisit:
+            effective = "televisit"
+        elif appt_address:
+            effective = "custom"
     context: dict[str, Any] = {
         "result": result,
         "current_user": current_user or {},
@@ -531,6 +546,7 @@ def render_provider_request_letter(
         "appt_phone": appt_phone,
         "appt_fax": appt_fax,
         "is_televisit": is_televisit,
+        "visit_location_type": effective,
         "pcp_name": pcp_name,
         "signature_image_url": signature_image_url,
         "generated_at": now,
