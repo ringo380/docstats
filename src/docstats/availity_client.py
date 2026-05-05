@@ -47,6 +47,11 @@ TOKEN_URL = f"{BASE_URL}/v1/token"
 COVERAGES_URL = f"{BASE_URL}/availity/v1/coverages"
 PAYERS_URL = f"{BASE_URL}/availity/v1/payers"
 
+# Prior-auth (X12 278) endpoint — overridable via AVAILITY_AUTH_URL because the
+# documented REST 278 path requires a separate Availity subscription that may
+# land on a slightly different URL than the demo endpoint we shipped first.
+DEFAULT_AUTHORIZATIONS_URL = f"{BASE_URL}/availity/v1/authorizations"
+
 SANDBOX_SCOPE = "healthcare-hipaa-transactions-demo"
 PRODUCTION_SCOPE = "healthcare-hipaa-transactions"
 
@@ -287,6 +292,93 @@ class AvailityClient:
         return data.get("payers") or []  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
+    # Prior auth (X12 278)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _authorizations_url() -> str:
+        return os.environ.get("AVAILITY_AUTH_URL", "").strip() or DEFAULT_AUTHORIZATIONS_URL
+
+    def submit_authorization(
+        self,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        scenario_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit a prior-authorization request and return the parsed response.
+
+        Required ``payload`` keys (by Availity's REST 278 spec):
+            payerId, providerNpi, requestingProviderNpi, memberId,
+            patientBirthDate, patientLastName, patientFirstName,
+            serviceType, diagnosisCodes, procedureCodes, serviceDate,
+            placeOfService.
+
+        ``idempotency_key`` collapses retries of the same logical submission;
+        Availity echoes the same row when called twice with the same key.
+        """
+        self._throttle()
+        headers = self._sync_headers(scenario_id)
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+
+        try:
+            resp = request_with_retry(
+                self._http,
+                "POST",
+                self._authorizations_url(),
+                label="Availity authorization submit",
+                headers=headers,
+                content=json.dumps(payload),
+                retryable_status=frozenset({429, 500, 502, 503, 504}),
+                error_class=AvailityUnavailableError,
+            )
+        except AvailityUnavailableError:
+            raise
+        except Exception as e:
+            raise AvailityError(f"Authorization submit failed: {e}") from e
+
+        try:
+            return resp.json()  # type: ignore[no-any-return]
+        except Exception as e:
+            raise AvailityError(f"Authorization response not JSON: {e}") from e
+
+    def get_authorization_status(
+        self,
+        availity_submission_id: str,
+        *,
+        scenario_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Poll an existing authorization's current status.
+
+        ``availity_submission_id`` is the ``id`` returned in the original
+        ``submit_authorization`` response.
+        """
+        self._throttle()
+        headers = self._sync_headers(scenario_id)
+        url = f"{self._authorizations_url()}/{availity_submission_id}"
+
+        try:
+            resp = request_with_retry(
+                self._http,
+                "GET",
+                url,
+                label="Availity authorization status",
+                headers=headers,
+                retryable_status=frozenset({429, 500, 502, 503, 504}),
+                error_class=AvailityUnavailableError,
+            )
+        except AvailityUnavailableError:
+            raise
+        except Exception as e:
+            raise AvailityError(f"Authorization status request failed: {e}") from e
+
+        try:
+            return resp.json()  # type: ignore[no-any-return]
+        except Exception as e:
+            raise AvailityError(f"Authorization status response not JSON: {e}") from e
+
+    # ------------------------------------------------------------------
     # Async wrappers (for FastAPI routes)
     # ------------------------------------------------------------------
 
@@ -307,6 +399,41 @@ class AvailityClient:
         async with limiter:
             return await loop.run_in_executor(
                 None, lambda: self.check_eligibility(payload, scenario_id=scenario_id)
+            )
+
+    async def async_submit_authorization(
+        self,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        scenario_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Async wrapper around submit_authorization for FastAPI routes."""
+        loop = asyncio.get_running_loop()
+        limiter = self._get_rate_limiter()
+        async with limiter:
+            return await loop.run_in_executor(
+                None,
+                lambda: self.submit_authorization(
+                    payload, idempotency_key=idempotency_key, scenario_id=scenario_id
+                ),
+            )
+
+    async def async_get_authorization_status(
+        self,
+        availity_submission_id: str,
+        *,
+        scenario_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Async wrapper around get_authorization_status for FastAPI routes."""
+        loop = asyncio.get_running_loop()
+        limiter = self._get_rate_limiter()
+        async with limiter:
+            return await loop.run_in_executor(
+                None,
+                lambda: self.get_authorization_status(
+                    availity_submission_id, scenario_id=scenario_id
+                ),
             )
 
     async def async_list_payers(

@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     )
     from docstats.domain.sessions import Session
     from docstats.domain.eligibility import AvailityPayer, EligibilityCheck
+    from docstats.domain.prior_auth import PriorAuthSubmission
     from docstats.domain.ehr import EHRConnection
     from docstats.domain.staff_access import StaffAccessGrant
     from docstats.scope import Scope
@@ -1685,3 +1686,68 @@ class StorageBase(ABC):
         availity_payer_id: str | None,
     ) -> None:
         """Set or clear insurance_plans.availity_payer_id for one plan."""
+
+    # --- Prior authorization submissions (Phase 11.E) ---
+
+    @abstractmethod
+    def create_prior_auth_submission(
+        self,
+        scope: "Scope",
+        *,
+        referral_id: int,
+        availity_payer_id: str,
+        payer_name: str | None = None,
+        member_id: str,
+        service_type: str,
+        diagnosis_codes: list[str],
+        procedure_codes: list[str],
+        service_date: str | None = None,
+        place_of_service: str | None = None,
+        status: str,
+        idempotency_key: str | None = None,
+        raw_request_json: str | None = None,
+    ) -> "PriorAuthSubmission":
+        """Create a prior_auth_submissions row.  Returns the created entity."""
+
+    @abstractmethod
+    def update_prior_auth_submission(
+        self,
+        submission_id: int,
+        *,
+        status: str | None = None,
+        availity_submission_id: str | None = None,
+        reference_number: str | None = None,
+        decision_date: "datetime | None" = None,
+        decision_reason: str | None = None,
+        error_message: str | None = None,
+        raw_response_json: str | None = None,
+        submitted_at: "datetime | None" = None,
+        last_polled_at: "datetime | None" = None,
+    ) -> None:
+        """Patch a prior-auth row.  None values leave columns unchanged."""
+
+    @abstractmethod
+    def get_prior_auth_submission(
+        self,
+        scope: "Scope",
+        submission_id: int,
+    ) -> "PriorAuthSubmission | None":
+        """Return one prior-auth row by id, scope-checked."""
+
+    @abstractmethod
+    def get_latest_prior_auth_submission(
+        self,
+        scope: "Scope",
+        referral_id: int,
+    ) -> "PriorAuthSubmission | None":
+        """Return the most recent prior-auth submission for a referral."""
+
+    @abstractmethod
+    def list_prior_auth_submissions(
+        self,
+        scope: "Scope",
+        referral_id: int,
+        *,
+        limit: int = 20,
+    ) -> "list[PriorAuthSubmission]":
+        """Return prior-auth submissions for a referral, newest-first."""
