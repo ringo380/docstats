@@ -63,6 +63,7 @@ from docstats.domain.referrals import (
     parse_cpt_codes,
 )
 from docstats.domain.eligibility import AvailityPayer, EligibilityCheck, EligibilityResult
+from docstats.domain.prior_auth import PriorAuthSubmission
 from docstats.domain.sessions import Session
 from docstats.domain.ehr import EHRConnection
 from docstats.domain.staff_access import StaffAccessGrant
@@ -4177,6 +4178,162 @@ class PostgresStorage(StorageBase):
         self._t("insurance_plans").update({"availity_payer_id": availity_payer_id}).eq(
             "id", plan_id
         ).execute()
+
+    # -----------------------------------------------------------------------
+    # Prior authorization submissions (Phase 11.E)
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _row_to_prior_auth(r: dict) -> PriorAuthSubmission:
+        def _decode(val: Any) -> list[str]:
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return [str(x) for x in val]
+            try:
+                parsed = json.loads(val)
+                return [str(x) for x in parsed] if isinstance(parsed, list) else []
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return []
+
+        service_date = r.get("service_date")
+        if service_date is not None and not isinstance(service_date, str):
+            service_date = str(service_date)
+
+        return PriorAuthSubmission(
+            id=int(r["id"]),
+            scope_user_id=r.get("scope_user_id"),
+            scope_organization_id=r.get("scope_organization_id"),
+            referral_id=int(r["referral_id"]),
+            availity_payer_id=r["availity_payer_id"],
+            payer_name=r.get("payer_name"),
+            member_id=r["member_id"],
+            service_type=r["service_type"],
+            diagnosis_codes=_decode(r.get("diagnosis_codes_json")),
+            procedure_codes=_decode(r.get("procedure_codes_json")),
+            service_date=service_date,
+            place_of_service=r.get("place_of_service"),
+            status=r["status"],
+            availity_submission_id=r.get("availity_submission_id"),
+            reference_number=r.get("reference_number"),
+            decision_date=_parse_ts(r.get("decision_date")),
+            decision_reason=r.get("decision_reason"),
+            error_message=r.get("error_message"),
+            idempotency_key=r.get("idempotency_key"),
+            raw_request_json=r.get("raw_request_json"),
+            raw_response_json=r.get("raw_response_json"),
+            submitted_at=_parse_ts(r.get("submitted_at")),
+            last_polled_at=_parse_ts(r.get("last_polled_at")),
+            created_at=_parse_ts(r.get("created_at")),
+        )
+
+    def create_prior_auth_submission(
+        self,
+        scope: Scope,
+        *,
+        referral_id: int,
+        availity_payer_id: str,
+        payer_name: str | None = None,
+        member_id: str,
+        service_type: str,
+        diagnosis_codes: list[str],
+        procedure_codes: list[str],
+        service_date: str | None = None,
+        place_of_service: str | None = None,
+        status: str,
+        idempotency_key: str | None = None,
+        raw_request_json: str | None = None,
+    ) -> PriorAuthSubmission:
+        self._require_scoped(scope)
+        row: dict[str, Any] = {
+            "scope_user_id": scope.user_id if scope.is_solo else None,
+            "scope_organization_id": scope.organization_id if scope.is_org else None,
+            "referral_id": referral_id,
+            "availity_payer_id": availity_payer_id,
+            "payer_name": payer_name,
+            "member_id": member_id,
+            "service_type": service_type,
+            "diagnosis_codes_json": json.dumps(diagnosis_codes),
+            "procedure_codes_json": json.dumps(procedure_codes),
+            "service_date": service_date,
+            "place_of_service": place_of_service,
+            "status": status,
+            "idempotency_key": idempotency_key,
+            "raw_request_json": raw_request_json,
+        }
+        result = self._t("prior_auth_submissions").insert(row).execute()
+        return self._row_to_prior_auth(result.data[0])
+
+    def update_prior_auth_submission(
+        self,
+        submission_id: int,
+        *,
+        status: str | None = None,
+        availity_submission_id: str | None = None,
+        reference_number: str | None = None,
+        decision_date: datetime | None = None,
+        decision_reason: str | None = None,
+        error_message: str | None = None,
+        raw_response_json: str | None = None,
+        submitted_at: datetime | None = None,
+        last_polled_at: datetime | None = None,
+    ) -> None:
+        update: dict[str, Any] = {}
+        if status is not None:
+            update["status"] = status
+        if availity_submission_id is not None:
+            update["availity_submission_id"] = availity_submission_id
+        if reference_number is not None:
+            update["reference_number"] = reference_number
+        if decision_date is not None:
+            update["decision_date"] = decision_date.isoformat()
+        if decision_reason is not None:
+            update["decision_reason"] = decision_reason
+        if error_message is not None:
+            update["error_message"] = error_message
+        if raw_response_json is not None:
+            update["raw_response_json"] = raw_response_json
+        if submitted_at is not None:
+            update["submitted_at"] = submitted_at.isoformat()
+        if last_polled_at is not None:
+            update["last_polled_at"] = last_polled_at.isoformat()
+        if not update:
+            return
+        self._t("prior_auth_submissions").update(update).eq("id", submission_id).execute()
+
+    def get_prior_auth_submission(
+        self,
+        scope: Scope,
+        submission_id: int,
+    ) -> PriorAuthSubmission | None:
+        query = self._t("prior_auth_submissions").select("*").eq("id", submission_id)
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        return self._row_to_prior_auth(result.data[0]) if result.data else None
+
+    def get_latest_prior_auth_submission(
+        self,
+        scope: Scope,
+        referral_id: int,
+    ) -> PriorAuthSubmission | None:
+        query = self._t("prior_auth_submissions").select("*").eq("referral_id", referral_id)
+        query = self._apply_scope(query, scope)
+        query = query.order("created_at", desc=True).order("id", desc=True).limit(1)
+        result = query.execute()
+        return self._row_to_prior_auth(result.data[0]) if result.data else None
+
+    def list_prior_auth_submissions(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        limit: int = 20,
+    ) -> list[PriorAuthSubmission]:
+        query = self._t("prior_auth_submissions").select("*").eq("referral_id", referral_id)
+        query = self._apply_scope(query, scope)
+        query = query.order("created_at", desc=True).order("id", desc=True).limit(limit)
+        result = query.execute()
+        return [self._row_to_prior_auth(r) for r in result.data]
 
     def close(self) -> None:
         pass  # supabase-py client has no close method

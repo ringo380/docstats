@@ -783,6 +783,8 @@ async def _render_detail(
     latest_eligibility = storage.get_latest_eligibility_check(scope, referral.patient_id)
     if latest_eligibility:
         completeness = overlay_eligibility(completeness, latest_eligibility)
+    # Phase 11.E: most recent prior-auth submission for the card on detail page.
+    latest_prior_auth = storage.get_latest_prior_auth_submission(scope, referral_id)
     actors_by_id = _build_actor_map(storage, events)
     # Phase 8.C: surface Direct Trust endpoints from NPPES when a receiving
     # NPI is set. Best-effort — NPPES failures degrade to an empty list so
@@ -854,6 +856,7 @@ async def _render_detail(
             attachment_uploads_enabled=attachment_uploads_enabled,
             attachment_kinds=ATTACHMENT_KIND_VALUES,
             check=latest_eligibility,
+            submission=latest_prior_auth,
             errors=errors,
             response_errors=response_errors,
             response_values=response_values or {},

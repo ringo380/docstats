@@ -1,0 +1,119 @@
+{# Prior auth (X12 278) card on referral detail.
+   Expects: submission (PriorAuthSubmission|None), referral, patient,
+            error (optional), cooldown_active (optional bool) #}
+<section class="card" id="prior-auth-card">
+  <h3>Prior authorization
+    {% if submission %}
+      {% if submission.status == 'approved' %}
+        <span class="eligibility-badge elig-active" style="font-size:0.7rem;margin-left:6px;">✓ Approved</span>
+      {% elif submission.status == 'denied' %}
+        <span class="eligibility-badge elig-inactive" style="font-size:0.7rem;margin-left:6px;">✗ Denied</span>
+      {% elif submission.status == 'submitted' %}
+        <span class="eligibility-badge elig-pending" style="font-size:0.7rem;margin-left:6px;">⏳ In review</span>
+      {% elif submission.status == 'pending' %}
+        <span class="eligibility-badge elig-pending" style="font-size:0.7rem;margin-left:6px;">… Pending</span>
+      {% elif submission.status == 'cancelled' %}
+        <span class="eligibility-badge" style="font-size:0.7rem;margin-left:6px;">Cancelled</span>
+      {% elif submission.status == 'unavailable' %}
+        <span class="eligibility-badge elig-error" style="font-size:0.7rem;margin-left:6px;">⚠ Unavailable</span>
+      {% elif submission.status == 'error' %}
+        <span class="eligibility-badge elig-error" style="font-size:0.7rem;margin-left:6px;">⚠ Error</span>
+      {% endif %}
+    {% endif %}
+  </h3>
+
+  {% if error %}
+    <div class="alert alert-error" style="margin:0 0 10px;font-size:0.82rem;">{{ error }}</div>
+  {% endif %}
+
+  {% if submission and submission.status == 'approved' %}
+    <table class="eligibility-table">
+      {% if submission.reference_number %}
+        <tr><th>Auth #</th><td><strong>{{ submission.reference_number }}</strong></td></tr>
+      {% endif %}
+      {% if submission.payer_name or submission.availity_payer_id %}
+        <tr><th>Payer</th><td>{{ submission.payer_name or submission.availity_payer_id }}</td></tr>
+      {% endif %}
+      {% if submission.procedure_codes %}
+        <tr><th>Procedures</th><td>{{ submission.procedure_codes | join(', ') }}</td></tr>
+      {% endif %}
+      {% if submission.decision_date %}
+        <tr><th>Decided</th><td>{{ submission.decision_date.strftime('%b %-d, %Y %H:%M UTC') }}</td></tr>
+      {% endif %}
+    </table>
+  {% elif submission and submission.status == 'denied' %}
+    <table class="eligibility-table">
+      {% if submission.payer_name or submission.availity_payer_id %}
+        <tr><th>Payer</th><td>{{ submission.payer_name or submission.availity_payer_id }}</td></tr>
+      {% endif %}
+      {% if submission.decision_reason %}
+        <tr><th>Reason</th><td>{{ submission.decision_reason }}</td></tr>
+      {% endif %}
+      {% if submission.decision_date %}
+        <tr><th>Decided</th><td>{{ submission.decision_date.strftime('%b %-d, %Y %H:%M UTC') }}</td></tr>
+      {% endif %}
+    </table>
+  {% elif submission and submission.status in ('submitted','pending') %}
+    <p class="text-muted" style="font-size:0.82rem;">
+      Awaiting payer decision.
+      {% if submission.submitted_at %}
+        Submitted {{ submission.submitted_at.strftime('%b %-d %H:%M UTC') }}.
+      {% endif %}
+    </p>
+    <form hx-post="/referrals/{{ referral.id }}/auth-status/refresh"
+          hx-target="#prior-auth-card"
+          hx-swap="outerHTML"
+          style="margin-top:8px;">
+      <button type="submit" class="btn btn-sm">Refresh status</button>
+    </form>
+  {% elif submission and submission.status in ('error','unavailable') %}
+    <p class="eligibility-error-msg">{{ submission.error_message or 'Submission failed.' }}</p>
+  {% endif %}
+
+  {% if not submission or submission.status in ('denied','cancelled','error','unavailable') %}
+    <details {% if not submission %}open{% endif %} style="margin-top:10px;">
+      <summary style="font-size:0.85rem;cursor:pointer;">Submit prior authorization</summary>
+      <form hx-post="/referrals/{{ referral.id }}/auth-submit"
+            hx-target="#prior-auth-card"
+            hx-swap="outerHTML"
+            style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
+        <label style="font-size:0.82rem;">Payer ID *
+          <input type="text" name="payer_id" required maxlength="64" placeholder="e.g. BCBSM" style="font-size:0.82rem;">
+        </label>
+        <label style="font-size:0.82rem;">Payer name
+          <input type="text" name="payer_name" maxlength="200" placeholder="(optional)" style="font-size:0.82rem;">
+        </label>
+        <label style="font-size:0.82rem;">Member ID *
+          <input type="text" name="member_id" required maxlength="64" style="font-size:0.82rem;">
+        </label>
+        <label style="font-size:0.82rem;">Service type *
+          <input type="text" name="service_type" required maxlength="8" value="30" style="font-size:0.82rem;">
+        </label>
+        <label style="font-size:0.82rem;">Procedure codes (CPT/HCPCS) *
+          <input type="text" name="procedure_codes" required maxlength="500" placeholder="99213, 73721" style="font-size:0.82rem;">
+        </label>
+        <label style="font-size:0.82rem;">Diagnosis codes (ICD-10)
+          <input type="text" name="diagnosis_codes" maxlength="500" placeholder="M25.561, M54.5" style="font-size:0.82rem;">
+        </label>
+        <label style="font-size:0.82rem;">Service date
+          <input type="date" name="service_date" style="font-size:0.82rem;">
+        </label>
+        <label style="font-size:0.82rem;">Place of service
+          <input type="text" name="place_of_service" maxlength="8" placeholder="11 (office)" style="font-size:0.82rem;">
+        </label>
+        <button type="submit" class="btn btn-sm btn-primary" style="margin-top:6px;">Submit auth request</button>
+      </form>
+    </details>
+  {% endif %}
+
+  {% if submission and (submission.created_at or submission.last_polled_at) %}
+    <div class="eligibility-meta" style="margin-top:8px;">
+      {% if submission.last_polled_at %}
+        Last polled {{ submission.last_polled_at.strftime('%b %-d %H:%M UTC') }}
+      {% elif submission.created_at %}
+        Created {{ submission.created_at.strftime('%b %-d %H:%M UTC') }}
+      {% endif %}
+      <span class="elig-source-badge">Live · Availity</span>
+    </div>
+  {% endif %}
+</section>

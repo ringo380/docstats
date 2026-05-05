@@ -61,6 +61,7 @@ from docstats.domain.referrals import (
     parse_cpt_codes,
 )
 from docstats.domain.eligibility import AvailityPayer, EligibilityCheck, EligibilityResult
+from docstats.domain.prior_auth import PriorAuthSubmission
 from docstats.domain.sessions import Session
 from docstats.domain.share_tokens import ShareToken
 from docstats.domain.ehr import EHRConnection
@@ -616,6 +617,7 @@ class Storage(StorageBase):
         self._migrate_referrals_authorization_fields()
         self._migrate_users_account_type()
         self._migrate_ehr_connections()
+        self._migrate_prior_auth_submissions()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -5315,6 +5317,218 @@ class Storage(StorageBase):
                 "UPDATE insurance_plans SET availity_payer_id = ? WHERE id = ?",
                 (availity_payer_id, plan_id),
             )
+
+    # --- Prior authorization submissions (Phase 11.E) ---
+
+    def _migrate_prior_auth_submissions(self) -> None:
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS prior_auth_submissions (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_user_id            INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                scope_organization_id    INTEGER REFERENCES organizations(id) ON DELETE SET NULL,
+                referral_id              INTEGER NOT NULL REFERENCES referrals(id) ON DELETE RESTRICT,
+                availity_payer_id        TEXT NOT NULL,
+                payer_name               TEXT,
+                member_id                TEXT NOT NULL,
+                service_type             TEXT NOT NULL,
+                diagnosis_codes_json     TEXT,
+                procedure_codes_json     TEXT,
+                service_date             TEXT,
+                place_of_service         TEXT,
+                status                   TEXT NOT NULL CHECK (status IN
+                    ('pending','submitted','approved','denied','cancelled','error','unavailable')),
+                availity_submission_id   TEXT,
+                reference_number         TEXT,
+                decision_date            TEXT,
+                decision_reason          TEXT,
+                error_message            TEXT,
+                idempotency_key          TEXT,
+                raw_request_json         TEXT,
+                raw_response_json        TEXT,
+                submitted_at             TEXT,
+                last_polled_at           TEXT,
+                created_at               TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        self._conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS ux_prior_auth_idempotency
+               ON prior_auth_submissions (idempotency_key)
+               WHERE idempotency_key IS NOT NULL"""
+        )
+        self._conn.execute(
+            """CREATE INDEX IF NOT EXISTS ix_prior_auth_referral
+               ON prior_auth_submissions (referral_id, created_at)"""
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def _row_to_prior_auth(row: sqlite3.Row) -> PriorAuthSubmission:
+        def _decode_codes(val: str | None) -> list[str]:
+            if not val:
+                return []
+            try:
+                parsed = json.loads(val)
+                return [str(x) for x in parsed] if isinstance(parsed, list) else []
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return []
+
+        return PriorAuthSubmission(
+            id=row["id"],
+            scope_user_id=row["scope_user_id"],
+            scope_organization_id=row["scope_organization_id"],
+            referral_id=row["referral_id"],
+            availity_payer_id=row["availity_payer_id"],
+            payer_name=row["payer_name"],
+            member_id=row["member_id"],
+            service_type=row["service_type"],
+            diagnosis_codes=_decode_codes(row["diagnosis_codes_json"]),
+            procedure_codes=_decode_codes(row["procedure_codes_json"]),
+            service_date=row["service_date"],
+            place_of_service=row["place_of_service"],
+            status=row["status"],
+            availity_submission_id=row["availity_submission_id"],
+            reference_number=row["reference_number"],
+            decision_date=_parse_sqlite_utc(row["decision_date"]),
+            decision_reason=row["decision_reason"],
+            error_message=row["error_message"],
+            idempotency_key=row["idempotency_key"],
+            raw_request_json=row["raw_request_json"],
+            raw_response_json=row["raw_response_json"],
+            submitted_at=_parse_sqlite_utc(row["submitted_at"]),
+            last_polled_at=_parse_sqlite_utc(row["last_polled_at"]),
+            created_at=_parse_sqlite_utc(row["created_at"]),
+        )
+
+    def create_prior_auth_submission(
+        self,
+        scope: Scope,
+        *,
+        referral_id: int,
+        availity_payer_id: str,
+        payer_name: str | None = None,
+        member_id: str,
+        service_type: str,
+        diagnosis_codes: list[str],
+        procedure_codes: list[str],
+        service_date: str | None = None,
+        place_of_service: str | None = None,
+        status: str,
+        idempotency_key: str | None = None,
+        raw_request_json: str | None = None,
+    ) -> PriorAuthSubmission:
+        scope_sql_clause(scope)  # raises ScopeRequired on anon
+        with self._conn:
+            cur = self._conn.execute(
+                """INSERT INTO prior_auth_submissions
+                   (scope_user_id, scope_organization_id, referral_id,
+                    availity_payer_id, payer_name, member_id, service_type,
+                    diagnosis_codes_json, procedure_codes_json, service_date,
+                    place_of_service, status, idempotency_key, raw_request_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    scope.user_id if scope.is_solo else None,
+                    scope.organization_id if scope.is_org else None,
+                    referral_id,
+                    availity_payer_id,
+                    payer_name,
+                    member_id,
+                    service_type,
+                    json.dumps(diagnosis_codes),
+                    json.dumps(procedure_codes),
+                    service_date,
+                    place_of_service,
+                    status,
+                    idempotency_key,
+                    raw_request_json,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM prior_auth_submissions WHERE id = ?", (cur.lastrowid,)
+            ).fetchone()
+        return self._row_to_prior_auth(row)
+
+    def update_prior_auth_submission(
+        self,
+        submission_id: int,
+        *,
+        status: str | None = None,
+        availity_submission_id: str | None = None,
+        reference_number: str | None = None,
+        decision_date: datetime | None = None,
+        decision_reason: str | None = None,
+        error_message: str | None = None,
+        raw_response_json: str | None = None,
+        submitted_at: datetime | None = None,
+        last_polled_at: datetime | None = None,
+    ) -> None:
+        fields: dict[str, Any] = {}
+        if status is not None:
+            fields["status"] = status
+        if availity_submission_id is not None:
+            fields["availity_submission_id"] = availity_submission_id
+        if reference_number is not None:
+            fields["reference_number"] = reference_number
+        if decision_date is not None:
+            fields["decision_date"] = decision_date.isoformat()
+        if decision_reason is not None:
+            fields["decision_reason"] = decision_reason
+        if error_message is not None:
+            fields["error_message"] = error_message
+        if raw_response_json is not None:
+            fields["raw_response_json"] = raw_response_json
+        if submitted_at is not None:
+            fields["submitted_at"] = submitted_at.isoformat()
+        if last_polled_at is not None:
+            fields["last_polled_at"] = last_polled_at.isoformat()
+        if not fields:
+            return
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        params = list(fields.values()) + [submission_id]
+        self._conn.execute(f"UPDATE prior_auth_submissions SET {sets} WHERE id = ?", params)
+        self._conn.commit()
+
+    def get_prior_auth_submission(
+        self,
+        scope: Scope,
+        submission_id: int,
+    ) -> PriorAuthSubmission | None:
+        clause, params = scope_sql_clause(scope)
+        params.append(submission_id)
+        row = self._conn.execute(
+            f"SELECT * FROM prior_auth_submissions WHERE {clause} AND id = ?",
+            params,
+        ).fetchone()
+        return self._row_to_prior_auth(row) if row else None
+
+    def get_latest_prior_auth_submission(
+        self,
+        scope: Scope,
+        referral_id: int,
+    ) -> PriorAuthSubmission | None:
+        clause, params = scope_sql_clause(scope)
+        params.append(referral_id)
+        row = self._conn.execute(
+            f"SELECT * FROM prior_auth_submissions WHERE {clause} AND referral_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            params,
+        ).fetchone()
+        return self._row_to_prior_auth(row) if row else None
+
+    def list_prior_auth_submissions(
+        self,
+        scope: Scope,
+        referral_id: int,
+        *,
+        limit: int = 20,
+    ) -> list[PriorAuthSubmission]:
+        clause, params = scope_sql_clause(scope)
+        params.extend([referral_id, int(limit)])
+        rows = self._conn.execute(
+            f"SELECT * FROM prior_auth_submissions WHERE {clause} AND referral_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [self._row_to_prior_auth(r) for r in rows]
 
     def close(self) -> None:
         self._conn.close()
