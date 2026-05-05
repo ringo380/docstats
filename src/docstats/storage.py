@@ -1518,6 +1518,38 @@ class Storage(StorageBase):
         )
         self._conn.commit()
 
+    def update_user_signature(
+        self,
+        user_id: int,
+        *,
+        credentials: str | None,
+        individual_npi: str | None,
+        state_license_number: str | None,
+        state_license_state: str | None,
+    ) -> None:
+        self._conn.execute(
+            """
+            UPDATE users
+               SET credentials=?,
+                   individual_npi=?,
+                   state_license_number=?,
+                   state_license_state=?
+             WHERE id=?
+            """,
+            (
+                credentials,
+                individual_npi,
+                state_license_number,
+                state_license_state,
+                user_id,
+            ),
+        )
+        self._conn.commit()
+
+    def set_user_signature_image_ref(self, user_id: int, ref: str | None) -> None:
+        self._conn.execute("UPDATE users SET signature_image_ref=? WHERE id=?", (ref, user_id))
+        self._conn.commit()
+
     def record_terms_acceptance(
         self,
         user_id: int,

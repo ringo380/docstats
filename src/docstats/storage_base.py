@@ -106,6 +106,33 @@ class StorageBase(ABC):
     ) -> None: ...
 
     @abstractmethod
+    def update_user_signature(
+        self,
+        user_id: int,
+        *,
+        credentials: str | None,
+        individual_npi: str | None,
+        state_license_number: str | None,
+        state_license_state: str | None,
+    ) -> None:
+        """Replace the four signature TEXT columns (migration 026).
+
+        Replace-all semantics: every call writes all four columns,
+        passing ``None`` for any field that should be cleared. This
+        matches the form-submit shape (the editor always sends every
+        field) and lets the route clear a field by submitting an empty
+        input. The signature image is managed separately via
+        ``set_user_signature_image_ref`` because it has its own upload
+        lifecycle.
+        """
+        ...
+
+    @abstractmethod
+    def set_user_signature_image_ref(self, user_id: int, ref: str | None) -> None:
+        """Set or clear the user's signature_image_ref. Pass None to clear."""
+        ...
+
+    @abstractmethod
     def record_terms_acceptance(
         self,
         user_id: int,
