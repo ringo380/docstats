@@ -10,19 +10,27 @@ still resolve.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
+import logging
 from datetime import date
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from docstats.auth import require_user
-from docstats.formatting import referral_export
+from docstats.exports import concat_pdfs, render_provider_request_letter
+from docstats.formatting import provider_request_letter_text
 from docstats.routes._common import MAPBOX_TOKEN, render
+from docstats.routes.exports import _resolve_signature_image_url
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
+from docstats.storage_files.base import StorageFileBackend
+from docstats.storage_files.factory import get_file_backend
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rolodex", tags=["rolodex"])
 
@@ -116,15 +124,28 @@ async def export_all(
     user_id = current_user["id"]
     providers = storage.list_providers(user_id)
     referrals = []
+    pcp_name = current_user.get("pcp_display_name")
     for p in providers:
         result = p.to_npi_result()
-        text = referral_export(result, appt_address=p.appt_address, appt_suite=p.appt_suite)
+        text = provider_request_letter_text(
+            result,
+            current_user=current_user,
+            appt_address=p.appt_address,
+            appt_suite=p.appt_suite,
+            appt_phone=p.appt_phone,
+            appt_fax=p.appt_fax,
+            is_televisit=p.is_televisit,
+        )
         referrals.append(
             {
                 "result": result,
                 "export_text": text,
                 "appt_address": p.appt_address,
                 "appt_suite": p.appt_suite,
+                "appt_phone": p.appt_phone,
+                "appt_fax": p.appt_fax,
+                "is_televisit": p.is_televisit,
+                "pcp_name": pcp_name,
             }
         )
     return render(
@@ -135,5 +156,59 @@ async def export_all(
             "referrals": referrals,
             "saved_count": len(providers),
             "user": current_user,
+            "pcp_name": pcp_name,
+        },
+    )
+
+
+@router.get("/export.pdf")
+async def export_all_pdf(
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+    file_backend: StorageFileBackend = Depends(get_file_backend),
+) -> Response:
+    """Concatenated PDF: one provider-request letter per saved provider."""
+    user_id = current_user["id"]
+    providers = storage.list_providers(user_id)
+    if not providers:
+        raise HTTPException(status_code=404, detail="No saved providers to export.")
+
+    signature_image_url = await _resolve_signature_image_url(file_backend, current_user)
+    pcp_name = current_user.get("pcp_display_name")
+
+    loop = asyncio.get_running_loop()
+
+    def _render_all() -> bytes:
+        parts: list[bytes] = []
+        for p in providers:
+            parts.append(
+                render_provider_request_letter(
+                    result=p.to_npi_result(),
+                    current_user=current_user,
+                    appt_address=p.appt_address,
+                    appt_suite=p.appt_suite,
+                    appt_phone=p.appt_phone,
+                    appt_fax=p.appt_fax,
+                    is_televisit=p.is_televisit,
+                    pcp_name=pcp_name,
+                    signature_image_url=signature_image_url,
+                )
+            )
+        return concat_pdfs(parts)
+
+    try:
+        pdf_bytes = await loop.run_in_executor(None, _render_all)
+    except Exception:
+        logger.exception("Bulk rolodex PDF render failed for user_id=%s", user_id)
+        raise HTTPException(status_code=500, detail="Failed to render PDF.")
+
+    filename = f"rolodex-letters-{date.today().isoformat()}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
         },
     )

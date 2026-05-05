@@ -500,6 +500,68 @@ async def fetch_attachment_pdfs(
     return out
 
 
+# ---------- Provider Request Letter (Flow A — rolodex export) ----------
+
+
+def render_provider_request_letter(
+    *,
+    result: Any,
+    current_user: dict[str, Any] | None = None,
+    appt_address: str | None = None,
+    appt_suite: str | None = None,
+    appt_phone: str | None = None,
+    appt_fax: str | None = None,
+    is_televisit: bool = False,
+    pcp_name: str | None = None,
+    signature_image_url: str | None = None,
+    generated_at: datetime | None = None,
+) -> bytes:
+    """Patient-to-PCP referral request letter for the rolodex export flow.
+
+    ``result`` is an ``NPIResult`` (provider info from NPPES). This
+    artifact has no ``Referral`` / ``Patient`` row — the patient is the
+    sender, identified via ``current_user``.
+    """
+    now = generated_at or datetime.now(tz=timezone.utc)
+    context: dict[str, Any] = {
+        "result": result,
+        "current_user": current_user or {},
+        "appt_address": appt_address,
+        "appt_suite": appt_suite,
+        "appt_phone": appt_phone,
+        "appt_fax": appt_fax,
+        "is_televisit": is_televisit,
+        "pcp_name": pcp_name,
+        "signature_image_url": signature_image_url,
+        "generated_at": now,
+        # _signature_block.html falls back gracefully when organization is None.
+        "organization": None,
+    }
+    return _render_pdf("provider_request.html", context)
+
+
+def concat_pdfs(parts: list[bytes]) -> bytes:
+    """Concatenate PDF byte-strings into one. Empty list raises ValueError."""
+    if not parts:
+        raise ValueError("concat_pdfs requires at least one part")
+    if len(parts) == 1:
+        return parts[0]
+
+    from io import BytesIO
+
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    for part in parts:
+        reader = PdfReader(BytesIO(part))
+        for page in reader.pages:
+            writer.add_page(page)
+
+    out = BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
 def render_packet(
     *,
     referral: "Referral",

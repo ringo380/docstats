@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+import asyncio
+import logging
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
 from docstats.auth import get_current_user, require_user
 from docstats.client import NPPESClient, NPPESError
-from docstats.formatting import referral_export
+from docstats.exports import render_provider_request_letter
+from docstats.formatting import provider_request_letter_text
 from docstats.routes._common import MAPBOX_TOKEN, get_client, render, saved_count
+from docstats.routes.exports import _resolve_signature_image_url
 from docstats.storage import get_db_path, get_storage
 from docstats.storage_base import StorageBase
+from docstats.storage_files.base import StorageFileBackend
+from docstats.storage_files.factory import get_file_backend
 from docstats.validators import require_valid_npi
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/provider", tags=["providers"])
 
@@ -83,8 +92,9 @@ async def export_text(
         appt_fax = None
         is_televisit = False
 
-    text = referral_export(
+    text = provider_request_letter_text(
         result,
+        current_user=current_user,
         appt_address=appt_address,
         appt_suite=appt_suite,
         appt_phone=appt_phone,
@@ -93,7 +103,7 @@ async def export_text(
     )
     return PlainTextResponse(
         content=text,
-        headers={"Content-Disposition": f"attachment; filename=referral_{npi}.txt"},
+        headers={"Content-Disposition": f"attachment; filename=referral-request-{npi}.txt"},
     )
 
 
@@ -123,8 +133,9 @@ async def export_view(
     appt_phone = saved.appt_phone if saved else None
     appt_fax = saved.appt_fax if saved else None
     is_televisit = saved.is_televisit if saved else False
-    export_text = referral_export(
+    export_text = provider_request_letter_text(
         result,
+        current_user=current_user,
         appt_address=appt_address,
         appt_suite=appt_suite,
         appt_phone=appt_phone,
@@ -141,8 +152,78 @@ async def export_view(
             "export_text": export_text,
             "appt_address": appt_address,
             "appt_suite": appt_suite,
+            "appt_phone": appt_phone,
+            "appt_fax": appt_fax,
+            "is_televisit": is_televisit,
+            "pcp_name": (current_user.get("pcp_display_name") if current_user else None),
             "saved_count": saved_count(storage, user_id),
             "user": current_user,
+        },
+    )
+
+
+@router.get("/{npi}/export.pdf")
+async def export_pdf(
+    npi: str = Depends(require_valid_npi),
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+    client: NPPESClient = Depends(get_client),
+    file_backend: StorageFileBackend = Depends(get_file_backend),
+) -> Response:
+    """WeasyPrint-rendered patient-to-PCP referral request letter."""
+    user_id = current_user["id"]
+    saved = storage.get_provider(npi, user_id)
+    if saved:
+        result = saved.to_npi_result()
+        appt_address = saved.appt_address
+        appt_suite = saved.appt_suite
+        appt_phone = saved.appt_phone
+        appt_fax = saved.appt_fax
+        is_televisit = saved.is_televisit
+    else:
+        try:
+            fetched = await client.async_lookup(npi)
+        except NPPESError as e:
+            raise HTTPException(status_code=502, detail=f"NPPES lookup failed: {e}")
+        if fetched is None:
+            raise HTTPException(status_code=404, detail=f"No provider found for NPI {npi}.")
+        result = fetched
+        appt_address = None
+        appt_suite = None
+        appt_phone = None
+        appt_fax = None
+        is_televisit = False
+
+    signature_image_url = await _resolve_signature_image_url(file_backend, current_user)
+    pcp_name = current_user.get("pcp_display_name")
+
+    loop = asyncio.get_running_loop()
+    try:
+        pdf_bytes = await loop.run_in_executor(
+            None,
+            lambda: render_provider_request_letter(
+                result=result,
+                current_user=current_user,
+                appt_address=appt_address,
+                appt_suite=appt_suite,
+                appt_phone=appt_phone,
+                appt_fax=appt_fax,
+                is_televisit=is_televisit,
+                pcp_name=pcp_name,
+                signature_image_url=signature_image_url,
+            ),
+        )
+    except Exception:
+        logger.exception("Provider request PDF render failed for npi=%s", npi)
+        raise HTTPException(status_code=500, detail="Failed to render PDF.")
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="provider-request-{npi}.pdf"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
         },
     )
 

@@ -600,3 +600,156 @@ def referral_letter_text(
     lines.append(sep)
 
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Patient → PCP provider request letter — plaintext (Flow A)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def provider_request_letter_text(
+    result: NPIResult,
+    *,
+    current_user: dict[str, Any] | None = None,
+    appt_address: str | None = None,
+    appt_suite: str | None = None,
+    appt_phone: str | None = None,
+    appt_fax: str | None = None,
+    is_televisit: bool = False,
+    generated_at: datetime | None = None,
+) -> str:
+    """Plaintext patient-to-PCP referral request letter.
+
+    Companion to ``referral_letter_text`` for the rolodex/provider export
+    flow: a patient hands this to their primary-care team to request a
+    referral to a specific provider they've already chosen. No clinical
+    PHI in this body — just the provider's NPPES info plus an optional
+    appointment-location note.
+    """
+    now = generated_at or datetime.now(tz=timezone.utc)
+    lines: list[str] = []
+    sep = "=" * 72
+
+    # Letterhead — patient's typed name; falls back gracefully on solo
+    # accounts that haven't set credentials/NPI/license.
+    lines.append(sep)
+    sender_name = _user_typed_name(current_user)
+    lines.append(sender_name.upper())
+    if current_user and current_user.get("email"):
+        lines.append(current_user["email"])
+    lines.append(sep)
+    lines.append("")
+    lines.append(now.strftime("%B %d, %Y"))
+    lines.append("")
+
+    # Addressee — patient's PCP if known, otherwise a generic team line.
+    pcp_name = current_user.get("pcp_display_name") if current_user else None
+    if pcp_name:
+        lines.append(pcp_name)
+    else:
+        lines.append("Primary Care Team")
+    lines.append("")
+
+    # RE: line — what the letter is about. Provider name + specialty.
+    re_parts = [f"Referral request: {result.display_name}"]
+    if result.primary_specialty:
+        re_parts.append(result.primary_specialty)
+    lines.append(f"RE: {' · '.join(re_parts)}")
+    lines.append("")
+
+    # Salutation
+    if pcp_name:
+        last = pcp_name.split(" ")[-1]
+        lines.append(f"Dear Dr. {last}:")
+    else:
+        lines.append("Dear Primary Care Team:")
+    lines.append("")
+
+    # Body
+    lines.append(
+        f"I would like to be referred to {result.display_name}"
+        f"{' (' + result.primary_specialty + ')' if result.primary_specialty else ''}."
+        " Their NPPES contact information is below for your records and for"
+        " transmitting the referral."
+    )
+    lines.append("")
+
+    # Provider block
+    lines.append("PROVIDER")
+    lines.append("-" * 72)
+    lines.append(f"Name: {result.display_name}")
+    lines.append(f"NPI:  {result.number}")
+    lines.append(f"Type: {result.entity_label}")
+    if result.primary_specialty:
+        lines.append(f"Specialty: {result.primary_specialty}")
+    pt = result.primary_taxonomy
+    if pt:
+        lines.append(f"Taxonomy: {pt.code}")
+    lines.append("")
+
+    # Practice address
+    addr = result.location_address
+    if addr:
+        lines.append("PRACTICE ADDRESS")
+        lines.append("-" * 72)
+        lines.append(f"  {addr.address_1}")
+        if addr.address_2:
+            lines.append(f"  {addr.address_2}")
+        lines.append(f"  {addr.city}, {addr.state} {addr.formatted_postal}")
+        if addr.formatted_phone:
+            lines.append(f"  Phone: {addr.formatted_phone}")
+        if addr.formatted_fax:
+            lines.append(f"  Fax: {addr.formatted_fax}")
+        lines.append("")
+
+    # Mailing address (only when different)
+    mail = result.mailing_address
+    if mail and addr and mail.address_1 != addr.address_1:
+        lines.append("MAILING ADDRESS")
+        lines.append("-" * 72)
+        lines.append(f"  {mail.address_1}")
+        if mail.address_2:
+            lines.append(f"  {mail.address_2}")
+        lines.append(f"  {mail.city}, {mail.state} {mail.formatted_postal}")
+        lines.append("")
+
+    # Appointment location / televisit
+    if is_televisit:
+        lines.append("APPOINTMENT FORMAT")
+        lines.append("-" * 72)
+        lines.append("  This provider is seen via telehealth / virtual visit.")
+        lines.append("")
+    elif appt_address:
+        lines.append("MY APPOINTMENT LOCATION")
+        lines.append("-" * 72)
+        lines.append(f"  {appt_address}")
+        if appt_suite:
+            lines.append(f"  {appt_suite}")
+        if appt_phone:
+            lines.append(f"  Phone: {appt_phone}")
+        if appt_fax:
+            lines.append(f"  Fax: {appt_fax}")
+        lines.append("  (This location may differ from the NPPES address above.)")
+        lines.append("")
+
+    # Closing + signature
+    lines.append(
+        "Please let me know if you need additional information from me to send"
+        " this referral. Thank you for coordinating my care."
+    )
+    lines.append("")
+    lines.append("Sincerely,")
+    lines.append("")
+    lines.append("")
+    lines.append(sender_name)
+    if current_user:
+        if current_user.get("date_of_birth"):
+            lines.append(f"DOB: {current_user['date_of_birth']}")
+        if current_user.get("email"):
+            lines.append(f"Email: {current_user['email']}")
+    lines.append("")
+    lines.append(sep)
+    lines.append("CONFIDENTIAL — Protected Health Information (HIPAA, 45 CFR §164)")
+    lines.append(sep)
+
+    return "\n".join(lines)

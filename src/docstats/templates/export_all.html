@@ -3,23 +3,81 @@
 {% block content %}
   <div class="action-bar">
     <a href="/rolodex" class="back-link">← Rolodex</a>
-    <button class="btn btn-primary" onclick="window.print()">⬇ Save All as PDF</button>
+    {% if referrals %}
+    <a class="btn btn-primary" href="/rolodex/export.pdf" target="_blank" rel="noopener">⬇ Download All as PDF</a>
     <button class="btn btn-secondary" onclick="window.print()">🖨 Print All</button>
+    {% endif %}
   </div>
 
   {% for r in referrals %}
     <div {% if not loop.last %}class="page-break"{% endif %} style="margin-bottom: 2rem;">
-      <div class="provider-hgroup {% if not r.result.is_individual %}org{% endif %}" style="margin-bottom: 1rem;">
-        <h2 style="font-size: 1.1rem;">{{ r.result.display_name }}</h2>
-        <div class="sub">{{ r.result.primary_specialty }}</div>
-      </div>
-      <div class="referral-doc">{{ r.export_text }}</div>
-      {% if r.appt_address %}
-        <div class="appt-address-section" style="margin-top: 0.75rem;">
-          <div class="label">My Appointment Location</div>
-          <div>{{ r.appt_address }}{% if r.appt_suite %} · {{ r.appt_suite }}{% endif %}</div>
+      <div class="letter-preview">
+        <header class="letterhead">
+          <div class="letterhead-org">
+            {% if user and user.first_name and user.last_name %}{{ user.first_name }} {{ user.last_name }}
+            {%- elif user and user.display_name %}{{ user.display_name }}
+            {%- elif user and user.email %}{{ user.email }}
+            {%- else %}Patient{% endif %}
+          </div>
+          {% if user and user.email %}<div class="letterhead-meta">{{ user.email }}</div>{% endif %}
+        </header>
+
+        <div class="addressee-block">
+          <div class="recipient-name">{% if pcp_name %}{{ pcp_name }}{% else %}Primary Care Team{% endif %}</div>
         </div>
-      {% endif %}
+
+        <div class="re-line"><span class="re-label">RE:</span>
+          Referral request: {{ r.result.display_name }}{% if r.result.primary_specialty %} · {{ r.result.primary_specialty }}{% endif %}
+        </div>
+
+        <div class="salutation">
+          {% if pcp_name %}Dear Dr. {{ pcp_name.split(' ') | last }}:{% else %}Dear Primary Care Team:{% endif %}
+        </div>
+
+        <p>I would like to be referred to {{ r.result.display_name }}{% if r.result.primary_specialty %} ({{ r.result.primary_specialty }}){% endif %}. Their NPPES contact information is below for your records and for transmitting the referral.</p>
+
+        <h3>Provider</h3>
+        <ul>
+          <li><strong>Name:</strong> {{ r.result.display_name }}</li>
+          <li><strong>NPI:</strong> {{ r.result.number }}</li>
+          <li><strong>Type:</strong> {{ r.result.entity_label }}</li>
+          {% if r.result.primary_specialty %}<li><strong>Specialty:</strong> {{ r.result.primary_specialty }}</li>{% endif %}
+        </ul>
+
+        {% set addr = r.result.location_address %}
+        {% if addr %}
+        <h3>Practice Address</h3>
+        <p>
+          {{ addr.address_1 }}<br>
+          {% if addr.address_2 %}{{ addr.address_2 }}<br>{% endif %}
+          {{ addr.city }}, {{ addr.state }} {{ addr.formatted_postal }}
+        </p>
+        {% if addr.formatted_phone or addr.formatted_fax %}
+        <p>
+          {% if addr.formatted_phone %}Phone: {{ addr.formatted_phone }}{% endif %}
+          {% if addr.formatted_fax %}{% if addr.formatted_phone %} · {% endif %}Fax: {{ addr.formatted_fax }}{% endif %}
+        </p>
+        {% endif %}
+        {% endif %}
+
+        {% if r.is_televisit %}
+        <h3>Appointment Format</h3>
+        <p>This provider is seen via telehealth / virtual visit.</p>
+        {% elif r.appt_address %}
+        <h3>My Appointment Location</h3>
+        <p>
+          {{ r.appt_address }}{% if r.appt_suite %}<br>{{ r.appt_suite }}{% endif %}
+        </p>
+        {% if r.appt_phone or r.appt_fax %}
+        <p>
+          {% if r.appt_phone %}Phone: {{ r.appt_phone }}{% endif %}
+          {% if r.appt_fax %}{% if r.appt_phone %} · {% endif %}Fax: {{ r.appt_fax }}{% endif %}
+        </p>
+        {% endif %}
+        {% endif %}
+
+        <p>Please let me know if you need additional information from me to send this referral. Thank you for coordinating my care.</p>
+      </div>
     </div>
   {% else %}
     <div class="empty-state">
