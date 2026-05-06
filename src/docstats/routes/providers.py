@@ -25,41 +25,58 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/provider", tags=["providers"])
 
 
-def _render_appt(
-    request: Request,
-    npi: str,
-    appt_address: str | None,
-    appt_suite: str | None,
-    appt_phone: str | None = None,
-    appt_fax: str | None = None,
-    is_televisit: bool = False,
-):
+def _summary_addr(provider):
+    """Pull the NPPES location address out of a SavedProvider for chip display."""
+    if provider is None:
+        return None
+    try:
+        return provider.to_npi_result().location_address
+    except Exception:  # raw_json corruption is non-fatal — chip just hides it
+        logger.exception("Failed to rehydrate NPIResult for appt summary npi=%s", provider.npi)
+        return None
+
+
+def _render_appt_summary(request: Request, npi: str, provider) -> Response:
+    """Render the rolodex summary card for a saved provider."""
     return render(
-        "_appt_address.html",
+        "_appt_summary.html",
         {
             "request": request,
             "npi": npi,
-            "appt_address": appt_address,
-            "appt_suite": appt_suite,
-            "appt_phone": appt_phone,
-            "appt_fax": appt_fax,
-            "is_televisit": is_televisit,
-            "mapbox_token": MAPBOX_TOKEN,
+            "provider": provider,
+            "addr": _summary_addr(provider),
         },
     )
 
 
-def _render_appt_from_provider(request: Request, npi: str, provider):
-    """Render _appt_address.html from a SavedProvider (or None)."""
-    return _render_appt(
-        request,
-        npi,
-        provider.appt_address if provider else None,
-        provider.appt_suite if provider else None,
-        appt_phone=provider.appt_phone if provider else None,
-        appt_fax=provider.appt_fax if provider else None,
-        is_televisit=provider.is_televisit if provider else False,
-    )
+def _wizard_context(
+    request: Request,
+    npi: str,
+    *,
+    step: int,
+    provider,
+    visit_location_type: str | None = None,
+    appt_address: str | None = None,
+    appt_suite: str | None = None,
+    appt_phone: str | None = None,
+    appt_fax: str | None = None,
+    error: str | None = None,
+) -> dict:
+    """Shared context builder for the wizard modal across step renders."""
+    return {
+        "request": request,
+        "npi": npi,
+        "step": step,
+        "provider": provider,
+        "addr": _summary_addr(provider),
+        "mapbox_token": MAPBOX_TOKEN,
+        "visit_location_type": visit_location_type,
+        "appt_address": appt_address,
+        "appt_suite": appt_suite,
+        "appt_phone": appt_phone,
+        "appt_fax": appt_fax,
+        "error": error,
+    }
 
 
 @router.get("/{npi}/export/text")
@@ -78,6 +95,7 @@ async def export_text(
         appt_phone = saved.appt_phone
         appt_fax = saved.appt_fax
         is_televisit = saved.is_televisit
+        visit_location_type = saved.visit_location_type
     else:
         try:
             fetched = await client.async_lookup(npi)
@@ -91,6 +109,7 @@ async def export_text(
         appt_phone = None
         appt_fax = None
         is_televisit = False
+        visit_location_type = None
 
     text = provider_request_letter_text(
         result,
@@ -100,6 +119,7 @@ async def export_text(
         appt_phone=appt_phone,
         appt_fax=appt_fax,
         is_televisit=is_televisit,
+        visit_location_type=visit_location_type,
     )
     return PlainTextResponse(
         content=text,
@@ -133,6 +153,7 @@ async def export_view(
     appt_phone = saved.appt_phone if saved else None
     appt_fax = saved.appt_fax if saved else None
     is_televisit = saved.is_televisit if saved else False
+    visit_location_type = saved.visit_location_type if saved else None
     export_text = provider_request_letter_text(
         result,
         current_user=current_user,
@@ -141,6 +162,7 @@ async def export_view(
         appt_phone=appt_phone,
         appt_fax=appt_fax,
         is_televisit=is_televisit,
+        visit_location_type=visit_location_type,
     )
 
     return render(
@@ -155,6 +177,7 @@ async def export_view(
             "appt_phone": appt_phone,
             "appt_fax": appt_fax,
             "is_televisit": is_televisit,
+            "visit_location_type": visit_location_type,
             "pcp_name": (current_user.get("pcp_display_name") if current_user else None),
             "saved_count": saved_count(storage, user_id),
             "user": current_user,
@@ -180,6 +203,7 @@ async def export_pdf(
         appt_phone = saved.appt_phone
         appt_fax = saved.appt_fax
         is_televisit = saved.is_televisit
+        visit_location_type = saved.visit_location_type
     else:
         try:
             fetched = await client.async_lookup(npi)
@@ -193,6 +217,7 @@ async def export_pdf(
         appt_phone = None
         appt_fax = None
         is_televisit = False
+        visit_location_type = None
 
     signature_image_url = await _resolve_signature_image_url(file_backend, current_user)
     pcp_name = current_user.get("pcp_display_name")
@@ -209,6 +234,7 @@ async def export_pdf(
                 appt_phone=appt_phone,
                 appt_fax=appt_fax,
                 is_televisit=is_televisit,
+                visit_location_type=visit_location_type,
                 pcp_name=pcp_name,
                 signature_image_url=signature_image_url,
             ),
@@ -293,7 +319,13 @@ async def save_provider(
 
     if result:
         storage.save_provider(result, user_id)
-        return render(
+        # Re-read the persisted row — save_provider returns a freshly built
+        # SavedProvider that doesn't reflect ON CONFLICT-preserved columns
+        # like visit_location_type. The route already short-circuits on
+        # re-saves at the top, so this lookup is only here to confirm the
+        # write landed and to read back the canonical state.
+        provider = storage.get_provider(npi, user_id)
+        button = render(
             "_save_button.html",
             {
                 "request": request,
@@ -302,6 +334,21 @@ async def save_provider(
                 "btn_target": btn_target,
             },
         )
+        # On first-save (no visit details yet), open the wizard automatically
+        # via an OOB swap into #modal-root. Re-saving an existing row shouldn't
+        # interrupt the user, so keep the wizard closed when details exist.
+        button_html = button.body.decode("utf-8")  # type: ignore[union-attr]
+        if provider is not None and provider.visit_location_type is None:
+            modal = render(
+                "_appt_wizard.html",
+                _wizard_context(request, npi, step=1, provider=provider),
+            )
+            modal_html = modal.body.decode("utf-8")  # type: ignore[union-attr]
+            # OOB swap: wrap the modal in a #modal-root replacement so the
+            # base.html container picks it up no matter where Save was clicked.
+            oob = f'<div id="modal-root" hx-swap-oob="true">{modal_html}</div>'
+            return HTMLResponse(content=button_html + oob)
+        return HTMLResponse(content=button_html)
 
     return HTMLResponse(
         content='<span style="color: #c62828;">Could not look up this provider. Try again.</span>'
@@ -334,94 +381,180 @@ async def remove_provider(
     )
 
 
-@router.post("/{npi}/appt-address", response_class=HTMLResponse)
-async def set_appt_address(
+# ─────────────────────────────────────────────────────────────────────
+# Appointment-address wizard (replaces the prior set_appt_* /
+# clear_appt_address / toggle_televisit / update_appt_contact routes).
+# Single mutation path, three steps; each step posts back to the same
+# endpoint with a hidden ``step`` field.
+# ─────────────────────────────────────────────────────────────────────
+
+
+_VALID_VISIT_TYPES = {"practice", "televisit", "custom"}
+
+
+@router.get("/{npi}/appt-wizard", response_class=HTMLResponse)
+async def appt_wizard_open(
     request: Request,
     npi: str = Depends(require_valid_npi),
-    address: str = Form("", max_length=300),
-    phone: str = Form("", max_length=40),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
+    """Open the wizard at step 1 with current values prefilled.
+
+    Triggered both by the search-page Save flow (via OOB swap from the save
+    response) and by the Edit pencil on the rolodex summary card.
+    """
     user_id = current_user["id"]
-    address = address.strip()
-    if address:
-        found = storage.set_appt_address(npi, address, user_id)
-        if not found:
-            return HTMLResponse(
-                '<span class="appt-error">Provider must be saved before adding an appointment address.</span>'
-            )
-        phone = phone.strip()
-        if phone:
-            existing = storage.get_provider(npi, user_id)
-            storage.set_appt_contact(npi, phone, existing.appt_fax if existing else None, user_id)
     provider = storage.get_provider(npi, user_id)
-    return _render_appt_from_provider(request, npi, provider)
-
-
-@router.put("/{npi}/appt-suite", response_class=HTMLResponse)
-async def update_appt_suite(
-    request: Request,
-    npi: str = Depends(require_valid_npi),
-    suite: str = Form("", max_length=100),
-    current_user: dict = Depends(require_user),
-    storage: StorageBase = Depends(get_storage),
-):
-    user_id = current_user["id"]
-    suite = suite.strip()
-    storage.set_appt_suite(npi, suite or None, user_id)
-    provider = storage.get_provider(npi, user_id)
-    return _render_appt_from_provider(request, npi, provider)
-
-
-@router.delete("/{npi}/appt-address", response_class=HTMLResponse)
-async def clear_appt_address(
-    request: Request,
-    npi: str = Depends(require_valid_npi),
-    current_user: dict = Depends(require_user),
-    storage: StorageBase = Depends(get_storage),
-):
-    user_id = current_user["id"]
-    storage.clear_appt_address(npi, user_id)
-    provider = storage.get_provider(npi, user_id)
-    return _render_appt_from_provider(request, npi, provider)
-
-
-@router.put("/{npi}/televisit", response_class=HTMLResponse)
-async def toggle_televisit(
-    request: Request,
-    npi: str = Depends(require_valid_npi),
-    is_televisit: str = Form("off", max_length=8),
-    current_user: dict = Depends(require_user),
-    storage: StorageBase = Depends(get_storage),
-):
-    user_id = current_user["id"]
-    turning_on = is_televisit == "on"
-    storage.set_televisit(npi, turning_on, user_id)
-    if turning_on:
-        storage.clear_appt_address(npi, user_id)
-    provider = storage.get_provider(npi, user_id)
-    return _render_appt_from_provider(request, npi, provider)
-
-
-@router.put("/{npi}/appt-contact", response_class=HTMLResponse)
-async def update_appt_contact(
-    request: Request,
-    npi: str = Depends(require_valid_npi),
-    phone: str = Form("", max_length=40),
-    fax: str = Form("", max_length=40),
-    current_user: dict = Depends(require_user),
-    storage: StorageBase = Depends(get_storage),
-):
-    user_id = current_user["id"]
-    storage.set_appt_contact(
-        npi,
-        phone.strip() or None,
-        fax.strip() or None,
-        user_id,
+    if provider is None:
+        return HTMLResponse(
+            '<div class="modal-backdrop"><div class="modal-card">'
+            '<p class="wizard-error">Save this provider first.</p>'
+            '<button class="btn btn-secondary" hx-delete="/provider/'
+            + npi
+            + '/appt-wizard" hx-target="#modal-root" hx-swap="innerHTML">Close</button>'
+            "</div></div>"
+        )
+    return render(
+        "_appt_wizard.html",
+        _wizard_context(
+            request,
+            npi,
+            step=1,
+            provider=provider,
+            visit_location_type=provider.visit_location_type,
+            appt_address=provider.appt_address,
+            appt_suite=provider.appt_suite,
+            appt_phone=provider.appt_phone,
+            appt_fax=provider.appt_fax,
+        ),
     )
+
+
+@router.delete("/{npi}/appt-wizard", response_class=HTMLResponse)
+async def appt_wizard_close(
+    npi: str = Depends(require_valid_npi),
+    current_user: dict = Depends(require_user),
+):
+    """Cancel button — empty out #modal-root."""
+    return HTMLResponse(content="")
+
+
+@router.post("/{npi}/appt-wizard", response_class=HTMLResponse)
+async def appt_wizard_submit(
+    request: Request,
+    npi: str = Depends(require_valid_npi),
+    step: str = Form("1", max_length=20),
+    visit_location_type: str = Form("", max_length=20),
+    appt_address: str = Form("", max_length=300),
+    appt_suite: str = Form("", max_length=100),
+    appt_phone: str = Form("", max_length=40),
+    appt_fax: str = Form("", max_length=40),
+    appt_phone_suggestion: str = Form("", max_length=40),
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Drive a single transition through the 3-step wizard.
+
+    The hidden ``step`` field tells us which step's form was submitted.
+    Special values: ``back``/``back-to-1`` walk backwards without writing.
+    """
+    user_id = current_user["id"]
     provider = storage.get_provider(npi, user_id)
-    return _render_appt_from_provider(request, npi, provider)
+    if provider is None:
+        return HTMLResponse(content="")
+
+    # Carry-through normalization
+    vlt = visit_location_type.strip().lower() or None
+    appt_address = appt_address.strip()
+    appt_suite = appt_suite.strip()
+    appt_phone = appt_phone.strip()
+    appt_fax = appt_fax.strip()
+    # Mapbox POI suggestions seed the office phone if the user hasn't set one.
+    if not appt_phone and appt_phone_suggestion.strip():
+        appt_phone = appt_phone_suggestion.strip()
+
+    def _open(step_num: int, *, error: str | None = None) -> Response:
+        return render(
+            "_appt_wizard.html",
+            _wizard_context(
+                request,
+                npi,
+                step=step_num,
+                provider=provider,
+                visit_location_type=vlt,
+                appt_address=appt_address or None,
+                appt_suite=appt_suite or None,
+                appt_phone=appt_phone or None,
+                appt_fax=appt_fax or None,
+                error=error,
+            ),
+        )
+
+    # Back navigation — no writes.
+    if step == "back-to-1":
+        return _open(1)
+    if step == "back":
+        # From step 3 → step 2 only when the user is on the custom branch;
+        # otherwise step 1 (telehealth/practice never visited step 2).
+        return _open(2 if vlt == "custom" else 1)
+
+    if step == "1":
+        if vlt not in _VALID_VISIT_TYPES:
+            return _open(1, error="Pick how you visit this provider.")
+        # custom needs an address — go to step 2; everything else jumps to step 3.
+        return _open(2 if vlt == "custom" else 3)
+
+    if step == "2":
+        if vlt != "custom":
+            # Defensive: shouldn't reach step 2 unless custom; bounce back.
+            return _open(1, error="Pick how you visit this provider.")
+        if not appt_address:
+            return _open(2, error="Enter an address or pick a suggestion.")
+        return _open(3)
+
+    if step == "3":
+        if vlt not in _VALID_VISIT_TYPES:
+            return _open(1, error="Pick how you visit this provider.")
+        if vlt == "custom" and not appt_address:
+            return _open(2, error="Enter an address or pick a suggestion.")
+
+        # Practice / televisit don't store a custom address — clear them so
+        # toggling between visit types doesn't leave stale data behind.
+        write_address = appt_address or None if vlt == "custom" else None
+        write_suite = appt_suite or None if vlt == "custom" else None
+        storage.set_visit_details(
+            npi,
+            user_id,
+            visit_location_type=vlt,
+            appt_address=write_address,
+            appt_suite=write_suite,
+            appt_phone=appt_phone or None,
+            appt_fax=appt_fax or None,
+        )
+
+        # Re-fetch so the OOB summary card reflects the canonical row.
+        refreshed = storage.get_provider(npi, user_id)
+        summary = render(
+            "_appt_summary.html",
+            {
+                "request": request,
+                "npi": npi,
+                "provider": refreshed,
+                "addr": _summary_addr(refreshed),
+            },
+        )
+        # Wizard form has hx-target="#modal-root" + hx-swap="innerHTML", so
+        # the primary response wipes the modal. The summary card refresh
+        # rides along OOB; the target #appt-{npi} only exists on the rolodex
+        # page, so on /search the OOB swap is a silent no-op (intended).
+        summary_html = summary.body.decode("utf-8")  # type: ignore[union-attr]
+        oob_summary = summary_html.replace(
+            f'id="appt-{npi}"', f'id="appt-{npi}" hx-swap-oob="true"', 1
+        )
+        return HTMLResponse(content="" + oob_summary)
+
+    return _open(1, error="Unexpected wizard state. Start over.")
 
 
 @router.put("/{npi}/notes", response_class=HTMLResponse)

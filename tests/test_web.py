@@ -74,210 +74,285 @@ def test_search_returns_interp_desc(client):
     assert "Searched as:" in resp.text
 
 
-def test_appt_address_post(client):
-    """POST /provider/{npi}/appt-address saves address."""
+# ─────────────────────────────────────────────────────────────────
+# Appointment-address wizard (replaces the prior set_appt_* /
+# clear_appt_address / toggle_televisit / update_appt_contact routes).
+# ─────────────────────────────────────────────────────────────────
+
+
+def test_appt_wizard_open_returns_step1(client):
+    """GET /provider/{npi}/appt-wizard renders the step-1 modal."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    resp = test_client.get("/provider/1234567890/appt-wizard")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'id="appt-wizard-modal"' in body
+    assert 'name="visit_location_type"' in body
+    assert 'value="practice"' in body
+    assert 'value="televisit"' in body
+    assert 'value="custom"' in body
+
+
+def test_appt_wizard_open_unknown_provider_returns_error(client):
+    """Unknown NPI returns a small error modal, not 500."""
+    test_client, storage, mock_client, user_id = client
+    resp = test_client.get("/provider/9999999999/appt-wizard")
+    assert resp.status_code == 200
+    assert "Save this provider first" in resp.text
+
+
+def test_appt_wizard_close(client):
+    """DELETE /provider/{npi}/appt-wizard returns empty body to clear modal-root."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    resp = test_client.delete("/provider/1234567890/appt-wizard")
+    assert resp.status_code == 200
+    assert resp.text == ""
+
+
+def test_appt_wizard_step1_practice_advances_to_step3(client):
+    """Choosing 'practice' skips step 2 (no address needed)."""
     test_client, storage, mock_client, user_id = client
     result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
     storage.save_provider(result, user_id)
     resp = test_client.post(
-        "/provider/1234567890/appt-address",
-        data={"address": "1 Shrader St, San Francisco, CA 94117"},
+        "/provider/1234567890/appt-wizard",
+        data={"step": "1", "visit_location_type": "practice"},
     )
     assert resp.status_code == 200
+    # step-3 markers
+    assert 'name="appt_phone"' in resp.text
+    assert 'name="appt_fax"' in resp.text
+    # No row write yet (finish happens at step 3 submit)
     provider = storage.get_provider("1234567890", user_id)
-    assert provider.appt_address == "1 Shrader St, San Francisco, CA 94117"
+    assert provider.visit_location_type is None
 
 
-def test_appt_address_post_unsaved_provider(client):
-    """POST for an unsaved provider returns an error message, does not silently drop."""
+def test_appt_wizard_step1_custom_advances_to_step2(client):
+    """Choosing 'custom' shows the address step."""
     test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
     resp = test_client.post(
-        "/provider/9999999999/appt-address",
-        data={"address": "1 Shrader St, San Francisco, CA 94117"},
+        "/provider/1234567890/appt-wizard",
+        data={"step": "1", "visit_location_type": "custom"},
     )
     assert resp.status_code == 200
-    assert "saved" in resp.text.lower()
-    assert storage.get_provider("9999999999", user_id) is None
+    # step-2 markers (address input present)
+    assert "appt_address" in resp.text
 
 
-def test_appt_address_delete(client):
-    """DELETE /provider/{npi}/appt-address clears address."""
+def test_appt_wizard_step1_missing_choice_re_renders_with_error(client):
+    """Submitting step 1 with no radio picked shows an inline error."""
     test_client, storage, mock_client, user_id = client
     result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
     storage.save_provider(result, user_id)
-    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117", user_id)
-    resp = test_client.delete("/provider/1234567890/appt-address")
-    assert resp.status_code == 200
-    provider = storage.get_provider("1234567890", user_id)
-    assert provider.appt_address is None
-
-
-def test_appt_suite_put(client):
-    """PUT /provider/{npi}/appt-suite saves suite."""
-    test_client, storage, mock_client, user_id = client
-    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
-    storage.save_provider(result, user_id)
-    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117", user_id)
-    resp = test_client.put(
-        "/provider/1234567890/appt-suite",
-        data={"suite": "Suite 6A"},
+    resp = test_client.post(
+        "/provider/1234567890/appt-wizard",
+        data={"step": "1", "visit_location_type": ""},
     )
     assert resp.status_code == 200
-    provider = storage.get_provider("1234567890", user_id)
-    assert provider.appt_suite == "Suite 6A"
+    assert "Pick how you visit" in resp.text
 
 
-def test_appt_suite_put_empty_clears(client):
-    """PUT with empty suite clears it."""
+def test_appt_wizard_finish_practice(client):
+    """Step 3 submit on 'practice' branch writes the row + clears appt fields."""
     test_client, storage, mock_client, user_id = client
     result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
     storage.save_provider(result, user_id)
-    storage.set_appt_suite("1234567890", "Suite 6A", user_id)
-    resp = test_client.put(
-        "/provider/1234567890/appt-suite",
-        data={"suite": ""},
+    resp = test_client.post(
+        "/provider/1234567890/appt-wizard",
+        data={
+            "step": "3",
+            "visit_location_type": "practice",
+            "appt_phone": "(555) 123-4567",
+            "appt_fax": "",
+        },
     )
     assert resp.status_code == 200
     provider = storage.get_provider("1234567890", user_id)
-    assert provider.appt_suite is None
-
-
-def test_appt_address_delete_clears_suite(client):
-    """DELETE /provider/{npi}/appt-address also clears suite."""
-    test_client, storage, mock_client, user_id = client
-    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
-    storage.save_provider(result, user_id)
-    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117", user_id)
-    storage.set_appt_suite("1234567890", "Room 201", user_id)
-    resp = test_client.delete("/provider/1234567890/appt-address")
-    assert resp.status_code == 200
-    provider = storage.get_provider("1234567890", user_id)
-    assert provider.appt_address is None
-    assert provider.appt_suite is None
-
-
-def test_appt_address_delete_clears_phone_fax(client):
-    """DELETE /provider/{npi}/appt-address also clears phone and fax."""
-    test_client, storage, mock_client, user_id = client
-    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
-    storage.save_provider(result, user_id)
-    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117", user_id)
-    storage.set_appt_contact("1234567890", "555-1234", "555-5678", user_id)
-    resp = test_client.delete("/provider/1234567890/appt-address")
-    assert resp.status_code == 200
-    provider = storage.get_provider("1234567890", user_id)
-    assert provider.appt_phone is None
-    assert provider.appt_fax is None
-
-
-def test_televisit_toggle_on(client):
-    """PUT /provider/{npi}/televisit with on sets the flag."""
-    test_client, storage, mock_client, user_id = client
-    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
-    storage.save_provider(result, user_id)
-    resp = test_client.put(
-        "/provider/1234567890/televisit",
-        data={"is_televisit": "on"},
-    )
-    assert resp.status_code == 200
-    provider = storage.get_provider("1234567890", user_id)
-    assert provider.is_televisit is True
-
-
-def test_televisit_toggle_off(client):
-    """PUT /provider/{npi}/televisit with off clears the flag."""
-    test_client, storage, mock_client, user_id = client
-    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
-    storage.save_provider(result, user_id)
-    storage.set_televisit("1234567890", True, user_id)
-    resp = test_client.put(
-        "/provider/1234567890/televisit",
-        data={"is_televisit": "off"},
-    )
-    assert resp.status_code == 200
-    provider = storage.get_provider("1234567890", user_id)
+    assert provider.visit_location_type == "practice"
     assert provider.is_televisit is False
+    assert provider.appt_address is None
+    assert provider.appt_suite is None
+    assert provider.appt_phone == "(555) 123-4567"
+    assert provider.appt_fax is None
 
 
-def test_televisit_on_clears_address(client):
-    """Toggling televisit ON must clear the appointment address."""
+def test_appt_wizard_finish_televisit_clears_address(client):
+    """Telehealth branch never stores an appt_address."""
     test_client, storage, mock_client, user_id = client
     result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
     storage.save_provider(result, user_id)
-    storage.set_appt_address("1234567890", "1 Shrader St, San Francisco, CA 94117", user_id)
-    storage.set_appt_contact("1234567890", "555-1234", "555-5678", user_id)
-    resp = test_client.put(
-        "/provider/1234567890/televisit",
-        data={"is_televisit": "on"},
+    # Pre-existing custom address must be cleared on switching to televisit.
+    storage.set_visit_details(
+        "1234567890",
+        user_id,
+        visit_location_type="custom",
+        appt_address="123 Old St",
+    )
+    resp = test_client.post(
+        "/provider/1234567890/appt-wizard",
+        data={"step": "3", "visit_location_type": "televisit"},
     )
     assert resp.status_code == 200
     provider = storage.get_provider("1234567890", user_id)
+    assert provider.visit_location_type == "televisit"
     assert provider.is_televisit is True
     assert provider.appt_address is None
-    assert provider.appt_phone is None
-    assert provider.appt_fax is None
+    assert provider.appt_suite is None
 
 
-def test_appt_contact_put(client):
-    """PUT /provider/{npi}/appt-contact saves phone and fax."""
-    test_client, storage, mock_client, user_id = client
-    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
-    storage.save_provider(result, user_id)
-    resp = test_client.put(
-        "/provider/1234567890/appt-contact",
-        data={"phone": "(555) 123-4567", "fax": "(555) 987-6543"},
-    )
-    assert resp.status_code == 200
-    provider = storage.get_provider("1234567890", user_id)
-    assert provider.appt_phone == "(555) 123-4567"
-    assert provider.appt_fax == "(555) 987-6543"
-
-
-def test_appt_contact_put_empty_clears(client):
-    """PUT with empty phone/fax clears them."""
-    test_client, storage, mock_client, user_id = client
-    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
-    storage.save_provider(result, user_id)
-    storage.set_appt_contact("1234567890", "555-1234", "555-5678", user_id)
-    resp = test_client.put(
-        "/provider/1234567890/appt-contact",
-        data={"phone": "", "fax": ""},
-    )
-    assert resp.status_code == 200
-    provider = storage.get_provider("1234567890", user_id)
-    assert provider.appt_phone is None
-    assert provider.appt_fax is None
-
-
-def test_appt_address_post_with_phone(client):
-    """POST /provider/{npi}/appt-address with phone auto-populates appt_phone."""
+def test_appt_wizard_finish_custom_persists_address(client):
+    """Custom branch stores the address verbatim (server-side strip happens at render)."""
     test_client, storage, mock_client, user_id = client
     result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
     storage.save_provider(result, user_id)
     resp = test_client.post(
-        "/provider/1234567890/appt-address",
-        data={"address": "UTMB Galveston", "phone": "(409) 772-1234"},
+        "/provider/1234567890/appt-wizard",
+        data={
+            "step": "3",
+            "visit_location_type": "custom",
+            "appt_address": "1 Shrader St, San Francisco, California 94117, United States",
+            "appt_suite": "Suite 6A",
+            "appt_phone": "(415) 555-1234",
+        },
     )
     assert resp.status_code == 200
     provider = storage.get_provider("1234567890", user_id)
-    assert provider.appt_address == "UTMB Galveston"
-    assert provider.appt_phone == "(409) 772-1234"
+    assert provider.visit_location_type == "custom"
+    # Stored verbatim — strip_us applies at render time only.
+    assert provider.appt_address.endswith("United States")
+    assert provider.appt_suite == "Suite 6A"
+    assert provider.appt_phone == "(415) 555-1234"
 
 
-def test_appt_address_post_with_phone_preserves_fax(client):
-    """POI phone auto-fill must not overwrite an existing fax."""
+def test_appt_wizard_finish_custom_requires_address(client):
+    """Submitting custom branch with empty address bounces to step 2."""
     test_client, storage, mock_client, user_id = client
     result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
     storage.save_provider(result, user_id)
-    storage.set_appt_contact("1234567890", None, "555-FAX", user_id)
     resp = test_client.post(
-        "/provider/1234567890/appt-address",
-        data={"address": "New Clinic", "phone": "555-NEW"},
+        "/provider/1234567890/appt-wizard",
+        data={"step": "3", "visit_location_type": "custom", "appt_address": ""},
+    )
+    assert resp.status_code == 200
+    assert "Enter an address" in resp.text
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.visit_location_type is None
+
+
+def test_appt_wizard_back_navigation(client):
+    """'Back' from step 2 re-renders step 1 without persisting anything."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    resp = test_client.post(
+        "/provider/1234567890/appt-wizard",
+        data={"step": "back-to-1", "visit_location_type": "custom"},
+    )
+    assert resp.status_code == 200
+    assert 'name="visit_location_type"' in resp.text
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.visit_location_type is None
+
+
+def test_save_provider_opens_wizard_on_first_save(client):
+    """A first save bundles a #modal-root OOB swap so the wizard pops open."""
+    test_client, storage, mock_client, user_id = client
+    mock_client.async_lookup.return_value = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    resp = test_client.post("/provider/1234567890/save")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'id="modal-root"' in body
+    assert "appt-wizard-modal" in body
+
+
+def test_appt_wizard_practice_branch_preserves_existing_phone_fax(client):
+    """Edit pencil → switch to 'practice' without re-touching contact fields
+    must NOT wipe pre-existing phone/fax. Regression guard for the silent-wipe
+    bug flagged in PR #150 review (template now carries hidden inputs across
+    all step transitions, so untouched fields survive the round trip)."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_visit_details(
+        "1234567890",
+        user_id,
+        visit_location_type="custom",
+        appt_address="123 Old Clinic St",
+        appt_phone="(415) 555-1234",
+        appt_fax="(415) 555-5678",
+    )
+    # Step 1 submit emulates what the browser sends: hidden inputs for
+    # appt_phone/appt_fax (carried from the GET-open prefill), plus the
+    # newly chosen visit_location_type radio.
+    resp = test_client.post(
+        "/provider/1234567890/appt-wizard",
+        data={
+            "step": "1",
+            "visit_location_type": "practice",
+            "appt_phone": "(415) 555-1234",
+            "appt_fax": "(415) 555-5678",
+        },
+    )
+    assert resp.status_code == 200
+    # Step 3 form should now have those values prefilled.
+    assert "(415) 555-1234" in resp.text
+    assert "(415) 555-5678" in resp.text
+    # Submit step 3 with the carried-through values (browser would resend them).
+    resp = test_client.post(
+        "/provider/1234567890/appt-wizard",
+        data={
+            "step": "3",
+            "visit_location_type": "practice",
+            "appt_phone": "(415) 555-1234",
+            "appt_fax": "(415) 555-5678",
+        },
     )
     assert resp.status_code == 200
     provider = storage.get_provider("1234567890", user_id)
-    assert provider.appt_phone == "555-NEW"
-    assert provider.appt_fax == "555-FAX"
+    assert provider.visit_location_type == "practice"
+    # Pre-existing contact data survived the visit-type switch.
+    assert provider.appt_phone == "(415) 555-1234"
+    assert provider.appt_fax == "(415) 555-5678"
+
+
+def test_rolodex_survives_corrupt_raw_json(client):
+    """A single saved provider with corrupt raw_json must not 500 the page."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    # Stomp raw_json directly to simulate schema drift / corruption.
+    storage._conn.execute(
+        "UPDATE saved_providers SET raw_json = '{not json' WHERE npi = ? AND user_id = ?",
+        ("1234567890", user_id),
+    )
+    storage._conn.commit()
+    resp = test_client.get("/rolodex")
+    assert resp.status_code == 200
+    # The row still renders (display_name etc. come from flat columns).
+    assert "1234567890" in resp.text
+
+
+def test_save_provider_skips_wizard_when_already_configured(client):
+    """Re-saving a row that already has visit_location_type doesn't re-open the wizard."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_visit_details(
+        "1234567890",
+        user_id,
+        visit_location_type="practice",
+    )
+    mock_client.async_lookup.return_value = result
+    resp = test_client.post("/provider/1234567890/save")
+    assert resp.status_code == 200
+    # The "already saved" branch returns just the button — no modal swap.
+    assert "modal-root" not in resp.text
 
 
 def test_saved_page_renders_search_input(client):
