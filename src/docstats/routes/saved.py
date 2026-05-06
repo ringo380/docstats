@@ -67,12 +67,25 @@ async def rolodex_list(
 ):
     user_id = current_user["id"]
     providers = storage.list_providers(user_id)
+    # Pre-compute the NPPES location address per row in Python so a single
+    # corrupt raw_json blob can't 500 the whole rolodex. Mirrors the defensive
+    # `_summary_addr` helper used by the wizard route — flagged in PR #150
+    # review as a regression risk when the address lookup moved into Jinja.
+    rows = []
+    for p in providers:
+        try:
+            addr = p.to_npi_result().location_address
+        except Exception:
+            logger.exception("rolodex: failed to rehydrate NPIResult for npi=%s", p.npi)
+            addr = None
+        rows.append({"provider": p, "addr": addr})
     return render(
         "saved.html",
         {
             "request": request,
             "active_page": "rolodex",
             "providers": providers,
+            "rolodex_rows": rows,
             "saved_count": len(providers),
             "mapbox_token": MAPBOX_TOKEN,
             "user": current_user,

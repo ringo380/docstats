@@ -318,7 +318,13 @@ async def save_provider(
         result = None
 
     if result:
-        provider = storage.save_provider(result, user_id)
+        storage.save_provider(result, user_id)
+        # Re-read the persisted row — save_provider returns a freshly built
+        # SavedProvider that doesn't reflect ON CONFLICT-preserved columns
+        # like visit_location_type. The route already short-circuits on
+        # re-saves at the top, so this lookup is only here to confirm the
+        # write landed and to read back the canonical state.
+        provider = storage.get_provider(npi, user_id)
         button = render(
             "_save_button.html",
             {
@@ -332,7 +338,7 @@ async def save_provider(
         # via an OOB swap into #modal-root. Re-saving an existing row shouldn't
         # interrupt the user, so keep the wizard closed when details exist.
         button_html = button.body.decode("utf-8")  # type: ignore[union-attr]
-        if provider.visit_location_type is None:
+        if provider is not None and provider.visit_location_type is None:
             modal = render(
                 "_appt_wizard.html",
                 _wizard_context(request, npi, step=1, provider=provider),

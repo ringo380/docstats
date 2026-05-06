@@ -20,7 +20,8 @@
     <input type="text" id="saved-search" placeholder="Filter by name, NPI, specialty, notes..."
            autocomplete="off" style="width: 100%; padding: 10px 14px; margin-bottom: 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.95rem; background: var(--card-bg); color: var(--text);">
     <div id="no-match" style="display: none; text-align: center; padding: 32px 0; color: var(--muted);">No providers match your filter.</div>
-    {% for p in providers %}
+    {% for row in rolodex_rows %}
+      {% set p = row.provider %}
       <div class="provider-row" id="saved-row-{{ p.npi }}">
         <div class="type-bar {% if p.entity_type == 'Organization' %}org{% endif %}"></div>
         <div class="info">
@@ -35,7 +36,7 @@
           {% if p.notes %}
             <div class="notes-preview">Note: {{ p.notes }}</div>
           {% endif %}
-          {% set npi = p.npi %}{% set provider = p %}{% set addr = p.to_npi_result().location_address %}{% include "_appt_summary.html" %}
+          {% set npi = p.npi %}{% set provider = p %}{% set addr = row.addr %}{% include "_appt_summary.html" %}
         </div>
         <div class="row-actions">
           <a href="/provider/{{ p.npi }}/export" class="btn btn-blue btn-sm">Export</a>

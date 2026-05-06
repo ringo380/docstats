@@ -271,6 +271,73 @@ def test_save_provider_opens_wizard_on_first_save(client):
     assert "appt-wizard-modal" in body
 
 
+def test_appt_wizard_practice_branch_preserves_existing_phone_fax(client):
+    """Edit pencil → switch to 'practice' without re-touching contact fields
+    must NOT wipe pre-existing phone/fax. Regression guard for the silent-wipe
+    bug flagged in PR #150 review (template now carries hidden inputs across
+    all step transitions, so untouched fields survive the round trip)."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    storage.set_visit_details(
+        "1234567890",
+        user_id,
+        visit_location_type="custom",
+        appt_address="123 Old Clinic St",
+        appt_phone="(415) 555-1234",
+        appt_fax="(415) 555-5678",
+    )
+    # Step 1 submit emulates what the browser sends: hidden inputs for
+    # appt_phone/appt_fax (carried from the GET-open prefill), plus the
+    # newly chosen visit_location_type radio.
+    resp = test_client.post(
+        "/provider/1234567890/appt-wizard",
+        data={
+            "step": "1",
+            "visit_location_type": "practice",
+            "appt_phone": "(415) 555-1234",
+            "appt_fax": "(415) 555-5678",
+        },
+    )
+    assert resp.status_code == 200
+    # Step 3 form should now have those values prefilled.
+    assert "(415) 555-1234" in resp.text
+    assert "(415) 555-5678" in resp.text
+    # Submit step 3 with the carried-through values (browser would resend them).
+    resp = test_client.post(
+        "/provider/1234567890/appt-wizard",
+        data={
+            "step": "3",
+            "visit_location_type": "practice",
+            "appt_phone": "(415) 555-1234",
+            "appt_fax": "(415) 555-5678",
+        },
+    )
+    assert resp.status_code == 200
+    provider = storage.get_provider("1234567890", user_id)
+    assert provider.visit_location_type == "practice"
+    # Pre-existing contact data survived the visit-type switch.
+    assert provider.appt_phone == "(415) 555-1234"
+    assert provider.appt_fax == "(415) 555-5678"
+
+
+def test_rolodex_survives_corrupt_raw_json(client):
+    """A single saved provider with corrupt raw_json must not 500 the page."""
+    test_client, storage, mock_client, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    # Stomp raw_json directly to simulate schema drift / corruption.
+    storage._conn.execute(
+        "UPDATE saved_providers SET raw_json = '{not json' WHERE npi = ? AND user_id = ?",
+        ("1234567890", user_id),
+    )
+    storage._conn.commit()
+    resp = test_client.get("/rolodex")
+    assert resp.status_code == 200
+    # The row still renders (display_name etc. come from flat columns).
+    assert "1234567890" in resp.text
+
+
 def test_save_provider_skips_wizard_when_already_configured(client):
     """Re-saving a row that already has visit_location_type doesn't re-open the wizard."""
     test_client, storage, mock_client, user_id = client

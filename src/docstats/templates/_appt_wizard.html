@@ -41,12 +41,22 @@
           hx-swap="innerHTML">
 
       {# Hidden state carried across steps so the server can stay the source
-         of truth without per-step persistence. #}
+         of truth without per-step persistence. Every field that is NOT
+         rendered as a visible input at the current step is echoed as a
+         hidden input here, so the user's prior values (and the provider's
+         pre-existing values from the GET-open prefill) survive the round
+         trip — without this, a path like step1 → step3 would lose any
+         phone/fax that the user hadn't re-touched, silently wiping them
+         on submit (regression hit during PR #150 review). #}
       <input type="hidden" name="step" value="{{ step }}">
       {% if step != 1 %}<input type="hidden" name="visit_location_type" value="{{ visit_location_type or '' }}">{% endif %}
-      {% if step == 3 %}
+      {% if step != 2 %}
         <input type="hidden" name="appt_address" value="{{ appt_address or '' }}">
         <input type="hidden" name="appt_suite" value="{{ appt_suite or '' }}">
+      {% endif %}
+      {% if step != 3 %}
+        <input type="hidden" name="appt_phone" value="{{ appt_phone or '' }}">
+        <input type="hidden" name="appt_fax" value="{{ appt_fax or '' }}">
       {% endif %}
 
       {# ---------- STEP 1: choose visit type ---------- #}
