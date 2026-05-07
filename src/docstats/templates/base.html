@@ -5,12 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex, nofollow">
     {% if not user %}
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-7LGDP4Z19X"></script>
     <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-      gtag('config', 'G-7LGDP4Z19X', {anonymize_ip: true});
+      if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        var _s = document.createElement('script');
+        _s.async = true; _s.src = 'https://www.googletagmanager.com/gtag/js?id=G-7LGDP4Z19X';
+        document.head.appendChild(_s);
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        window.gtag = gtag;
+        gtag('js', new Date());
+        gtag('config', 'G-7LGDP4Z19X', {anonymize_ip: true});
+      }
     </script>
     {% endif %}
     <title>{% block title %}referme.help{% endblock %}</title>
