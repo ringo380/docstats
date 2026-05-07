@@ -1,0 +1,26 @@
+{# "Who is this for?" picker — shown on the new-referral form when a patient
+   user has more than one patient profile (self + dependents / linked accounts).
+   Rendered inside the referral_new.html form; caller passes `patients` list. #}
+<fieldset>
+  <legend>Who is this for?</legend>
+  <div class="who-picker">
+    {% for p in patients %}
+      {% set initials = (p.first_name[0] ~ p.last_name[0]) | upper %}
+      <label class="who-option {% if values.patient_id == p.id|string %}selected{% endif %}">
+        <input type="radio" name="patient_id" value="{{ p.id }}"
+               {% if values.patient_id == p.id|string %}checked{% endif %}
+               required>
+        <span class="who-avatar">{{ initials }}</span>
+        <span class="who-info">
+          <span class="who-name">{{ p.display_name }}</span>
+          {% if p.relationship %}
+            <span class="who-rel">{{ p.relationship | title }}</span>
+          {% endif %}
+          {% if p.date_of_birth %}
+            <span class="who-dob sub">DOB {{ p.date_of_birth }}</span>
+          {% endif %}
+        </span>
+      </label>
+    {% endfor %}
+  </div>
+</fieldset>

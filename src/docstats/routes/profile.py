@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from docstats.auth import require_user
 from docstats.client import NPPESClient, NPPESError
 from docstats.domain import audit
+from docstats.domain.family import RELATIONSHIP_VALUES
 from docstats.domain.orgs import has_role_at_least
 from docstats.domain.staff_access import DEFAULT_TTL_SECONDS, TTL_OPTIONS
 from docstats.phi import require_phi_consent
@@ -23,6 +24,8 @@ from docstats.routes.ehr import _ehr_vendor_ui_list
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
+from docstats.storage_base import normalize_email
+from docstats.validators import validate_email, ValidationError
 from docstats.storage_files import (
     MimeSniffError,
     StorageFileBackend,
@@ -111,6 +114,24 @@ async def profile(
         file_backend, user_for_template.get("signature_image_ref")
     )
 
+    # Family data (patients accounts only)
+    family_patients = []
+    family_links = []
+    linked_users_by_id: dict[int, dict] = {}
+    if user_for_template.get("account_type") == "patient":
+        from docstats.scope import Scope as _Scope
+        solo_scope = _Scope(user_id=user_id)
+        all_patients = storage.list_patients(solo_scope, limit=50)
+        # family_patients = dependent profiles (not the user's own self-profile)
+        family_patients = [p for p in all_patients if p.relationship is not None]
+        family_links = storage.list_family_links(user_id)
+        for link in family_links:
+            other_id = link.linked_user_id if link.initiator_user_id == user_id else link.initiator_user_id
+            if other_id not in linked_users_by_id:
+                other = storage.get_user_by_id(other_id)
+                if other:
+                    linked_users_by_id[other_id] = other
+
     return render(
         "profile.html",
         {
@@ -130,6 +151,14 @@ async def profile(
             "signature_image_url": signature_image_url,
             "signature_saved": signature_saved,
             "signature_error": signature_error,
+            "family_patients": family_patients,
+            "family_links": family_links,
+            "linked_users_by_id": linked_users_by_id,
+            "relationship_values": RELATIONSHIP_VALUES,
+            "family_errors": None,
+            "family_link_errors": None,
+            "dep_values": None,
+            "link_values": None,
         },
     )
 
@@ -615,3 +644,272 @@ async def profile_delete_account(
         resp.headers["HX-Redirect"] = "/?deleted=1"
         return resp
     return RedirectResponse("/?deleted=1", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Family management (patient accounts)
+# ---------------------------------------------------------------------------
+
+def _family_profile_context(
+    request: Request,
+    current_user: dict,
+    storage: StorageBase,
+    *,
+    family_errors: list[str] | None = None,
+    family_link_errors: list[str] | None = None,
+    dep_values: dict | None = None,
+    link_values: dict | None = None,
+) -> dict:
+    """Build the context dict needed to re-render the full profile page with family errors."""
+    from docstats.scope import Scope as _Scope
+    user_id = current_user["id"]
+    solo_scope = _Scope(user_id=user_id)
+    all_patients = storage.list_patients(solo_scope, limit=50)
+    family_patients = [p for p in all_patients if p.relationship is not None]
+    family_links = storage.list_family_links(user_id)
+    linked_users_by_id: dict[int, dict] = {}
+    for link in family_links:
+        other_id = link.linked_user_id if link.initiator_user_id == user_id else link.initiator_user_id
+        if other_id not in linked_users_by_id:
+            other = storage.get_user_by_id(other_id)
+            if other:
+                linked_users_by_id[other_id] = other
+    return {
+        "request": request,
+        "active_page": "profile",
+        "saved_count": saved_count(storage, user_id),
+        "user": current_user,
+        "pcp_provider": None,
+        "mapbox_token": MAPBOX_TOKEN,
+        "delete_error": None,
+        "active_grant": storage.get_active_staff_access_grant(user_id),
+        "ttl_options": TTL_OPTIONS,
+        "ehr_enabled": False,
+        "ehr_error": None,
+        "ehr_vendors": [],
+        "us_states": US_STATES,
+        "signature_image_url": None,
+        "signature_saved": False,
+        "signature_error": None,
+        "family_patients": family_patients,
+        "family_links": family_links,
+        "linked_users_by_id": linked_users_by_id,
+        "relationship_values": RELATIONSHIP_VALUES,
+        "family_errors": family_errors,
+        "family_link_errors": family_link_errors,
+        "dep_values": dep_values,
+        "link_values": link_values,
+    }
+
+
+@router.post("/profile/family/dependent", response_class=HTMLResponse)
+async def family_add_dependent(
+    request: Request,
+    first_name: str = Form(..., max_length=100),
+    last_name: str = Form(..., max_length=100),
+    date_of_birth: str | None = Form(None, max_length=10),
+    relationship: str = Form(..., max_length=64),
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    if current_user.get("account_type") != "patient":
+        raise HTTPException(status_code=403, detail="Patient account required.")
+
+    from docstats.domain.family import RELATIONSHIP_VALUES as _REL
+    from docstats.scope import Scope as _Scope
+
+    errors: list[str] = []
+    first_name = first_name.strip()
+    last_name = last_name.strip()
+    if not first_name:
+        errors.append("First name is required.")
+    if not last_name:
+        errors.append("Last name is required.")
+    if relationship not in _REL:
+        errors.append("Invalid relationship value.")
+
+    dob: str | None = None
+    if date_of_birth:
+        dob = date_of_birth.strip() or None
+
+    if errors:
+        return render(
+            "profile.html",
+            _family_profile_context(
+                request, current_user, storage,
+                family_errors=errors,
+                dep_values={"first_name": first_name, "last_name": last_name,
+                            "date_of_birth": dob, "relationship": relationship},
+            ),
+        )
+
+    scope = _Scope(user_id=current_user["id"])
+    storage.create_patient(
+        scope,
+        first_name=first_name,
+        last_name=last_name,
+        date_of_birth=dob,
+        relationship=relationship,
+        created_by_user_id=current_user["id"],
+    )
+
+    if request.headers.get("HX-Request"):
+        resp = Response(status_code=200)
+        resp.headers["HX-Redirect"] = "/profile#family-section"
+        return resp
+    return RedirectResponse("/profile#family-section", status_code=303)
+
+
+@router.delete("/profile/family/dependent/{patient_id}", response_class=HTMLResponse)
+async def family_remove_dependent(
+    patient_id: int,
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    if current_user.get("account_type") != "patient":
+        raise HTTPException(status_code=403, detail="Patient account required.")
+
+    from docstats.scope import Scope as _Scope
+    scope = _Scope(user_id=current_user["id"])
+    patient = storage.get_patient(scope, patient_id)
+    if not patient or patient.relationship is None:
+        raise HTTPException(status_code=404)
+
+    # Check for active referrals before deleting
+    referrals = storage.list_referrals(scope, patient_id=patient_id, limit=1)
+    if referrals:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot remove a dependent who has existing referrals.",
+        )
+
+    storage.soft_delete_patient(scope, patient_id)
+    return HTMLResponse("", status_code=200)
+
+
+@router.post("/profile/family/invite", response_class=HTMLResponse)
+async def family_send_invite(
+    request: Request,
+    email: str = Form(..., max_length=320),
+    relationship: str = Form(..., max_length=64),
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    if current_user.get("account_type") != "patient":
+        raise HTTPException(status_code=403, detail="Patient account required.")
+
+    from docstats.domain.family import RELATIONSHIP_VALUES as _REL
+    import secrets as _secrets
+
+    errors: list[str] = []
+    try:
+        email_clean = validate_email(email)
+    except ValidationError as e:
+        errors.append(str(e))
+        email_clean = email.strip()
+
+    if relationship not in _REL:
+        errors.append("Invalid relationship value.")
+
+    if email_clean and normalize_email(email_clean) == normalize_email(current_user.get("email", "")):
+        errors.append("You can't invite yourself.")
+
+    if errors:
+        return render(
+            "profile.html",
+            _family_profile_context(
+                request, current_user, storage,
+                family_link_errors=errors,
+                link_values={"email": email_clean, "relationship": relationship},
+            ),
+        )
+
+    token = _secrets.token_urlsafe(32)
+    user_id = current_user["id"]
+
+    # Check if a pending invite already exists to this email from this user
+    existing_links = storage.list_family_links(user_id)
+    for link in existing_links:
+        if link.is_pending() and link.invite_email and normalize_email(link.invite_email) == normalize_email(email_clean):
+            errors.append(f"A pending invitation already exists for {email_clean}.")
+            return render(
+                "profile.html",
+                _family_profile_context(
+                    request, current_user, storage,
+                    family_link_errors=errors,
+                    link_values={"email": email_clean, "relationship": relationship},
+                ),
+            )
+
+    # Check if the invited user exists and create a pending link
+    invited_user = storage.get_user_by_email(normalize_email(email_clean))
+    linked_user_id = invited_user["id"] if invited_user else 0
+
+    if linked_user_id:
+        storage.create_family_link(
+            initiator_user_id=user_id,
+            linked_user_id=linked_user_id,
+            relationship=relationship,
+            invite_token=token,
+            invite_email=email_clean,
+        )
+    else:
+        # Store with linked_user_id=0 as sentinel — will be resolved on accept
+        # For MVP, require the invited user to already have an account.
+        errors.append(
+            f"{email_clean} doesn't have a referme.help account yet. "
+            "Ask them to sign up first, then send the invite."
+        )
+        return render(
+            "profile.html",
+            _family_profile_context(
+                request, current_user, storage,
+                family_link_errors=errors,
+                link_values={"email": email_clean, "relationship": relationship},
+            ),
+        )
+
+    base = str(request.base_url).rstrip("/")
+    invite_url = f"{base}/profile/family/accept/{token}"
+
+    if request.headers.get("HX-Request"):
+        resp = Response(status_code=200)
+        resp.headers["HX-Redirect"] = f"/profile?invite_sent=1&invite_url={invite_url}#family-section"
+        return resp
+    return RedirectResponse(
+        f"/profile?invite_sent=1&invite_url={invite_url}#family-section", status_code=303
+    )
+
+
+@router.get("/profile/family/accept/{token}", response_class=HTMLResponse)
+async def family_accept_invite(
+    token: str,
+    request: Request,
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    link = storage.get_family_link_by_token(token)
+    if not link or not link.is_pending():
+        raise HTTPException(status_code=404, detail="Invitation not found or already used.")
+
+    # The accepting user must be the linked_user
+    if link.linked_user_id != current_user["id"]:
+        raise HTTPException(
+            status_code=403,
+            detail="This invitation was sent to a different account.",
+        )
+
+    storage.accept_family_link(link.id, current_user["id"])
+    return RedirectResponse("/profile?family_accepted=1#family-section", status_code=303)
+
+
+@router.delete("/profile/family/link/{link_id}", response_class=HTMLResponse)
+async def family_revoke_link(
+    link_id: int,
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    revoked = storage.revoke_family_link(link_id, current_user["id"])
+    if not revoked:
+        raise HTTPException(status_code=404)
+    return HTMLResponse("", status_code=200)

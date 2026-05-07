@@ -66,6 +66,7 @@ from docstats.domain.eligibility import AvailityPayer, EligibilityCheck, Eligibi
 from docstats.domain.prior_auth import PriorAuthSubmission
 from docstats.domain.sessions import Session
 from docstats.domain.ehr import EHRConnection
+from docstats.domain.family import FamilyLink
 from docstats.domain.staff_access import StaffAccessGrant
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.scope import Scope, ScopeRequired
@@ -170,6 +171,7 @@ def _row_to_patient(row: dict) -> Patient:
         emergency_contact_phone=row.get("emergency_contact_phone"),
         notes=row.get("notes"),
         ehr_fhir_id=row.get("ehr_fhir_id"),
+        relationship=row.get("relationship"),
         created_by_user_id=row.get("created_by_user_id"),
         created_at=created,
         updated_at=updated,
@@ -1765,6 +1767,7 @@ class PostgresStorage(StorageBase):
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
         ehr_fhir_id: str | None = None,
+        relationship: str | None = None,
         created_by_user_id: int | None = None,
     ) -> Patient:
         self._require_scoped(scope)
@@ -1790,6 +1793,7 @@ class PostgresStorage(StorageBase):
             "emergency_contact_phone": emergency_contact_phone,
             "notes": notes,
             "ehr_fhir_id": ehr_fhir_id,
+            "relationship": relationship,
             "created_by_user_id": created_by_user_id,
             "created_at": _now_iso(),
             "updated_at": _now_iso(),
@@ -1866,6 +1870,7 @@ class PostgresStorage(StorageBase):
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
         ehr_fhir_id: str | None = None,
+        relationship: str | None = None,
     ) -> Patient | None:
         fields: dict[str, Any] = {
             k: v
@@ -1889,6 +1894,7 @@ class PostgresStorage(StorageBase):
                 "emergency_contact_phone": emergency_contact_phone,
                 "notes": notes,
                 "ehr_fhir_id": ehr_fhir_id,
+                "relationship": relationship,
             }.items()
             if v is not None
         }
@@ -4371,6 +4377,98 @@ class PostgresStorage(StorageBase):
         query = query.order("created_at", desc=True).order("id", desc=True).limit(limit)
         result = query.execute()
         return [self._row_to_prior_auth(r) for r in result.data]
+
+    # --- Family links ---
+
+    @staticmethod
+    def _row_to_family_link(row: dict) -> FamilyLink:
+        return FamilyLink(
+            id=int(row["id"]),
+            initiator_user_id=int(row["initiator_user_id"]),
+            linked_user_id=int(row["linked_user_id"]),
+            relationship=row["relationship"],
+            invite_token=row.get("invite_token"),
+            invite_email=row.get("invite_email"),
+            accepted_at=_parse_ts(row.get("accepted_at")),
+            revoked_at=_parse_ts(row.get("revoked_at")),
+            created_at=_parse_ts(row["created_at"]) or datetime.now(tz=timezone.utc),
+        )
+
+    def create_family_link(
+        self,
+        initiator_user_id: int,
+        linked_user_id: int,
+        relationship: str,
+        invite_token: str,
+        invite_email: str,
+    ) -> FamilyLink:
+        row = {
+            "initiator_user_id": initiator_user_id,
+            "linked_user_id": linked_user_id,
+            "relationship": relationship,
+            "invite_token": invite_token,
+            "invite_email": invite_email,
+            "created_at": _now_iso(),
+        }
+        result = self._t("family_links").insert(row).execute()
+        return self._row_to_family_link(result.data[0])
+
+    def get_family_link_by_token(self, token: str) -> FamilyLink | None:
+        result = (
+            self._t("family_links")
+            .select("*")
+            .eq("invite_token", token)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        return self._row_to_family_link(result.data[0]) if result.data else None
+
+    def get_family_link(
+        self, initiator_user_id: int, linked_user_id: int
+    ) -> FamilyLink | None:
+        result = (
+            self._t("family_links")
+            .select("*")
+            .eq("initiator_user_id", initiator_user_id)
+            .eq("linked_user_id", linked_user_id)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        return self._row_to_family_link(result.data[0]) if result.data else None
+
+    def list_family_links(self, user_id: int) -> list[FamilyLink]:
+        result = (
+            self._t("family_links")
+            .select("*")
+            .or_(f"initiator_user_id.eq.{user_id},linked_user_id.eq.{user_id}")
+            .is_("revoked_at", None)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return [self._row_to_family_link(r) for r in result.data]
+
+    def accept_family_link(self, link_id: int, linked_user_id: int) -> FamilyLink | None:
+        result = (
+            self._t("family_links")
+            .update({"accepted_at": _now_iso(), "invite_token": None})
+            .eq("id", link_id)
+            .eq("linked_user_id", linked_user_id)
+            .is_("accepted_at", None)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        return self._row_to_family_link(result.data[0]) if result.data else None
+
+    def revoke_family_link(self, link_id: int, user_id: int) -> bool:
+        result = (
+            self._t("family_links")
+            .update({"revoked_at": _now_iso()})
+            .eq("id", link_id)
+            .or_(f"initiator_user_id.eq.{user_id},linked_user_id.eq.{user_id}")
+            .is_("revoked_at", None)
+            .execute()
+        )
+        return bool(result.data)
 
     def close(self) -> None:
         pass  # supabase-py client has no close method
