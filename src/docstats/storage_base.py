@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from docstats.domain.eligibility import AvailityPayer, EligibilityCheck
     from docstats.domain.prior_auth import PriorAuthSubmission
     from docstats.domain.ehr import EHRConnection
+    from docstats.domain.family import FamilyLink
     from docstats.domain.staff_access import StaffAccessGrant
     from docstats.scope import Scope
 
@@ -640,6 +641,7 @@ class StorageBase(ABC):
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
         ehr_fhir_id: str | None = None,
+        relationship: str | None = None,
         created_by_user_id: int | None = None,
     ) -> "Patient": ...
 
@@ -683,6 +685,7 @@ class StorageBase(ABC):
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
         ehr_fhir_id: str | None = None,
+        relationship: str | None = None,
     ) -> "Patient | None": ...
 
     @abstractmethod
@@ -1764,3 +1767,35 @@ class StorageBase(ABC):
         limit: int = 20,
     ) -> "list[PriorAuthSubmission]":
         """Return prior-auth submissions for a referral, newest-first."""
+
+    # --- Family links ---
+
+    @abstractmethod
+    def create_family_link(
+        self,
+        initiator_user_id: int,
+        linked_user_id: int,
+        relationship: str,
+        invite_token: str,
+        invite_email: str,
+    ) -> "FamilyLink": ...
+
+    @abstractmethod
+    def get_family_link_by_token(self, token: str) -> "FamilyLink | None": ...
+
+    @abstractmethod
+    def get_family_link(
+        self, initiator_user_id: int, linked_user_id: int
+    ) -> "FamilyLink | None": ...
+
+    @abstractmethod
+    def list_family_links(self, user_id: int) -> "list[FamilyLink]":
+        """Return all active or pending links where user is initiator or linked."""
+
+    @abstractmethod
+    def accept_family_link(self, link_id: int, linked_user_id: int) -> "FamilyLink | None":
+        """Mark the link accepted; clears invite_token."""
+
+    @abstractmethod
+    def revoke_family_link(self, link_id: int, user_id: int) -> bool:
+        """Revoke the link. Either side can revoke. Returns True if revoked."""

@@ -1,0 +1,164 @@
+{# "People I manage" section on the profile page — patient accounts only.
+   Context vars: family_patients (list[Patient]), family_links (list[FamilyLink]),
+   linked_users_by_id (dict[int, dict]), family_errors (list[str]|None),
+   family_link_errors (list[str]|None). #}
+
+<div class="card" id="family-section">
+  <h2 style="margin-bottom: 0.25rem;">People I manage</h2>
+  <p class="sub" style="margin-bottom: 1rem;">Add family members so you can request referrals on their behalf.</p>
+
+  {% if family_errors %}
+    <div class="alert alert-error" style="margin-bottom: 1rem;">
+      <ul>{% for e in family_errors %}<li>{{ e }}</li>{% endfor %}</ul>
+    </div>
+  {% endif %}
+  {% if family_link_errors %}
+    <div class="alert alert-error" style="margin-bottom: 1rem;">
+      <ul>{% for e in family_link_errors %}<li>{{ e }}</li>{% endfor %}</ul>
+    </div>
+  {% endif %}
+
+  {# Self row #}
+  <div class="family-row">
+    {% set initials = ((user.first_name[0] if user.first_name else '') ~ (user.last_name[0] if user.last_name else '')) | upper or '?' %}
+    <span class="who-avatar">{{ initials }}</span>
+    <span class="who-info">
+      <span class="who-name">{{ ((user.first_name ~ ' ' ~ user.last_name) if user.first_name and user.last_name else user.display_name) or user.email }}</span>
+      <span class="badge badge-primary">Primary</span>
+    </span>
+  </div>
+
+  {# Dependent (minor) patient rows #}
+  {% for p in family_patients %}
+    {% set initials = (p.first_name[0] ~ p.last_name[0]) | upper %}
+    <div class="family-row" id="dep-row-{{ p.id }}">
+      <span class="who-avatar">{{ initials }}</span>
+      <span class="who-info">
+        <span class="who-name">{{ p.display_name }}</span>
+        <span class="badge badge-secondary">Dependent{% if p.relationship %} · {{ p.relationship | title }}{% endif %}</span>
+        {% if p.date_of_birth %}<span class="sub">DOB {{ p.date_of_birth }}</span>{% endif %}
+      </span>
+      <span class="row-actions">
+        <button class="btn btn-danger btn-sm"
+                hx-delete="/profile/family/dependent/{{ p.id }}"
+                hx-target="#dep-row-{{ p.id }}"
+                hx-swap="outerHTML swap:300ms"
+                hx-confirm="Remove {{ p.display_name }} from your account?">✕</button>
+      </span>
+    </div>
+  {% endfor %}
+
+  {# Linked adult account rows #}
+  {% for link in family_links %}
+    {% if link.is_pending() %}
+      <div class="family-row family-row-pending" id="link-row-{{ link.id }}">
+        <span class="who-avatar muted">?</span>
+        <span class="who-info">
+          <span class="who-name">{{ link.invite_email }}</span>
+          <span class="badge badge-warn">Invited · {{ link.relationship | title }}</span>
+        </span>
+        <span class="row-actions">
+          <button class="btn btn-secondary btn-sm"
+                  hx-delete="/profile/family/link/{{ link.id }}"
+                  hx-target="#link-row-{{ link.id }}"
+                  hx-swap="outerHTML swap:300ms">Cancel</button>
+        </span>
+      </div>
+    {% elif link.is_active() %}
+      {% set other_id = link.linked_user_id if link.initiator_user_id == user.id else link.initiator_user_id %}
+      {% set other = linked_users_by_id.get(other_id) %}
+      {% set other_name = ((other.first_name ~ ' ' ~ other.last_name) if other and other.first_name and other.last_name else (other.display_name if other else link.invite_email or 'Unknown')) %}
+      {% set other_initials = ((other.first_name[0] ~ other.last_name[0]) | upper) if other and other.first_name and other.last_name else '?' %}
+      <div class="family-row" id="link-row-{{ link.id }}">
+        <span class="who-avatar">{{ other_initials }}</span>
+        <span class="who-info">
+          <span class="who-name">{{ other_name }}</span>
+          <span class="badge badge-secondary">Linked · {{ link.relationship | title }}</span>
+        </span>
+        <span class="row-actions">
+          <button class="btn btn-danger btn-sm"
+                  hx-delete="/profile/family/link/{{ link.id }}"
+                  hx-target="#link-row-{{ link.id }}"
+                  hx-swap="outerHTML swap:300ms"
+                  hx-confirm="Remove this family connection?">✕</button>
+        </span>
+      </div>
+    {% endif %}
+  {% endfor %}
+
+  {# Add family member — expands inline #}
+  <details class="family-add" {% if family_errors or family_link_errors %}open{% endif %}>
+    <summary class="btn btn-secondary btn-sm" style="margin-top: 0.75rem; display: inline-flex;">+ Add family member</summary>
+    <div class="family-add-body" style="margin-top: 0.75rem;">
+      <div class="grid-2" style="gap: 0.5rem; margin-bottom: 0.5rem;">
+        <button type="button" class="btn btn-secondary family-tab active" data-target="dep-form">Minor / dependent</button>
+        <button type="button" class="btn btn-secondary family-tab" data-target="link-form">Adult (invite by email)</button>
+      </div>
+
+      {# Dependent (minor) form #}
+      <form method="post" action="/profile/family/dependent" class="patient-form" id="dep-form" style="margin-top: 0.5rem;">
+        <div class="grid-2">
+          <label>First name *
+            <input type="text" name="first_name" required maxlength="100"
+                   value="{{ dep_values.first_name if dep_values else '' }}">
+          </label>
+          <label>Last name *
+            <input type="text" name="last_name" required maxlength="100"
+                   value="{{ dep_values.last_name if dep_values else '' }}">
+          </label>
+          <label>Date of birth
+            <input type="date" name="date_of_birth"
+                   value="{{ dep_values.date_of_birth if dep_values else '' }}">
+          </label>
+          <label>Relationship *
+            <select name="relationship" required>
+              <option value="">— choose —</option>
+              {% for r in relationship_values %}
+                <option value="{{ r }}" {% if dep_values and dep_values.relationship == r %}selected{% endif %}>{{ r | title }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <div class="action-bar" style="margin-top: 0.5rem;">
+          <button type="submit" class="btn btn-primary btn-sm">Add dependent</button>
+        </div>
+      </form>
+
+      {# Adult invite form #}
+      <form method="post" action="/profile/family/invite" class="patient-form" id="link-form" style="display: none; margin-top: 0.5rem;">
+        <div class="grid-2">
+          <label>Email address *
+            <input type="email" name="email" required maxlength="320"
+                   value="{{ link_values.email if link_values else '' }}">
+          </label>
+          <label>Relationship *
+            <select name="relationship" required>
+              <option value="">— choose —</option>
+              {% for r in relationship_values %}
+                <option value="{{ r }}" {% if link_values and link_values.relationship == r %}selected{% endif %}>{{ r | title }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <div class="action-bar" style="margin-top: 0.5rem;">
+          <button type="submit" class="btn btn-primary btn-sm">Send invite</button>
+        </div>
+      </form>
+    </div>
+  </details>
+</div>
+
+<script>
+(function () {
+  var tabs = document.querySelectorAll('.family-tab');
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      tabs.forEach(function (t) { t.classList.remove('active'); });
+      tab.classList.add('active');
+      var target = tab.dataset.target;
+      document.getElementById('dep-form').style.display = target === 'dep-form' ? '' : 'none';
+      document.getElementById('link-form').style.display = target === 'link-form' ? '' : 'none';
+    });
+  });
+})();
+</script>
