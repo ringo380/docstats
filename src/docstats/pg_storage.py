@@ -4437,15 +4437,31 @@ class PostgresStorage(StorageBase):
         return self._row_to_family_link(result.data[0]) if result.data else None
 
     def list_family_links(self, user_id: int) -> list[FamilyLink]:
-        result = (
+        # Fetch by each side separately to avoid interpolating user_id into
+        # supabase-py .or_() (CLAUDE.md: never interpolate user input into .or_()).
+        r1 = (
             self._t("family_links")
             .select("*")
-            .or_(f"initiator_user_id.eq.{user_id},linked_user_id.eq.{user_id}")
+            .eq("initiator_user_id", user_id)
             .is_("revoked_at", None)
-            .order("created_at", desc=True)
             .execute()
         )
-        return [self._row_to_family_link(r) for r in result.data]
+        r2 = (
+            self._t("family_links")
+            .select("*")
+            .eq("linked_user_id", user_id)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        seen: set[int] = set()
+        links: list[FamilyLink] = []
+        for row in r1.data + r2.data:
+            rid = int(row["id"])
+            if rid not in seen:
+                seen.add(rid)
+                links.append(self._row_to_family_link(row))
+        links.sort(key=lambda lnk: lnk.created_at, reverse=True)
+        return links
 
     def accept_family_link(self, link_id: int, linked_user_id: int) -> FamilyLink | None:
         result = (
@@ -4460,12 +4476,24 @@ class PostgresStorage(StorageBase):
         return self._row_to_family_link(result.data[0]) if result.data else None
 
     def revoke_family_link(self, link_id: int, user_id: int) -> bool:
+        # Fetch first to verify user is a party to this link — avoids interpolating
+        # user_id into .or_() (CLAUDE.md: never interpolate user input into .or_()).
+        check = (
+            self._t("family_links")
+            .select("initiator_user_id,linked_user_id")
+            .eq("id", link_id)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        if not check.data:
+            return False
+        row = check.data[0]
+        if int(row["initiator_user_id"]) != user_id and int(row["linked_user_id"]) != user_id:
+            return False
         result = (
             self._t("family_links")
             .update({"revoked_at": _now_iso()})
             .eq("id", link_id)
-            .or_(f"initiator_user_id.eq.{user_id},linked_user_id.eq.{user_id}")
-            .is_("revoked_at", None)
             .execute()
         )
         return bool(result.data)

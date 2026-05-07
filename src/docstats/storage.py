@@ -5648,7 +5648,7 @@ class Storage(StorageBase):
         try:
             self._conn.execute("ALTER TABLE patients ADD COLUMN relationship TEXT")
             self._conn.commit()
-        except Exception:
+        except sqlite3.OperationalError:
             pass  # column already exists
 
     def _migrate_family_links(self) -> None:
@@ -5735,13 +5735,15 @@ class Storage(StorageBase):
         return [self._row_to_family_link(r) for r in rows]
 
     def accept_family_link(self, link_id: int, linked_user_id: int) -> FamilyLink | None:
-        self._conn.execute(
+        cursor = self._conn.execute(
             """UPDATE family_links
                SET accepted_at = datetime('now'), invite_token = NULL
                WHERE id = ? AND linked_user_id = ? AND accepted_at IS NULL AND revoked_at IS NULL""",
             (link_id, linked_user_id),
         )
         self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
         row = self._conn.execute(
             "SELECT * FROM family_links WHERE id = ?", (link_id,)
         ).fetchone()

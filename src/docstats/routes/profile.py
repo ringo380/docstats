@@ -674,6 +674,7 @@ def _family_profile_context(
             other = storage.get_user_by_id(other_id)
             if other:
                 linked_users_by_id[other_id] = other
+    ehr_vendors = _ehr_vendor_ui_list(user_id, storage)
     return {
         "request": request,
         "active_page": "profile",
@@ -684,9 +685,9 @@ def _family_profile_context(
         "delete_error": None,
         "active_grant": storage.get_active_staff_access_grant(user_id),
         "ttl_options": TTL_OPTIONS,
-        "ehr_enabled": False,
+        "ehr_enabled": bool(ehr_vendors),
         "ehr_error": None,
-        "ehr_vendors": [],
+        "ehr_vendors": ehr_vendors,
         "us_states": US_STATES,
         "signature_image_url": None,
         "signature_saved": False,
@@ -869,16 +870,11 @@ async def family_send_invite(
             ),
         )
 
-    base = str(request.base_url).rstrip("/")
-    invite_url = f"{base}/profile/family/accept/{token}"
-
     if request.headers.get("HX-Request"):
         resp = Response(status_code=200)
-        resp.headers["HX-Redirect"] = f"/profile?invite_sent=1&invite_url={invite_url}#family-section"
+        resp.headers["HX-Redirect"] = "/profile?invite_sent=1#family-section"
         return resp
-    return RedirectResponse(
-        f"/profile?invite_sent=1&invite_url={invite_url}#family-section", status_code=303
-    )
+    return RedirectResponse("/profile?invite_sent=1#family-section", status_code=303)
 
 
 @router.get("/profile/family/accept/{token}", response_class=HTMLResponse)
