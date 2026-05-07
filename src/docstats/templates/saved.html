@@ -27,6 +27,9 @@
         <div class="info">
           <div class="name">
             <a href="/provider/{{ p.npi }}">{{ p.display_name }}</a>
+            {% if not p.visit_location_type %}
+              <a href="/provider/{{ p.npi }}#appt-addresses-section" class="badge badge-warn" title="No appointment location set">&#x26a0; Set location</a>
+            {% endif %}
           </div>
           <div class="meta">
             {% if p.specialty %}{{ p.specialty }}{% endif %}

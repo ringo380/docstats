@@ -404,6 +404,14 @@
   .badge-org { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-dark); }
   .badge-active { background: #1a3a2a; color: #68d391; }
   .badge-inactive { background: #2a2a2a; color: #718096; }
+  .badge-warn {
+    background: #3a2a14;
+    color: #f6ad55;
+    border: 1px solid #7b3f1a;
+    margin-left: 8px;
+    text-decoration: none;
+  }
+  .badge-warn:hover { background: #4a3520; }
 
   /* ── Provider detail ──────────────────────────────────────────────── */
   .provider-hgroup {
