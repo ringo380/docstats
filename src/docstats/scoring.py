@@ -138,7 +138,7 @@ def score_result(
     if query.specialty:
         spec_upper = query.specialty.upper()
         for t in result.taxonomies:
-            if spec_upper in t.desc.upper():
+            if spec_upper in (t.desc or "").upper():
                 score += 10 if t.primary else 5
                 break
 

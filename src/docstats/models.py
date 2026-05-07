@@ -111,7 +111,7 @@ class Taxonomy(BaseModel):
     """Provider taxonomy/specialty from NPPES API."""
 
     code: str = ""
-    desc: str = ""
+    desc: str | None = ""
     primary: bool = False
     license: str | None = None
     state: str | None = None
@@ -256,7 +256,7 @@ class NPIResult(BaseModel):
     @property
     def primary_specialty(self) -> str:
         t = self.primary_taxonomy
-        return t.desc if t else "Unknown"
+        return (t.desc or "Unknown") if t else "Unknown"
 
     @computed_field
     @property
