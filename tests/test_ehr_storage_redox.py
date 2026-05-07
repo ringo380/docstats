@@ -49,8 +49,7 @@ def test_create_revokes_prior_active_org_connection(storage):
         organization_id=org_id, ehr_vendor="redox", iss="dest-B/Development"
     )
     rows = storage._conn.execute(
-        "SELECT id, revoked_at FROM ehr_connections "
-        "WHERE organization_id = ? ORDER BY id",
+        "SELECT id, revoked_at FROM ehr_connections WHERE organization_id = ? ORDER BY id",
         (org_id,),
     ).fetchall()
     assert len(rows) == 2

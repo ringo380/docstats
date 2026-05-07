@@ -76,7 +76,9 @@ _TOKEN_FIELDS: frozenset[str] = frozenset(
 
 def _redact(payload: object) -> object:
     if isinstance(payload, dict):
-        return {k: ("***" if k.lower() in _TOKEN_FIELDS else _redact(v)) for k, v in payload.items()}
+        return {
+            k: ("***" if k.lower() in _TOKEN_FIELDS else _redact(v)) for k, v in payload.items()
+        }
     if isinstance(payload, list):
         return [_redact(v) for v in payload]
     return payload
@@ -150,9 +152,7 @@ def _load_private_key() -> str:
         return pem_inline
     path = os.environ.get("REDOX_PRIVATE_KEY_PATH", "").strip()
     if not path:
-        raise RedoxConfigError(
-            "Neither REDOX_PRIVATE_KEY_PEM nor REDOX_PRIVATE_KEY_PATH is set"
-        )
+        raise RedoxConfigError("Neither REDOX_PRIVATE_KEY_PEM nor REDOX_PRIVATE_KEY_PATH is set")
     try:
         with open(os.path.expanduser(path), encoding="utf-8") as f:
             return f.read()

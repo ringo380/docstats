@@ -200,9 +200,7 @@ def test_find_patient_by_mrn_returns_id(monkeypatch, redox_env):
         )
 
     _patch_httpx(monkeypatch, handler)
-    pid = redox.find_patient_by_mrn(
-        access_token="tok-x", mrn="MRN42", mrn_system="urn:oid:1.2.3"
-    )
+    pid = redox.find_patient_by_mrn(access_token="tok-x", mrn="MRN42", mrn_system="urn:oid:1.2.3")
     assert pid == "fhir-id-9"
 
 

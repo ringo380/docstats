@@ -4502,9 +4502,7 @@ class PostgresStorage(StorageBase):
         )
         return self._row_to_family_link(result.data[0]) if result.data else None
 
-    def get_family_link(
-        self, initiator_user_id: int, linked_user_id: int
-    ) -> FamilyLink | None:
+    def get_family_link(self, initiator_user_id: int, linked_user_id: int) -> FamilyLink | None:
         result = (
             self._t("family_links")
             .select("*")
@@ -4570,10 +4568,7 @@ class PostgresStorage(StorageBase):
         if int(row["initiator_user_id"]) != user_id and int(row["linked_user_id"]) != user_id:
             return False
         result = (
-            self._t("family_links")
-            .update({"revoked_at": _now_iso()})
-            .eq("id", link_id)
-            .execute()
+            self._t("family_links").update({"revoked_at": _now_iso()}).eq("id", link_id).execute()
         )
         return bool(result.data)
 

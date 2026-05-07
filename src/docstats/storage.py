@@ -5197,7 +5197,9 @@ class Storage(StorageBase):
         # Idempotent in-place migration for existing dev DBs (organization_id added
         # in migration 033). ALTER TABLE ... ADD COLUMN is a no-op error on second run.
         try:
-            self._conn.execute("ALTER TABLE ehr_connections ADD COLUMN organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE")
+            self._conn.execute(
+                "ALTER TABLE ehr_connections ADD COLUMN organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE"
+            )
         except sqlite3.OperationalError:
             pass
         # User-scoped partial unique index — widened in 023 to UNIQUE.
@@ -5813,9 +5815,7 @@ class Storage(StorageBase):
         ).fetchone()
         return self._row_to_family_link(row) if row else None
 
-    def get_family_link(
-        self, initiator_user_id: int, linked_user_id: int
-    ) -> FamilyLink | None:
+    def get_family_link(self, initiator_user_id: int, linked_user_id: int) -> FamilyLink | None:
         row = self._conn.execute(
             """SELECT * FROM family_links
                WHERE initiator_user_id = ? AND linked_user_id = ?
@@ -5844,9 +5844,7 @@ class Storage(StorageBase):
         self._conn.commit()
         if cursor.rowcount == 0:
             return None
-        row = self._conn.execute(
-            "SELECT * FROM family_links WHERE id = ?", (link_id,)
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM family_links WHERE id = ?", (link_id,)).fetchone()
         return self._row_to_family_link(row) if row else None
 
     def revoke_family_link(self, link_id: int, user_id: int) -> bool:

@@ -88,9 +88,7 @@ def org_admin(storage: Storage):
     org = storage.create_organization(name="Acme Clinic", slug="acme")
     storage.create_membership(organization_id=org.id, user_id=user_id, role="admin")
     storage.set_active_org(user_id, org.id)
-    user = _fake_user(
-        user_id, "admin@example.com", active_org_id=org.id, is_org_admin=True
-    )
+    user = _fake_user(user_id, "admin@example.com", active_org_id=org.id, is_org_admin=True)
     return user_id, org, user
 
 
@@ -113,9 +111,7 @@ def _patch_token_endpoint(monkeypatch, status: int = 200, json_body: dict | None
     real_client = httpx.Client
     monkeypatch.setattr(
         "docstats.ehr.redox.httpx.Client",
-        lambda *a, **kw: real_client(
-            *a, transport=httpx.MockTransport(handler), **kw
-        ),
+        lambda *a, **kw: real_client(*a, transport=httpx.MockTransport(handler), **kw),
     )
 
 
@@ -167,9 +163,7 @@ def test_sub_admin_gets_403(storage, redox_env, role):
     org = storage.create_organization(name="X", slug=f"x-{role}")
     storage.create_membership(organization_id=org.id, user_id=user_id, role=role)
     storage.set_active_org(user_id, org.id)
-    user = _fake_user(
-        user_id, f"{role}@example.com", active_org_id=org.id, is_org_admin=False
-    )
+    user = _fake_user(user_id, f"{role}@example.com", active_org_id=org.id, is_org_admin=False)
     try:
         resp = _client_with(storage, user).get("/ehr/redox/connect")
         assert resp.status_code == 403
@@ -288,8 +282,7 @@ def test_connect_replaces_prior_active_row(storage, org_admin, redox_env, monkey
         assert active.iss == "second/Production"
         # First row should be revoked.
         rows = storage._conn.execute(
-            "SELECT iss, revoked_at FROM ehr_connections "
-            "WHERE organization_id = ? ORDER BY id",
+            "SELECT iss, revoked_at FROM ehr_connections WHERE organization_id = ? ORDER BY id",
             (org.id,),
         ).fetchall()
         assert len(rows) == 2
@@ -326,9 +319,7 @@ def test_disconnect_idempotent(storage, org_admin, redox_env):
     """Disconnect with no active connection is a no-op (303 redirect, no audit)."""
     _, org, user = org_admin
     try:
-        resp = _client_with(storage, user).post(
-            "/ehr/redox/disconnect", follow_redirects=False
-        )
+        resp = _client_with(storage, user).post("/ehr/redox/disconnect", follow_redirects=False)
         assert resp.status_code == 303
         assert storage.get_active_org_ehr_connection(org.id, "redox") is None
     finally:
