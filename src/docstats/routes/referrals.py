@@ -586,6 +586,104 @@ async def _ehr_post_create_hook(
         logger.exception("EHR post-create hook failed for referral %s", referral.id)
 
 
+async def _redox_post_create_hook(
+    *,
+    referral: Any,
+    patient_id: int,
+    user_id: int,
+    scope: Scope,
+    storage: StorageBase,
+    request: Request,
+) -> None:
+    """Post-create hook for Redox-connected orgs: ServiceRequest write-back.
+
+    Org-scoped equivalent of ``_ehr_post_create_hook`` for the SMART vendors.
+    Distinct because Redox uses backend-to-backend JWT-bearer auth, doesn't
+    use ``_maybe_refresh`` (no persisted tokens), and finds the active
+    connection via ``get_active_org_ehr_connection`` instead of the
+    user-scoped lookup.
+
+    Soft-fail: any exception is logged and swallowed so it can never break
+    referral creation. Only runs when:
+    - The org has an active Redox connection
+    - The patient has an ehr_fhir_id (set during Redox import)
+    """
+    import os as _os
+
+    from docstats.domain import audit as _audit_mod
+    from docstats.domain.ehr import REDOX_SCOPES as _REDOX_SCOPES
+    from docstats.ehr import redox as _redox
+    from docstats.ehr.registry import EHRError as _EHRError
+
+    if _os.environ.get("EHR_REDOX_ENABLED", "").strip() != "1":
+        return
+    if not scope.is_org or scope.organization_id is None:
+        return
+
+    try:
+        patient = storage.get_patient(scope, patient_id)
+        if patient is None or not patient.ehr_fhir_id:
+            return
+        # Capture into a local so mypy can narrow through the lambda below.
+        ehr_fhir_id: str = patient.ehr_fhir_id
+
+        conn = storage.get_active_org_ehr_connection(scope.organization_id, "redox")
+        if conn is None:
+            return
+
+        loop = asyncio.get_running_loop()
+        try:
+            access_token = await loop.run_in_executor(
+                None, lambda: _redox.request_access_token(scope=_REDOX_SCOPES)
+            )
+        except (_redox.RedoxConfigError, _EHRError):
+            logger.exception("Redox token mint failed for referral %s", referral.id)
+            return
+
+        try:
+            sr_id = await loop.run_in_executor(
+                None,
+                lambda: _redox.write_service_request(
+                    access_token=access_token,
+                    patient_fhir_id=ehr_fhir_id,
+                    referral_id=referral.id,
+                    specialty_desc=getattr(referral, "specialty_desc", None),
+                    reason=getattr(referral, "reason", None),
+                    requesting_provider_name=getattr(referral, "referring_provider_name", None),
+                    destination_path=conn.iss,
+                ),
+            )
+            storage.update_referral_ehr_service_request_id(referral.id, sr_id)
+            _audit_mod.record(
+                storage,
+                action="ehr.service_request_written",
+                request=request,
+                actor_user_id=user_id,
+                scope_organization_id=scope.organization_id,
+                entity_type="referral",
+                entity_id=str(referral.id),
+                metadata={
+                    "ehr_vendor": "redox",
+                    "service_request_id": sr_id,
+                    "destination_path": conn.iss,
+                },
+            )
+        except _EHRError as exc:
+            logger.exception("Redox ServiceRequest write failed for referral %s", referral.id)
+            _audit_mod.record(
+                storage,
+                action="ehr.service_request_write_failed",
+                request=request,
+                actor_user_id=user_id,
+                scope_organization_id=scope.organization_id,
+                entity_type="referral",
+                entity_id=str(referral.id),
+                metadata={"ehr_vendor": "redox", "reason": str(exc)},
+            )
+    except Exception:
+        logger.exception("Redox post-create hook failed for referral %s", referral.id)
+
+
 @router.post("", response_class=HTMLResponse)
 async def referral_create(
     request: Request,
@@ -735,8 +833,18 @@ async def referral_create(
     )
 
     # EHR clinical import + ServiceRequest write-back (soft-fail — never
-    # break referral creation on EHR errors).
+    # break referral creation on EHR errors). SMART vendors first
+    # (user-scoped Epic/Cerner/eCW), then Redox (org-scoped) — they target
+    # different connection lookups so both can run independently.
     await _ehr_post_create_hook(
+        referral=referral,
+        patient_id=patient_id,
+        user_id=current_user["id"],
+        scope=effective_scope,
+        storage=storage,
+        request=request,
+    )
+    await _redox_post_create_hook(
         referral=referral,
         patient_id=patient_id,
         user_id=current_user["id"],
