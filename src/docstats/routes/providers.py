@@ -628,6 +628,8 @@ async def provider_detail(
             "is_saved": saved is not None,
             "npi": npi,
             "saved_notes": saved_notes,
+            "saved": saved,
+            "appt_addr": _summary_addr(saved),
             "saved_count": saved_count(storage, user_id),
             "user": current_user,
         },
