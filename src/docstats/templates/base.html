@@ -33,7 +33,7 @@
       <div class="nav-links">
         {% if user %}
         <a href="/referrals" class="nav-link {% if active_page == 'referrals' %}active{% endif %}">
-          Referrals
+          {% if user.account_type == 'patient' %}My Referrals{% else %}Referrals{% endif %}
           {% if assigned_open_count and assigned_open_count > 0 %}
             <span class="nav-badge nav-badge-assigned" title="Open referrals assigned to you">{% if assigned_open_count > 99 %}99+{% else %}{{ assigned_open_count }}{% endif %}</span>
           {% endif %}
@@ -101,7 +101,7 @@
     <div id="modal-root"></div>
     <script src="/static/app.js"></script>
     <footer class="container">
-        <small>referme.help &mdash; NPI Registry lookup for HMO referrals. Data from <a href="https://npiregistry.cms.hhs.gov/" target="_blank">CMS NPPES</a>. &nbsp;·&nbsp; <a href="/privacy">Privacy &amp; HIPAA Notice</a> &nbsp;·&nbsp; <a href="/terms">Terms of Service</a></small>
+        <small>referme.help &mdash; Find specialists, request referrals, and manage your healthcare. Provider data from <a href="https://npiregistry.cms.hhs.gov/" target="_blank">CMS NPPES</a>. &nbsp;·&nbsp; <a href="/privacy">Privacy &amp; HIPAA Notice</a> &nbsp;·&nbsp; <a href="/terms">Terms of Service</a></small>
     </footer>
 </body>
 </html>

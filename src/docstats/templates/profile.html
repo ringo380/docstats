@@ -149,12 +149,12 @@
   </div>
   {% endif %}{# /Letter signature card (clinician only) #}
 
-  {# ── Connected EHRs (SMART-on-FHIR) — clinicians only ── #}
-  {% if ehr_enabled and user.account_type == 'clinician' %}
+  {# ── Connected EHRs (SMART-on-FHIR) ── #}
+  {% if ehr_enabled %}
   <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
-    <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.5rem; color:var(--text-dim);">Connected EHRs</h2>
+    <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.5rem; color:var(--text-dim);">Connected health records</h2>
     <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">
-      Connect your EHR patient portal to import demographics and clinical data into your referrals.
+      Connect your MyChart, Epic, or other patient portal to automatically fill in your health information when requesting a referral.
     </p>
     {% if ehr_error %}
       <div style="font-size:0.78rem; color:var(--red); margin-bottom:0.5rem;">

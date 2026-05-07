@@ -54,7 +54,7 @@ from docstats.routes._common import (
 from docstats.scope import Scope
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
-from docstats.validators import validate_npi
+from docstats.validators import npi_luhn_ok, validate_npi
 
 logger = logging.getLogger(__name__)
 
@@ -230,11 +230,17 @@ async def referral_intake_questions(
 @router.get("/new", response_class=HTMLResponse)
 async def referral_new_form(
     request: Request,
+    receiving_npi: str | None = Query(None, max_length=10),
     current_user: dict = Depends(require_phi_consent),
     scope: Scope = Depends(get_scope),
     storage: StorageBase = Depends(get_storage),
 ):
+    if receiving_npi is not None and not npi_luhn_ok(receiving_npi):
+        raise HTTPException(status_code=422, detail="Invalid receiving NPI")
     patients = storage.list_patients(scope, limit=200)
+    auto_patient_id: int | None = None
+    if current_user.get("account_type") == "patient" and len(patients) == 1:
+        auto_patient_id = patients[0].id
     return render(
         "referral_new.html",
         _ctx(
@@ -246,6 +252,8 @@ async def referral_new_form(
             urgency_values=URGENCY_VALUES,
             values={},
             errors=None,
+            auto_patient_id=auto_patient_id,
+            prefill_receiving_npi=receiving_npi,
         ),
     )
 
