@@ -692,6 +692,84 @@
   .appt-meta { font-size: 0.72rem; color: var(--text-dim); padding-left: 4px; }
   .appt-cta-btn { align-self: flex-start; font-size: 0.75rem; }
 
+  /* Appointment-location picker section on the detail page */
+  .appt-addresses-section .appt-section-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .appt-addresses-section .appt-section-header h3 { margin: 0; }
+  .appt-section-badge {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+  .appt-section-badge.required {
+    color: #f6ad55;
+    border-color: rgba(246, 173, 85, 0.4);
+    background: rgba(246, 173, 85, 0.08);
+  }
+  .appt-section-badge.selected {
+    color: var(--green);
+    border-color: var(--green-dark);
+    background: var(--green-bg);
+  }
+
+  .appt-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-card);
+  }
+  .appt-card.selected {
+    border-color: var(--green-dark);
+    background: var(--green-bg);
+  }
+  .appt-card-body { flex: 1; min-width: 0; font-size: 0.85rem; }
+  .appt-card-purpose {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin-bottom: 2px;
+  }
+  .appt-card-line { line-height: 1.4; }
+  .appt-card-meta { font-size: 0.78rem; color: var(--text-muted); margin-top: 2px; }
+  .appt-card-action {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .appt-selected-pill {
+    font-size: 0.75rem;
+    color: var(--green);
+    background: rgba(104, 211, 145, 0.1);
+    border: 1px solid var(--green-dark);
+    padding: 3px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .appt-card-edit { font-size: 0.7rem; padding: 2px 8px; }
+  .appt-add-different {
+    width: 100%;
+    margin-top: 4px;
+    border-style: dashed;
+    color: var(--text-muted);
+  }
+  .appt-add-different:hover { color: var(--green); border-color: var(--green-dark); }
+
   .modal-backdrop {
     position: fixed;
     inset: 0;

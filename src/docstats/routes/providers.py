@@ -49,6 +49,76 @@ def _render_appt_summary(request: Request, npi: str, provider) -> Response:
     )
 
 
+def _compute_appt_selection(provider, result) -> dict:
+    """Map the saved selection back onto the rendered NPPES address list.
+
+    Returns a context dict with three keys:
+      - selected_kind:    None | 'practice' | 'custom' | 'televisit'
+      - selected_index:   index in result.addresses to badge as selected, or None
+      - custom_unmatched: True only when kind=='custom' and no NPPES row matched
+
+    Match is case-insensitive whitespace-trimmed on address_1 — that's the
+    field set_visit_details persists when the snapshot path runs, so any row
+    chosen via "Use this" round-trips. A user who instead typed a one-off
+    address in the wizard will produce custom_unmatched=True so the section
+    can render an explicit "Custom" card at the top.
+    """
+    out: dict[str, object] = {
+        "selected_kind": None,
+        "selected_index": None,
+        "custom_unmatched": False,
+    }
+    if provider is None or result is None:
+        return out
+    vlt = provider.visit_location_type
+    if vlt is None:
+        return out
+    if vlt == "televisit":
+        out["selected_kind"] = "televisit"
+        return out
+    addrs = result.addresses or []
+    if vlt == "practice":
+        out["selected_kind"] = "practice"
+        for i, a in enumerate(addrs):
+            if a.address_purpose == "LOCATION":
+                out["selected_index"] = i
+                break
+        return out
+    if vlt == "custom":
+        out["selected_kind"] = "custom"
+        target = (provider.appt_address or "").strip().lower()
+        if target:
+            for i, a in enumerate(addrs):
+                if (a.address_1 or "").strip().lower() == target:
+                    out["selected_index"] = i
+                    return out
+        out["custom_unmatched"] = True
+    return out
+
+
+def _render_appt_addresses_section(
+    request: Request, *, npi: str, result, provider, is_saved: bool
+) -> Response:
+    """Render the appointment-location picker section in detail.html.
+
+    Reused by both the detail GET handler and the POST select handler — the
+    select route's hx-target is the section's outer div, so this returns a
+    single partial that htmx swaps in place.
+    """
+    selection = _compute_appt_selection(provider, result)
+    return render(
+        "_appt_addresses_section.html",
+        {
+            "request": request,
+            "npi": npi,
+            "result": result,
+            "provider": provider,
+            "is_saved": is_saved,
+            **selection,
+        },
+    )
+
+
 def _wizard_context(
     request: Request,
     npi: str,
@@ -396,6 +466,7 @@ _VALID_VISIT_TYPES = {"practice", "televisit", "custom"}
 async def appt_wizard_open(
     request: Request,
     npi: str = Depends(require_valid_npi),
+    start: str = "",
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):
@@ -403,6 +474,10 @@ async def appt_wizard_open(
 
     Triggered both by the search-page Save flow (via OOB swap from the save
     response) and by the Edit pencil on the rolodex summary card.
+
+    ``?start=address`` jumps straight to step 2 with visit_location_type
+    pre-set to 'custom' — used by the "+ Add a different address" tile in
+    the detail-page address picker so the user skips the Where radio.
     """
     user_id = current_user["id"]
     provider = storage.get_provider(npi, user_id)
@@ -414,6 +489,23 @@ async def appt_wizard_open(
             + npi
             + '/appt-wizard" hx-target="#modal-root" hx-swap="innerHTML">Close</button>'
             "</div></div>"
+        )
+    if start == "address":
+        # Direct-to-step-2 entry: pre-select 'custom' so the wizard's existing
+        # carry-through of visit_location_type lands the user on the address
+        # input. Don't prefill appt_address from the saved row — picking "add
+        # a different address" implies the user wants to enter a new one.
+        return render(
+            "_appt_wizard.html",
+            _wizard_context(
+                request,
+                npi,
+                step=2,
+                provider=provider,
+                visit_location_type="custom",
+                appt_phone=provider.appt_phone,
+                appt_fax=provider.appt_fax,
+            ),
         )
     return render(
         "_appt_wizard.html",
@@ -533,7 +625,7 @@ async def appt_wizard_submit(
             appt_fax=appt_fax or None,
         )
 
-        # Re-fetch so the OOB summary card reflects the canonical row.
+        # Re-fetch so OOB swaps reflect the canonical row.
         refreshed = storage.get_provider(npi, user_id)
         summary = render(
             "_appt_summary.html",
@@ -547,14 +639,102 @@ async def appt_wizard_submit(
         # Wizard form has hx-target="#modal-root" + hx-swap="innerHTML", so
         # the primary response wipes the modal. The summary card refresh
         # rides along OOB; the target #appt-{npi} only exists on the rolodex
-        # page, so on /search the OOB swap is a silent no-op (intended).
+        # page, so on /search and the detail page the OOB swap is a silent
+        # no-op there (intended).
         summary_html = summary.body.decode("utf-8")  # type: ignore[union-attr]
         oob_summary = summary_html.replace(
             f'id="appt-{npi}"', f'id="appt-{npi}" hx-swap-oob="true"', 1
         )
-        return HTMLResponse(content="" + oob_summary)
+        # Also OOB-swap the new addresses section, which lives on the detail
+        # page only. Silent no-op on rolodex/search where #appt-addresses-
+        # section isn't in the DOM.
+        oob_section = ""
+        try:
+            result = refreshed.to_npi_result() if refreshed else None
+        except Exception:  # raw_json corruption — section just doesn't refresh
+            result = None
+        if result is not None and refreshed is not None:
+            section = _render_appt_addresses_section(
+                request, npi=npi, result=result, provider=refreshed, is_saved=True
+            )
+            section_html = section.body.decode("utf-8")  # type: ignore[union-attr]
+            oob_section = section_html.replace(
+                'id="appt-addresses-section"',
+                'id="appt-addresses-section" hx-swap-oob="true"',
+                1,
+            )
+        return HTMLResponse(content="" + oob_summary + oob_section)
 
     return _open(1, error="Unexpected wizard state. Start over.")
+
+
+@router.post("/{npi}/appt-location/select", response_class=HTMLResponse)
+async def appt_location_select(
+    request: Request,
+    npi: str = Depends(require_valid_npi),
+    kind: str = Form(..., max_length=20),
+    nppes_index: str = Form("", max_length=10),
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    """One-click selection of an appointment location from the address picker.
+
+    Three pathways:
+      - kind='practice'           — selects the LOCATION-purpose NPPES row.
+        appt_* columns set NULL (referral letters render the practice
+        address from NPPES at use-time).
+      - kind='custom_from_nppes'  — snapshots a chosen non-LOCATION NPPES
+        row (typically MAILING) into appt_address/appt_suite/appt_phone/
+        appt_fax with visit_location_type='custom'. Captures the row at
+        select-time so PDFs render the snapshot, not whatever NPPES returns
+        later. Requires nppes_index.
+      - kind='televisit'          — sets visit_location_type='televisit',
+        all appt_* NULL.
+
+    Returns the rerendered _appt_addresses_section partial; the form's
+    hx-target swaps it in place.
+    """
+    user_id = current_user["id"]
+    provider = storage.get_provider(npi, user_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Save this provider first")
+
+    if kind not in {"practice", "custom_from_nppes", "televisit"}:
+        raise HTTPException(status_code=400, detail="Invalid kind")
+
+    try:
+        result = provider.to_npi_result()
+    except Exception:
+        logger.exception("Failed to rehydrate NPIResult npi=%s", npi)
+        raise HTTPException(status_code=500, detail="Provider data is corrupt") from None
+
+    if kind == "televisit":
+        storage.set_visit_details(npi, user_id, visit_location_type="televisit")
+    elif kind == "practice":
+        storage.set_visit_details(npi, user_id, visit_location_type="practice")
+    else:  # custom_from_nppes
+        try:
+            idx = int(nppes_index)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="nppes_index required") from None
+        addrs = result.addresses or []
+        if idx < 0 or idx >= len(addrs):
+            raise HTTPException(status_code=400, detail="nppes_index out of range")
+        addr = addrs[idx]
+        storage.set_visit_details(
+            npi,
+            user_id,
+            visit_location_type="custom",
+            appt_address=addr.address_1 or None,
+            appt_suite=addr.address_2 or None,
+            appt_phone=addr.formatted_phone,
+            appt_fax=addr.formatted_fax,
+        )
+
+    refreshed = storage.get_provider(npi, user_id)
+    return _render_appt_addresses_section(
+        request, npi=npi, result=result, provider=refreshed, is_saved=True
+    )
 
 
 @router.put("/{npi}/notes", response_class=HTMLResponse)
@@ -619,6 +799,7 @@ async def provider_detail(
             )
         result = fetched
 
+    selection = _compute_appt_selection(saved, result)
     return render(
         "detail.html",
         {
@@ -628,9 +809,9 @@ async def provider_detail(
             "is_saved": saved is not None,
             "npi": npi,
             "saved_notes": saved_notes,
-            "saved": saved,
-            "appt_addr": _summary_addr(saved),
+            "provider": saved,
             "saved_count": saved_count(storage, user_id),
             "user": current_user,
+            **selection,
         },
     )

@@ -1,0 +1,103 @@
+{# Appointment-location picker that subsumes the old read-only ADDRESSES section.
+
+   Anonymous / non-saved providers see the original read-only address list.
+   Saved providers see a Telehealth tile, each NPPES address as a clickable
+   card, an optional "Custom" card when the saved selection doesn't match a
+   NPPES row, and a "+ Add a different address" tile that opens the wizard
+   at step 2 (custom branch).
+
+   Variables (passed by the route at render time):
+     request           - FastAPI request
+     npi               - provider NPI
+     result            - NPIResult (always present when this include fires)
+     is_saved          - bool
+     provider          - SavedProvider | None
+     selected_kind     - None | 'practice' | 'custom' | 'televisit'
+     selected_index    - int | None — index of the matched NPPES row when
+                         selected_kind in {'practice','custom'}; None when
+                         selected_kind is 'televisit' or 'custom' didn't match
+     custom_unmatched  - bool — True when selected_kind=='custom' but no
+                         NPPES row matched (user typed a one-off address)
+   #}
+<div class="detail-section appt-addresses-section" id="appt-addresses-section">
+  <div class="appt-section-header">
+    <h3>Appointment location</h3>
+    {% if is_saved %}
+      {% if selected_kind %}
+        <span class="appt-section-badge selected">&#x2713; Set</span>
+      {% else %}
+        <span class="appt-section-badge required">Pick one to use in referrals</span>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  {% if is_saved %}
+    {# Telehealth tile #}
+    <div class="appt-card {% if selected_kind == 'televisit' %}selected{% endif %}">
+      <div class="appt-card-body">
+        <div class="appt-card-purpose">TELEHEALTH</div>
+        <div class="appt-card-line">Telehealth / virtual visits</div>
+        <div class="appt-card-meta">Referral letters print the practice address as the doctor's office of record.</div>
+      </div>
+      <div class="appt-card-action">
+        {% if selected_kind == 'televisit' %}
+          <span class="appt-selected-pill">&#x2713; Appointment location</span>
+        {% else %}
+          <button class="btn btn-secondary btn-sm" type="button"
+                  hx-post="/provider/{{ npi }}/appt-location/select"
+                  hx-vals='{"kind": "televisit"}'
+                  hx-target="#appt-addresses-section"
+                  hx-swap="outerHTML">Use this</button>
+        {% endif %}
+      </div>
+    </div>
+
+    {# Custom unmatched card — sits at top so it's obvious that's the active
+       selection. Only renders when the saved selection's appt_address didn't
+       match any NPPES row. #}
+    {% if custom_unmatched %}
+      <div class="appt-card selected">
+        <div class="appt-card-body">
+          <div class="appt-card-purpose">CUSTOM</div>
+          <div class="appt-card-line">{{ provider.appt_address | strip_us }}{% if provider.appt_suite %}, {{ provider.appt_suite }}{% endif %}</div>
+          {% if provider.appt_phone %}<div class="appt-card-meta">{{ provider.appt_phone }}</div>{% endif %}
+          {% if provider.appt_fax %}<div class="appt-card-meta">Fax: {{ provider.appt_fax }}</div>{% endif %}
+        </div>
+        <div class="appt-card-action">
+          <span class="appt-selected-pill">&#x2713; Appointment location</span>
+          <button class="btn btn-secondary btn-sm appt-card-edit" type="button"
+                  hx-get="/provider/{{ npi }}/appt-wizard"
+                  hx-target="#modal-root"
+                  hx-swap="innerHTML">Edit</button>
+        </div>
+      </div>
+    {% endif %}
+  {% endif %}
+
+  {% if result.addresses %}
+    {% for addr in result.addresses %}
+      {% if is_saved %}
+        {% set kind = 'practice' if addr.address_purpose == 'LOCATION' else 'custom_from_nppes' %}
+        {% set index = loop.index0 %}
+        {% set is_selected = selected_index is not none and selected_index == index %}
+        {% include "_appt_address_card.html" %}
+      {% else %}
+        {# Anonymous read-only fallback (matches old detail.html markup) #}
+        <div style="margin-bottom: 12px; font-size: 0.85rem;">
+          <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 4px;">{{ addr.address_purpose }}</div>
+          <div>{{ addr.address_1 }}{% if addr.address_2 %}, {{ addr.address_2 }}{% endif %}</div>
+          <div>{{ addr.city | title }}, {{ addr.state }} {{ addr.formatted_postal }}</div>
+          {% if addr.formatted_phone %}<div style="color: var(--text-muted);">{{ addr.formatted_phone }}</div>{% endif %}
+          {% if addr.formatted_fax %}<div style="color: var(--text-muted);">Fax: {{ addr.formatted_fax }}</div>{% endif %}
+        </div>
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+
+  {% if is_saved %}
+    <button class="btn btn-secondary btn-sm appt-add-different" type="button"
+            hx-get="/provider/{{ npi }}/appt-wizard?start=address"
+            hx-target="#modal-root"
+            hx-swap="innerHTML">+ Add a different address</button>
+  {% endif %}
+</div>

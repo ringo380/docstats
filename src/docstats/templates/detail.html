@@ -15,8 +15,6 @@
 
     {% if is_saved %}
       {% include "_notes.html" %}
-      {% set provider = saved %}{% set addr = appt_addr %}
-      {% include "_appt_summary.html" %}
     {% endif %}
 
     <div class="provider-hgroup {% if not result.is_individual %}org{% endif %}">
@@ -52,20 +50,7 @@
     </div>
     {% endif %}
 
-    {% if result.addresses %}
-    <div class="detail-section">
-      <h3>Addresses</h3>
-      {% for addr in result.addresses %}
-        <div style="margin-bottom: 12px; font-size: 0.85rem;">
-          <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 4px;">{{ addr.address_purpose }}</div>
-          <div>{{ addr.address_1 }}{% if addr.address_2 %}, {{ addr.address_2 }}{% endif %}</div>
-          <div>{{ addr.city | title }}, {{ addr.state }} {{ addr.formatted_postal }}</div>
-          {% if addr.formatted_phone %}<div style="color: var(--text-muted);">{{ addr.formatted_phone }}</div>{% endif %}
-          {% if addr.formatted_fax %}<div style="color: var(--text-muted);">Fax: {{ addr.formatted_fax }}</div>{% endif %}
-        </div>
-      {% endfor %}
-    </div>
-    {% endif %}
+    {% include "_appt_addresses_section.html" %}
 
     {% if result.other_names %}
     <div class="detail-section">

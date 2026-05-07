@@ -401,3 +401,160 @@ def test_saved_redirect_preserves_query_string(client):
     resp = test_client.get("/saved?utm_source=email&x=1", follow_redirects=False)
     assert resp.status_code == 301
     assert resp.headers["location"] == "/rolodex?utm_source=email&x=1"
+
+
+# ─────────────────────────────────────────────────────────────────
+# Appointment-location picker on the detail page
+# (POST /provider/{npi}/appt-location/select + ?start=address wizard
+# entry + match-back highlighting in the section partial).
+# ─────────────────────────────────────────────────────────────────
+
+
+def test_appt_location_select_practice_writes_practice_kind(client):
+    test_client, storage, _, user_id = client
+    result = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    storage.save_provider(result, user_id)
+    resp = test_client.post(
+        "/provider/1234567890/appt-location/select",
+        data={"kind": "practice"},
+    )
+    assert resp.status_code == 200
+    assert 'id="appt-addresses-section"' in resp.text
+    saved = storage.get_provider("1234567890", user_id)
+    assert saved is not None
+    assert saved.visit_location_type == "practice"
+    assert saved.appt_address is None
+
+
+def test_appt_location_select_televisit_writes_televisit_kind(client):
+    test_client, storage, _, user_id = client
+    storage.save_provider(NPIResult.model_validate(SAMPLE_NPI1_RESULT), user_id)
+    resp = test_client.post(
+        "/provider/1234567890/appt-location/select",
+        data={"kind": "televisit"},
+    )
+    assert resp.status_code == 200
+    saved = storage.get_provider("1234567890", user_id)
+    assert saved.visit_location_type == "televisit"
+    assert saved.appt_address is None
+
+
+def test_appt_location_select_custom_from_nppes_snapshots_mailing_row(client):
+    """Picking the MAILING row stores visit_location_type='custom' with the
+    NPPES row's address/phone/fax snapshotted into appt_* fields."""
+    test_client, storage, _, user_id = client
+    storage.save_provider(NPIResult.model_validate(SAMPLE_NPI1_RESULT), user_id)
+    resp = test_client.post(
+        "/provider/1234567890/appt-location/select",
+        data={"kind": "custom_from_nppes", "nppes_index": "1"},
+    )
+    assert resp.status_code == 200
+    saved = storage.get_provider("1234567890", user_id)
+    assert saved.visit_location_type == "custom"
+    assert saved.appt_address == "PO BOX 9999"
+    assert saved.appt_phone == "(415) 555-1234"
+
+
+def test_appt_location_select_custom_rejects_oob_index(client):
+    test_client, storage, _, user_id = client
+    storage.save_provider(NPIResult.model_validate(SAMPLE_NPI1_RESULT), user_id)
+    resp = test_client.post(
+        "/provider/1234567890/appt-location/select",
+        data={"kind": "custom_from_nppes", "nppes_index": "99"},
+    )
+    assert resp.status_code == 400
+
+
+def test_appt_location_select_rejects_unknown_kind(client):
+    test_client, storage, _, user_id = client
+    storage.save_provider(NPIResult.model_validate(SAMPLE_NPI1_RESULT), user_id)
+    resp = test_client.post(
+        "/provider/1234567890/appt-location/select",
+        data={"kind": "bogus"},
+    )
+    assert resp.status_code == 400
+
+
+def test_appt_location_select_unknown_provider_returns_404(client):
+    test_client, _, _, _ = client
+    resp = test_client.post(
+        "/provider/9999999999/appt-location/select",
+        data={"kind": "practice"},
+    )
+    assert resp.status_code == 404
+
+
+def test_detail_page_section_marks_practice_selected_card(client):
+    """When visit_location_type='practice', the LOCATION card renders
+    with the .selected class so users see which row is active."""
+    test_client, storage, _, user_id = client
+    storage.save_provider(NPIResult.model_validate(SAMPLE_NPI1_RESULT), user_id)
+    storage.set_visit_details("1234567890", user_id, visit_location_type="practice")
+    resp = test_client.get("/provider/1234567890")
+    assert resp.status_code == 200
+    body = resp.text
+    # "Set" badge in the section header
+    assert "appt-section-badge selected" in body
+    # The LOCATION card (first NPPES row) is marked selected
+    assert "appt-card selected" in body
+
+
+def test_detail_page_section_shows_required_when_unset(client):
+    """No selection → 'Pick one to use in referrals' badge surfaces."""
+    test_client, storage, _, user_id = client
+    storage.save_provider(NPIResult.model_validate(SAMPLE_NPI1_RESULT), user_id)
+    resp = test_client.get("/provider/1234567890")
+    assert resp.status_code == 200
+    assert "appt-section-badge required" in resp.text
+    assert "Pick one to use in referrals" in resp.text
+
+
+def test_detail_page_section_renders_custom_unmatched_card(client):
+    """When the saved appt_address doesn't match any NPPES row, an explicit
+    Custom card surfaces at the top of the section with the snapshot."""
+    test_client, storage, _, user_id = client
+    storage.save_provider(NPIResult.model_validate(SAMPLE_NPI1_RESULT), user_id)
+    storage.set_visit_details(
+        "1234567890",
+        user_id,
+        visit_location_type="custom",
+        appt_address="999 SOMEWHERE ELSE BLVD",
+        appt_phone="(555) 010-2030",
+    )
+    resp = test_client.get("/provider/1234567890")
+    body = resp.text
+    assert "999 SOMEWHERE ELSE BLVD" in body
+    # The card sits above the NPPES rows and carries the .selected class
+    custom_idx = body.find("999 SOMEWHERE ELSE BLVD")
+    nppes_idx = body.find("123 MAIN STREET")
+    assert custom_idx < nppes_idx
+    assert "appt-card selected" in body
+
+
+def test_appt_wizard_start_address_opens_at_step2(client):
+    """`?start=address` skips the Where radio and lands on the address input."""
+    test_client, storage, _, user_id = client
+    storage.save_provider(NPIResult.model_validate(SAMPLE_NPI1_RESULT), user_id)
+    resp = test_client.get("/provider/1234567890/appt-wizard?start=address")
+    assert resp.status_code == 200
+    body = resp.text
+    # Step 2 marker — name="appt_address" appears as a visible input only on step 2
+    assert 'name="appt_address"' in body
+    # And visit_location_type is carried as the hidden 'custom' value
+    assert 'name="visit_location_type" value="custom"' in body
+
+
+def test_anonymous_detail_page_renders_section_read_only(client):
+    """Non-saved viewers see address rows without selection buttons."""
+    from docstats.auth import get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: None
+    test_client, storage, mock_client, _ = client
+    mock_client.async_lookup.return_value = NPIResult.model_validate(SAMPLE_NPI1_RESULT)
+    resp = test_client.get("/provider/1234567890")
+    assert resp.status_code == 200
+    body = resp.text
+    # Section still wraps addresses, but no .appt-card / Use this buttons
+    assert 'id="appt-addresses-section"' in body
+    assert "appt-card" not in body
+    assert "Use this" not in body

@@ -1,0 +1,34 @@
+{# One NPPES address row in the appointment-location picker.
+
+   Variables:
+     npi          - provider NPI
+     addr         - NPIResult Address
+     index        - 0-based index in result.addresses (used as the wire id
+                    when posting to /appt-location/select)
+     kind         - 'practice' (LOCATION row) or 'custom_from_nppes'
+     is_selected  - bool; current saved selection points at this card
+   #}
+<div class="appt-card {% if is_selected %}selected{% endif %}">
+  <div class="appt-card-body">
+    <div class="appt-card-purpose">{{ addr.address_purpose }}</div>
+    <div class="appt-card-line">{{ addr.address_1 | strip_us }}{% if addr.address_2 %}, {{ addr.address_2 }}{% endif %}</div>
+    <div class="appt-card-line">{{ addr.city | title }}, {{ addr.state }} {{ addr.formatted_postal }}</div>
+    {% if addr.formatted_phone %}<div class="appt-card-meta">{{ addr.formatted_phone }}</div>{% endif %}
+    {% if addr.formatted_fax %}<div class="appt-card-meta">Fax: {{ addr.formatted_fax }}</div>{% endif %}
+  </div>
+  <div class="appt-card-action">
+    {% if is_selected %}
+      <span class="appt-selected-pill">&#x2713; Appointment location</span>
+      <button class="btn btn-secondary btn-sm appt-card-edit" type="button"
+              hx-get="/provider/{{ npi }}/appt-wizard"
+              hx-target="#modal-root"
+              hx-swap="innerHTML">Edit phone/fax</button>
+    {% else %}
+      <button class="btn btn-secondary btn-sm" type="button"
+              hx-post="/provider/{{ npi }}/appt-location/select"
+              hx-vals='{"kind": "{{ kind }}", "nppes_index": "{{ index }}"}'
+              hx-target="#appt-addresses-section"
+              hx-swap="outerHTML">Use this</button>
+    {% endif %}
+  </div>
+</div>
