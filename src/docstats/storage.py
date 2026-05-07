@@ -65,6 +65,7 @@ from docstats.domain.prior_auth import PriorAuthSubmission
 from docstats.domain.sessions import Session
 from docstats.domain.share_tokens import ShareToken
 from docstats.domain.ehr import EHRConnection
+from docstats.domain.family import FamilyLink
 from docstats.domain.staff_access import StaffAccessGrant
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 from docstats.scope import Scope, scope_sql_clause
@@ -195,6 +196,7 @@ def _row_to_patient(row: sqlite3.Row) -> Patient:
         emergency_contact_phone=row["emergency_contact_phone"],
         notes=row["notes"],
         ehr_fhir_id=row["ehr_fhir_id"] if "ehr_fhir_id" in row.keys() else None,
+        relationship=row["relationship"] if "relationship" in row.keys() else None,
         created_by_user_id=row["created_by_user_id"],
         created_at=created,
         updated_at=updated,
@@ -619,6 +621,8 @@ class Storage(StorageBase):
         self._migrate_users_account_type()
         self._migrate_ehr_connections()
         self._migrate_prior_auth_submissions()
+        self._migrate_patients_relationship()
+        self._migrate_family_links()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -2544,6 +2548,7 @@ class Storage(StorageBase):
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
         ehr_fhir_id: str | None = None,
+        relationship: str | None = None,
         created_by_user_id: int | None = None,
     ) -> Patient:
         # scope_sql_clause raises ScopeRequired on anonymous — the explicit
@@ -2557,8 +2562,8 @@ class Storage(StorageBase):
                 pronouns, phone, email, address_line1, address_line2,
                 address_city, address_state, address_zip,
                 emergency_contact_name, emergency_contact_phone, notes,
-                ehr_fhir_id, created_by_user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ehr_fhir_id, relationship, created_by_user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 scope.user_id if scope.is_solo else None,
                 scope.organization_id if scope.is_org else None,
@@ -2581,6 +2586,7 @@ class Storage(StorageBase):
                 emergency_contact_phone,
                 notes,
                 ehr_fhir_id,
+                relationship,
                 created_by_user_id,
             ),
         )
@@ -2661,6 +2667,7 @@ class Storage(StorageBase):
         emergency_contact_phone: str | None = None,
         notes: str | None = None,
         ehr_fhir_id: str | None = None,
+        relationship: str | None = None,
     ) -> Patient | None:
         # Only pass-through the fields the caller actually set. None means
         # "don't touch" — the "clear a field" use case goes through a
@@ -2687,6 +2694,7 @@ class Storage(StorageBase):
                 "emergency_contact_phone": emergency_contact_phone,
                 "notes": notes,
                 "ehr_fhir_id": ehr_fhir_id,
+                "relationship": relationship,
             }.items()
             if v is not None
         }
@@ -5633,3 +5641,121 @@ class Storage(StorageBase):
             saved_at=datetime.fromisoformat(row["saved_at"]) if row["saved_at"] else None,
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
         )
+
+    # --- Family links ---
+
+    def _migrate_patients_relationship(self) -> None:
+        try:
+            self._conn.execute("ALTER TABLE patients ADD COLUMN relationship TEXT")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+    def _migrate_family_links(self) -> None:
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS family_links (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                initiator_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                linked_user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                relationship      TEXT NOT NULL,
+                invite_token      TEXT UNIQUE,
+                invite_email      TEXT,
+                accepted_at       TEXT,
+                revoked_at        TEXT,
+                created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        self._conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS ux_family_links_pair
+               ON family_links (initiator_user_id, linked_user_id)
+               WHERE revoked_at IS NULL"""
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def _row_to_family_link(row: sqlite3.Row) -> FamilyLink:
+        return FamilyLink(
+            id=int(row["id"]),
+            initiator_user_id=int(row["initiator_user_id"]),
+            linked_user_id=int(row["linked_user_id"]),
+            relationship=row["relationship"],
+            invite_token=row["invite_token"],
+            invite_email=row["invite_email"],
+            accepted_at=_parse_sqlite_utc(row["accepted_at"]),
+            revoked_at=_parse_sqlite_utc(row["revoked_at"]),
+            created_at=_parse_sqlite_utc(row["created_at"]) or datetime.now(tz=timezone.utc),
+        )
+
+    def create_family_link(
+        self,
+        initiator_user_id: int,
+        linked_user_id: int,
+        relationship: str,
+        invite_token: str,
+        invite_email: str,
+    ) -> FamilyLink:
+        cursor = self._conn.execute(
+            """INSERT INTO family_links
+               (initiator_user_id, linked_user_id, relationship, invite_token, invite_email)
+               VALUES (?, ?, ?, ?, ?)""",
+            (initiator_user_id, linked_user_id, relationship, invite_token, invite_email),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM family_links WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return self._row_to_family_link(row)
+
+    def get_family_link_by_token(self, token: str) -> FamilyLink | None:
+        row = self._conn.execute(
+            "SELECT * FROM family_links WHERE invite_token = ? AND revoked_at IS NULL",
+            (token,),
+        ).fetchone()
+        return self._row_to_family_link(row) if row else None
+
+    def get_family_link(
+        self, initiator_user_id: int, linked_user_id: int
+    ) -> FamilyLink | None:
+        row = self._conn.execute(
+            """SELECT * FROM family_links
+               WHERE initiator_user_id = ? AND linked_user_id = ?
+               AND revoked_at IS NULL""",
+            (initiator_user_id, linked_user_id),
+        ).fetchone()
+        return self._row_to_family_link(row) if row else None
+
+    def list_family_links(self, user_id: int) -> list[FamilyLink]:
+        rows = self._conn.execute(
+            """SELECT * FROM family_links
+               WHERE (initiator_user_id = ? OR linked_user_id = ?)
+               AND revoked_at IS NULL
+               ORDER BY created_at DESC""",
+            (user_id, user_id),
+        ).fetchall()
+        return [self._row_to_family_link(r) for r in rows]
+
+    def accept_family_link(self, link_id: int, linked_user_id: int) -> FamilyLink | None:
+        cursor = self._conn.execute(
+            """UPDATE family_links
+               SET accepted_at = datetime('now'), invite_token = NULL
+               WHERE id = ? AND linked_user_id = ? AND accepted_at IS NULL AND revoked_at IS NULL""",
+            (link_id, linked_user_id),
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM family_links WHERE id = ?", (link_id,)
+        ).fetchone()
+        return self._row_to_family_link(row) if row else None
+
+    def revoke_family_link(self, link_id: int, user_id: int) -> bool:
+        cursor = self._conn.execute(
+            """UPDATE family_links
+               SET revoked_at = datetime('now')
+               WHERE id = ? AND (initiator_user_id = ? OR linked_user_id = ?)
+               AND revoked_at IS NULL""",
+            (link_id, user_id, user_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0

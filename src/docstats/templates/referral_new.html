@@ -24,9 +24,14 @@
 {% else %}
 
 <form method="post" action="/referrals" class="patient-form">
-  {# Patient selection — hidden for solo patients, dropdown for clinicians/multiple profiles #}
+  {# Patient selection:
+     - solo patient (auto_patient_id set): hidden input, no picker shown
+     - patient with multiple profiles (family): radio picker via partial
+     - clinician / org: dropdown #}
   {% if auto_patient_id %}
     <input type="hidden" name="patient_id" value="{{ auto_patient_id }}">
+  {% elif user.account_type == 'patient' %}
+    {% include "_who_is_this_for.html" %}
   {% else %}
   <fieldset>
     <legend>Patient</legend>

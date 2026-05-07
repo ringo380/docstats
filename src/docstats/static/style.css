@@ -412,6 +412,43 @@
     text-decoration: none;
   }
   .badge-warn:hover { background: #4a3520; }
+  .badge-primary { background: #1a3a2a; color: #68d391; border: 1px solid var(--green-dark); }
+  .badge-secondary { background: var(--card-border); color: var(--text-muted); border: 1px solid var(--border); }
+
+  /* ── Who is this for? (patient referral picker) ───────────────────── */
+  .who-picker { display: flex; flex-direction: column; gap: 8px; }
+  .who-option {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px;
+    cursor: pointer; transition: border-color 0.15s;
+  }
+  .who-option:has(input:checked),
+  .who-option.selected { border-color: var(--green-dark); background: var(--green-bg); }
+  .who-option input[type="radio"] { display: none; }
+  .who-avatar {
+    width: 36px; height: 36px; border-radius: 50%;
+    background: var(--green-dark); color: var(--green);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.85rem; font-weight: 700; flex-shrink: 0;
+  }
+  .who-avatar.muted { background: var(--card-border); color: var(--text-muted); }
+  .who-info { display: flex; flex-direction: column; gap: 2px; }
+  .who-name { font-weight: 600; font-size: 0.9rem; }
+  .who-rel { font-size: 0.75rem; color: var(--text-muted); }
+  .who-dob { font-size: 0.75rem; }
+
+  /* ── Family management (profile) ─────────────────────────────────── */
+  .family-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 0; border-bottom: 1px solid var(--border);
+  }
+  .family-row:last-of-type { border-bottom: none; }
+  .family-row .row-actions { margin-left: auto; }
+  .family-row .who-info { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .family-row-pending { opacity: 0.75; }
+  .family-add summary { cursor: pointer; list-style: none; }
+  .family-add summary::-webkit-details-marker { display: none; }
+  .family-tab.active { background: var(--green-dark); color: #c6f6d5; border-color: var(--green-dark); }
 
   /* ── Provider detail ──────────────────────────────────────────────── */
   .provider-hgroup {

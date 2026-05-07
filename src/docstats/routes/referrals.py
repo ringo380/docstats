@@ -238,6 +238,19 @@ async def referral_new_form(
     if receiving_npi is not None and not npi_luhn_ok(receiving_npi):
         raise HTTPException(status_code=422, detail="Invalid receiving NPI")
     patients = storage.list_patients(scope, limit=200)
+
+    # For patient accounts: also include patients from active linked family members
+    if current_user.get("account_type") == "patient":
+        from docstats.scope import Scope as _Scope
+        user_id = current_user["id"]
+        for link in storage.list_family_links(user_id):
+            if link.is_active():
+                other_id = link.linked_user_id if link.initiator_user_id == user_id else link.initiator_user_id
+                other_scope = _Scope(user_id=other_id)
+                other_patients = storage.list_patients(other_scope, limit=50)
+                existing_ids = {p.id for p in patients}
+                patients = patients + [p for p in other_patients if p.id not in existing_ids]
+
     auto_patient_id: int | None = None
     if current_user.get("account_type") == "patient" and len(patients) == 1:
         auto_patient_id = patients[0].id
@@ -641,9 +654,31 @@ async def referral_create(
         if red_flag_hits and urgency == "routine":
             final_urgency = "urgent"
 
+    # For patient accounts, the patient_id may belong to a linked family
+    # member's scope rather than the current user's scope.  Resolve the
+    # correct owning scope so create_referral doesn't raise ValueError.
+    effective_scope = scope
+    if (
+        current_user.get("account_type") == "patient"
+        and storage.get_patient(scope, patient_id) is None
+    ):
+        user_id = current_user["id"]
+        for _link in storage.list_family_links(user_id):
+            if not _link.is_active():
+                continue
+            _other_id = (
+                _link.linked_user_id
+                if _link.initiator_user_id == user_id
+                else _link.initiator_user_id
+            )
+            _other_scope = Scope(user_id=_other_id)
+            if storage.get_patient(_other_scope, patient_id) is not None:
+                effective_scope = _other_scope
+                break
+
     try:
         referral = storage.create_referral(
-            scope,
+            effective_scope,
             patient_id=patient_id,
             reason=reason_clean,
             clinical_question=_clean(clinical_question),
@@ -666,7 +701,7 @@ async def referral_create(
     if final_urgency != urgency:
         try:
             storage.record_referral_event(
-                scope,
+                effective_scope,
                 referral.id,
                 event_type="field_edited",
                 from_value=urgency,
@@ -682,8 +717,8 @@ async def referral_create(
         action="referral.create",
         request=request,
         actor_user_id=current_user["id"],
-        scope_user_id=scope.user_id if scope.is_solo else None,
-        scope_organization_id=scope.organization_id,
+        scope_user_id=effective_scope.user_id if effective_scope.is_solo else None,
+        scope_organization_id=effective_scope.organization_id,
         entity_type="referral",
         entity_id=str(referral.id),
         metadata={
@@ -700,7 +735,7 @@ async def referral_create(
         referral=referral,
         patient_id=patient_id,
         user_id=current_user["id"],
-        scope=scope,
+        scope=effective_scope,
         storage=storage,
         request=request,
     )
