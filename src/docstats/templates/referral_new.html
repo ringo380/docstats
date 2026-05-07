@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}New referral — referme.help{% endblock %}
+{% block title %}{% if user.account_type == 'patient' %}Request a referral{% else %}New referral{% endif %} — referme.help{% endblock %}
 
 {% block content %}
-<div class="back-link"><a href="/referrals">← Referrals</a></div>
-<h1>New referral</h1>
+<div class="back-link"><a href="/referrals">← {% if user.account_type == 'patient' %}My Referrals{% else %}Referrals{% endif %}</a></div>
+<h1>{% if user.account_type == 'patient' %}Request a referral{% else %}New referral{% endif %}</h1>
 
 {% if errors %}
   <div class="alert alert-error">
@@ -13,12 +13,21 @@
 
 {% if not patients %}
   <div class="alert">
+    {% if user.account_type == 'patient' %}
+    <p>Please complete your profile before requesting a referral.</p>
+    <p><a href="/profile" class="btn btn-primary">Go to profile</a></p>
+    {% else %}
     <p>You need at least one patient before creating a referral.</p>
     <p><a href="/patients/new" class="btn btn-primary">+ Create patient first</a></p>
+    {% endif %}
   </div>
 {% else %}
 
 <form method="post" action="/referrals" class="patient-form">
+  {# Patient selection — hidden for solo patients, dropdown for clinicians/multiple profiles #}
+  {% if auto_patient_id %}
+    <input type="hidden" name="patient_id" value="{{ auto_patient_id }}">
+  {% else %}
   <fieldset>
     <legend>Patient</legend>
     <label>Select patient *
@@ -33,16 +42,17 @@
     </label>
     <div class="sub"><a href="/patients/new">+ Add a new patient</a> (opens patient form)</div>
   </fieldset>
+  {% endif %}
 
   <fieldset>
-    <legend>Clinical reason</legend>
+    <legend>{% if user.account_type == 'patient' %}Why do you need a specialist?{% else %}Clinical reason{% endif %}</legend>
     <label>Reason for referral *
       <input type="text" name="reason" required maxlength="500" value="{{ values.reason or '' }}"
-             placeholder="e.g. Chest pain, rule out cardiac cause">
+             placeholder="{% if user.account_type == 'patient' %}e.g. Chest pain, possible heart issue{% else %}e.g. Chest pain, rule out cardiac cause{% endif %}">
     </label>
-    <label>Specific clinical question
+    <label>{% if user.account_type == 'patient' %}What would you like the specialist to address?{% else %}Specific clinical question{% endif %}
       <textarea name="clinical_question" rows="3" maxlength="2000"
-                placeholder="What question are you asking the specialist to answer?">{{ values.clinical_question or '' }}</textarea>
+                placeholder="{% if user.account_type == 'patient' %}Any additional details or questions for the specialist (optional){% else %}What question are you asking the specialist to answer?{% endif %}">{{ values.clinical_question or '' }}</textarea>
     </label>
     <div class="grid-2">
       <label>Urgency *
@@ -63,7 +73,7 @@
     <legend>Receiving specialist</legend>
     <div class="grid-2">
       <label>Provider NPI
-        <input type="text" name="receiving_provider_npi" maxlength="10" pattern="\d{10}" value="{{ values.receiving_provider_npi or '' }}"
+        <input type="text" name="receiving_provider_npi" maxlength="10" pattern="\d{10}" value="{{ prefill_receiving_npi or values.receiving_provider_npi or '' }}"
                placeholder="10 digits (optional)">
       </label>
       <label>Organization / clinic
@@ -84,20 +94,24 @@
       </label>
     </div>
     <div id="intake-panel" class="intake-panel-wrap"></div>
-    <div class="sub">Full NPPES search + typeahead arrives in Phase 2.D. For now, paste the NPI from the <a href="/" target="_blank">search page</a>.</div>
   </fieldset>
 
   <fieldset>
-    <legend>Referring side <span class="sub">(you or your practice)</span></legend>
+    <legend>{% if user.account_type == 'patient' %}Your referring doctor <span class="sub">(optional)</span>{% else %}Referring side <span class="sub">(you or your practice)</span>{% endif %}</legend>
+    {% if user.account_type == 'patient' %}
+    <p class="sub" style="margin-bottom:0.75rem;">If your PCP or another doctor referred you, add their details here so the specialist knows who to contact.</p>
+    {% endif %}
     <div class="grid-2">
-      <label>Provider name
-        <input type="text" name="referring_provider_name" maxlength="200" value="{{ values.referring_provider_name or '' }}">
+      <label>{% if user.account_type == 'patient' %}Doctor name{% else %}Provider name{% endif %}
+        <input type="text" name="referring_provider_name" maxlength="200" value="{{ values.referring_provider_name or '' }}"
+               {% if user.account_type == 'patient' %}placeholder="e.g. Dr. Sarah Chen"{% endif %}>
       </label>
-      <label>Provider NPI
+      <label>{% if user.account_type == 'patient' %}Doctor NPI{% else %}Provider NPI{% endif %}
         <input type="text" name="referring_provider_npi" maxlength="10" pattern="\d{10}" value="{{ values.referring_provider_npi or '' }}">
       </label>
-      <label>Organization
-        <input type="text" name="referring_organization" maxlength="200" value="{{ values.referring_organization or '' }}">
+      <label>{% if user.account_type == 'patient' %}Practice / clinic name{% else %}Organization{% endif %}
+        <input type="text" name="referring_organization" maxlength="200" value="{{ values.referring_organization or '' }}"
+               {% if user.account_type == 'patient' %}placeholder="e.g. Palo Alto Medical Foundation"{% endif %}>
       </label>
     </div>
   </fieldset>

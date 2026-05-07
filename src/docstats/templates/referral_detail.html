@@ -22,6 +22,9 @@
     </div>
   </div>
   <div class="header-actions">
+    {% if user.account_type == 'patient' %}
+    <a class="btn btn-primary" href="/referrals/{{ referral.id }}/export.pdf?artifact=patient" target="_blank" rel="noopener">⬇ Download referral letter</a>
+    {% endif %}
     <a class="btn btn-secondary" href="/referrals/{{ referral.id }}/export">Export packet…</a>
     <details class="export-menu">
       <summary class="btn btn-secondary">Individual ▾</summary>

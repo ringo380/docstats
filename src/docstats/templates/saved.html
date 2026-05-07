@@ -42,6 +42,7 @@
           {% set npi = p.npi %}{% set provider = p %}{% set addr = row.addr %}{% include "_appt_summary.html" %}
         </div>
         <div class="row-actions">
+          <a href="/referrals/new?receiving_npi={{ p.npi }}" class="btn btn-primary btn-sm">Request referral</a>
           <a href="/provider/{{ p.npi }}/export" class="btn btn-blue btn-sm">Export</a>
           <button class="btn btn-danger btn-sm"
                   hx-delete="/provider/{{ p.npi }}/save"
