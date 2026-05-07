@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Connect Redox — referme.help{% endblock %}
+{% block content %}
+<div style="max-width:680px; margin:1.5rem auto; padding:0 1rem;">
+  <a href="/admin/org" class="back-link">← Back to organization settings</a>
+
+  <h1 style="margin-top:0.75rem;">Connect Redox</h1>
+  <p class="lede">
+    Redox is a healthcare integration aggregator that exposes ~200 EHRs
+    (Practice Fusion, Greenway, NextGen, AdvancedMD, athenahealth, and others)
+    via a single FHIR R4 API. Connect once at the organization level — every
+    member of your org will then be able to import patient demographics from
+    any covered EHR via MRN lookup.
+  </p>
+
+  {% if request.query_params.get('error') == 'token_exchange' %}
+    <div class="alert alert-error">
+      Could not authenticate with Redox. Verify <code>REDOX_CLIENT_ID</code>,
+      <code>REDOX_KEY_ID</code>, and that the keypair has been saved
+      (Save button on the Redox dashboard) before retrying.
+    </div>
+  {% elif request.query_params.get('error') == 'server_config' %}
+    <div class="alert alert-error">
+      Server is not configured for Redox. Set <code>REDOX_CLIENT_ID</code>,
+      <code>REDOX_KEY_ID</code>, and the private key
+      (<code>REDOX_PRIVATE_KEY_PEM</code> or <code>REDOX_PRIVATE_KEY_PATH</code>)
+      in the runtime environment.
+    </div>
+  {% elif request.query_params.get('error') == 'missing_destination' %}
+    <div class="alert alert-error">Destination path is required.</div>
+  {% endif %}
+
+  {% if active_connection %}
+    <div class="card" style="padding:1rem; margin-bottom:1.5rem;">
+      <h3 style="margin-top:0;">Currently connected</h3>
+      <dl style="display:grid; grid-template-columns: max-content 1fr; gap:0.4rem 1rem; margin:0;">
+        <dt><strong>Destination</strong></dt><dd><code>{{ active_connection.iss }}</code></dd>
+        <dt><strong>Connected at</strong></dt><dd>{{ active_connection.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</dd>
+        <dt><strong>Scopes</strong></dt><dd style="font-family:monospace; font-size:0.85em;">{{ active_connection.scope }}</dd>
+      </dl>
+      <form method="post" action="/ehr/redox/disconnect" style="margin-top:1rem;"
+            onsubmit="return confirm('Disconnect Redox? Members of this org will lose Redox-based patient lookup until reconnected.');">
+        <button type="submit" class="btn btn-danger">Disconnect Redox</button>
+      </form>
+    </div>
+  {% endif %}
+
+  <form method="post" action="/ehr/redox/connect" class="card" style="padding:1rem;">
+    <h3 style="margin-top:0;">{{ 'Replace connection' if active_connection else 'New connection' }}</h3>
+
+    <label for="destination_path">Destination path</label>
+    <input
+      type="text"
+      id="destination_path"
+      name="destination_path"
+      maxlength="255"
+      required
+      autocomplete="off"
+      placeholder="{{ default_destination }}"
+      value="{{ default_destination }}"
+      style="width:100%; font-family:monospace; padding:0.5rem; margin-bottom:0.4rem;"
+    >
+    <p class="form-hint">
+      This is the <code>{org}/{Environment}</code> segment of the Redox FHIR URL
+      (e.g. <code>{{ default_destination }}</code> for the built-in test sandbox,
+      or <code>your-clinic-name/Production</code> in production). Provided by
+      Redox during your destination provisioning.
+    </p>
+
+    <p class="form-hint" style="margin-top:0.8rem;">
+      Submitting will validate the OAuth credentials by minting a token with
+      the configured private key. If validation succeeds the connection is
+      saved; otherwise nothing changes.
+    </p>
+
+    <button type="submit" class="btn btn-primary">
+      {{ 'Save and replace' if active_connection else 'Connect' }}
+    </button>
+  </form>
+</div>
+{% endblock %}

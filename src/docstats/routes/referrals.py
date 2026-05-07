@@ -242,10 +242,15 @@ async def referral_new_form(
     # For patient accounts: also include patients from active linked family members
     if current_user.get("account_type") == "patient":
         from docstats.scope import Scope as _Scope
+
         user_id = current_user["id"]
         for link in storage.list_family_links(user_id):
             if link.is_active():
-                other_id = link.linked_user_id if link.initiator_user_id == user_id else link.initiator_user_id
+                other_id = (
+                    link.linked_user_id
+                    if link.initiator_user_id == user_id
+                    else link.initiator_user_id
+                )
                 other_scope = _Scope(user_id=other_id)
                 other_patients = storage.list_patients(other_scope, limit=50)
                 existing_ids = {p.id for p in patients}

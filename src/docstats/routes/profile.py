@@ -120,13 +120,16 @@ async def profile(
     linked_users_by_id: dict[int, dict] = {}
     if user_for_template.get("account_type") == "patient":
         from docstats.scope import Scope as _Scope
+
         solo_scope = _Scope(user_id=user_id)
         all_patients = storage.list_patients(solo_scope, limit=50)
         # family_patients = dependent profiles (not the user's own self-profile)
         family_patients = [p for p in all_patients if p.relationship is not None]
         family_links = storage.list_family_links(user_id)
         for link in family_links:
-            other_id = link.linked_user_id if link.initiator_user_id == user_id else link.initiator_user_id
+            other_id = (
+                link.linked_user_id if link.initiator_user_id == user_id else link.initiator_user_id
+            )
             if other_id not in linked_users_by_id:
                 other = storage.get_user_by_id(other_id)
                 if other:
@@ -650,6 +653,7 @@ async def profile_delete_account(
 # Family management (patient accounts)
 # ---------------------------------------------------------------------------
 
+
 def _family_profile_context(
     request: Request,
     current_user: dict,
@@ -662,6 +666,7 @@ def _family_profile_context(
 ) -> dict:
     """Build the context dict needed to re-render the full profile page with family errors."""
     from docstats.scope import Scope as _Scope
+
     user_id = current_user["id"]
     solo_scope = _Scope(user_id=user_id)
     all_patients = storage.list_patients(solo_scope, limit=50)
@@ -669,7 +674,9 @@ def _family_profile_context(
     family_links = storage.list_family_links(user_id)
     linked_users_by_id: dict[int, dict] = {}
     for link in family_links:
-        other_id = link.linked_user_id if link.initiator_user_id == user_id else link.initiator_user_id
+        other_id = (
+            link.linked_user_id if link.initiator_user_id == user_id else link.initiator_user_id
+        )
         if other_id not in linked_users_by_id:
             other = storage.get_user_by_id(other_id)
             if other:
@@ -737,10 +744,16 @@ async def family_add_dependent(
         return render(
             "profile.html",
             _family_profile_context(
-                request, current_user, storage,
+                request,
+                current_user,
+                storage,
                 family_errors=errors,
-                dep_values={"first_name": first_name, "last_name": last_name,
-                            "date_of_birth": dob, "relationship": relationship},
+                dep_values={
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "date_of_birth": dob,
+                    "relationship": relationship,
+                },
             ),
         )
 
@@ -771,6 +784,7 @@ async def family_remove_dependent(
         raise HTTPException(status_code=403, detail="Patient account required.")
 
     from docstats.scope import Scope as _Scope
+
     scope = _Scope(user_id=current_user["id"])
     patient = storage.get_patient(scope, patient_id)
     if not patient or patient.relationship is None:
@@ -812,14 +826,18 @@ async def family_send_invite(
     if relationship not in _REL:
         errors.append("Invalid relationship value.")
 
-    if email_clean and normalize_email(email_clean) == normalize_email(current_user.get("email", "")):
+    if email_clean and normalize_email(email_clean) == normalize_email(
+        current_user.get("email", "")
+    ):
         errors.append("You can't invite yourself.")
 
     if errors:
         return render(
             "profile.html",
             _family_profile_context(
-                request, current_user, storage,
+                request,
+                current_user,
+                storage,
                 family_link_errors=errors,
                 link_values={"email": email_clean, "relationship": relationship},
             ),
@@ -831,12 +849,18 @@ async def family_send_invite(
     # Check if a pending invite already exists to this email from this user
     existing_links = storage.list_family_links(user_id)
     for link in existing_links:
-        if link.is_pending() and link.invite_email and normalize_email(link.invite_email) == normalize_email(email_clean):
+        if (
+            link.is_pending()
+            and link.invite_email
+            and normalize_email(link.invite_email) == normalize_email(email_clean)
+        ):
             errors.append(f"A pending invitation already exists for {email_clean}.")
             return render(
                 "profile.html",
                 _family_profile_context(
-                    request, current_user, storage,
+                    request,
+                    current_user,
+                    storage,
                     family_link_errors=errors,
                     link_values={"email": email_clean, "relationship": relationship},
                 ),
@@ -864,7 +888,9 @@ async def family_send_invite(
         return render(
             "profile.html",
             _family_profile_context(
-                request, current_user, storage,
+                request,
+                current_user,
+                storage,
                 family_link_errors=errors,
                 link_values={"email": email_clean, "relationship": relationship},
             ),

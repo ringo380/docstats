@@ -1592,18 +1592,20 @@ class PostgresStorage(StorageBase):
     def _row_to_ehr_connection(row: dict) -> EHRConnection:
         created = _parse_ts(row.get("created_at"))
         updated = _parse_ts(row.get("updated_at"))
+        # expires_at is nullable for org-scoped JWT-bearer vendors (Redox).
         expires = _parse_ts(row.get("expires_at"))
-        assert created is not None and updated is not None and expires is not None
+        assert created is not None and updated is not None
         return EHRConnection(
             id=row["id"],
-            user_id=row["user_id"],
+            user_id=row.get("user_id"),
+            organization_id=row.get("organization_id"),
             ehr_vendor=row["ehr_vendor"],
             iss=row["iss"],
             patient_fhir_id=row.get("patient_fhir_id"),
-            access_token_enc=row["access_token_enc"],
+            access_token_enc=row.get("access_token_enc"),
             refresh_token_enc=row.get("refresh_token_enc"),
             expires_at=expires,
-            scope=row["scope"],
+            scope=row.get("scope"),
             revoked_at=_parse_ts(row.get("revoked_at")),
             created_at=created,
             updated_at=updated,
@@ -1700,6 +1702,83 @@ class PostgresStorage(StorageBase):
             self._t("ehr_connections")
             .update({"revoked_at": now, "updated_at": now})
             .eq("user_id", user_id)
+            .eq("ehr_vendor", ehr_vendor)
+            .is_("revoked_at", None)
+            .execute()
+        )
+        return len(result.data)
+
+    # --- Org-scoped EHR connections (Phase 12.E) ---
+
+    def create_org_ehr_connection(
+        self,
+        *,
+        organization_id: int,
+        ehr_vendor: str,
+        iss: str,
+        scope: str | None = None,
+        access_token_enc: str | None = None,
+        refresh_token_enc: str | None = None,
+        expires_at: datetime | None = None,
+        patient_fhir_id: str | None = None,
+    ) -> EHRConnection:
+        now = _now_iso()
+        # Race-safe: revoke ALL active org-scoped rows for (org, vendor) first.
+        self._t("ehr_connections").update({"revoked_at": now, "updated_at": now}).eq(
+            "organization_id", organization_id
+        ).eq("ehr_vendor", ehr_vendor).is_("revoked_at", None).execute()
+        result = (
+            self._t("ehr_connections")
+            .insert(
+                {
+                    "user_id": None,
+                    "organization_id": organization_id,
+                    "ehr_vendor": ehr_vendor,
+                    "iss": iss,
+                    "patient_fhir_id": patient_fhir_id,
+                    "access_token_enc": access_token_enc,
+                    "refresh_token_enc": refresh_token_enc,
+                    "expires_at": expires_at.isoformat() if expires_at else None,
+                    "scope": scope,
+                }
+            )
+            .execute()
+        )
+        return self._row_to_ehr_connection(result.data[0])
+
+    def get_active_org_ehr_connection(
+        self, organization_id: int, ehr_vendor: str
+    ) -> EHRConnection | None:
+        result = (
+            self._t("ehr_connections")
+            .select("*")
+            .eq("organization_id", organization_id)
+            .eq("ehr_vendor", ehr_vendor)
+            .is_("revoked_at", None)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return self._row_to_ehr_connection(result.data[0]) if result.data else None
+
+    def list_active_org_ehr_connections(self, organization_id: int) -> list[EHRConnection]:
+        result = (
+            self._t("ehr_connections")
+            .select("*")
+            .eq("organization_id", organization_id)
+            .is_("revoked_at", None)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .execute()
+        )
+        return [self._row_to_ehr_connection(r) for r in (result.data or [])]
+
+    def revoke_org_ehr_connection(self, organization_id: int, ehr_vendor: str) -> int:
+        now = _now_iso()
+        result = (
+            self._t("ehr_connections")
+            .update({"revoked_at": now, "updated_at": now})
+            .eq("organization_id", organization_id)
             .eq("ehr_vendor", ehr_vendor)
             .is_("revoked_at", None)
             .execute()
@@ -4423,9 +4502,7 @@ class PostgresStorage(StorageBase):
         )
         return self._row_to_family_link(result.data[0]) if result.data else None
 
-    def get_family_link(
-        self, initiator_user_id: int, linked_user_id: int
-    ) -> FamilyLink | None:
+    def get_family_link(self, initiator_user_id: int, linked_user_id: int) -> FamilyLink | None:
         result = (
             self._t("family_links")
             .select("*")
@@ -4491,10 +4568,7 @@ class PostgresStorage(StorageBase):
         if int(row["initiator_user_id"]) != user_id and int(row["linked_user_id"]) != user_id:
             return False
         result = (
-            self._t("family_links")
-            .update({"revoked_at": _now_iso()})
-            .eq("id", link_id)
-            .execute()
+            self._t("family_links").update({"revoked_at": _now_iso()}).eq("id", link_id).execute()
         )
         return bool(result.data)
 

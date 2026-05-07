@@ -608,6 +608,47 @@ class StorageBase(ABC):
         """Revoke all active connections for (user, vendor). Returns count updated."""
         ...
 
+    # --- Org-scoped EHR connections (Phase 12.E — Redox aggregator) ---
+    #
+    # These mirror the user-scoped methods but operate at the organization
+    # boundary. Used by backend-to-backend integrations like Redox where the
+    # OAuth credential is shared across all members of an org rather than per
+    # user. Token-related fields default to None — JWT-bearer vendors re-mint
+    # access tokens on demand and don't persist them.
+
+    @abstractmethod
+    def create_org_ehr_connection(
+        self,
+        *,
+        organization_id: int,
+        ehr_vendor: str,
+        iss: str,
+        scope: str | None = None,
+        access_token_enc: str | None = None,
+        refresh_token_enc: str | None = None,
+        expires_at: "datetime | None" = None,
+        patient_fhir_id: str | None = None,
+    ) -> "EHRConnection":
+        """Create a new org-scoped EHR connection, revoking prior active rows for the same vendor."""
+        ...
+
+    @abstractmethod
+    def get_active_org_ehr_connection(
+        self, organization_id: int, ehr_vendor: str
+    ) -> "EHRConnection | None":
+        """Return the latest non-revoked org-scoped connection for (org, vendor), or None."""
+        ...
+
+    @abstractmethod
+    def list_active_org_ehr_connections(self, organization_id: int) -> "list[EHRConnection]":
+        """Return all active org-scoped connections, most-recent first."""
+        ...
+
+    @abstractmethod
+    def revoke_org_ehr_connection(self, organization_id: int, ehr_vendor: str) -> int:
+        """Revoke all active org-scoped connections for (org, vendor). Returns count updated."""
+        ...
+
     @abstractmethod
     def update_referral_ehr_service_request_id(
         self, referral_id: int, ehr_service_request_id: str

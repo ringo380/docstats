@@ -5171,44 +5171,70 @@ class Storage(StorageBase):
     # --- EHR connections (Phase 12) ---
 
     def _migrate_ehr_connections(self) -> None:
+        # Schema reflects migration 033: nullable user_id, optional organization_id,
+        # widened vendor CHECK to include all four vendors, exactly-one-owner CHECK.
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS ehr_connections (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                ehr_vendor          TEXT NOT NULL CHECK (ehr_vendor IN ('epic_sandbox', 'cerner_oauth')),
+                user_id             INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                organization_id     INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+                ehr_vendor          TEXT NOT NULL CHECK (ehr_vendor IN ('epic_sandbox', 'cerner_oauth', 'ecw_smart', 'redox')),
                 iss                 TEXT NOT NULL,
                 patient_fhir_id     TEXT,
-                access_token_enc    TEXT NOT NULL,
+                access_token_enc    TEXT,
                 refresh_token_enc   TEXT,
-                expires_at          TEXT NOT NULL,
-                scope               TEXT NOT NULL,
+                expires_at          TEXT,
+                scope               TEXT,
                 revoked_at          TEXT,
                 created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (
+                    (user_id IS NOT NULL AND organization_id IS NULL)
+                    OR (user_id IS NULL AND organization_id IS NOT NULL)
+                )
             )"""
         )
-        # Drop any pre-existing non-UNIQUE form (migration 022 created the
-        # index without UNIQUE; 023 promotes it). The CREATE UNIQUE INDEX IF
-        # NOT EXISTS on its own won't upgrade an existing non-unique index.
+        # Idempotent in-place migration for existing dev DBs (organization_id added
+        # in migration 033). ALTER TABLE ... ADD COLUMN is a no-op error on second run.
+        try:
+            self._conn.execute(
+                "ALTER TABLE ehr_connections ADD COLUMN organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE"
+            )
+        except sqlite3.OperationalError:
+            pass
+        # User-scoped partial unique index — widened in 023 to UNIQUE.
         self._conn.execute("DROP INDEX IF EXISTS idx_ehr_connections_user_active")
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_ehr_connections_user_active"
             " ON ehr_connections (user_id, ehr_vendor)"
-            " WHERE revoked_at IS NULL"
+            " WHERE revoked_at IS NULL AND user_id IS NOT NULL"
+        )
+        # Org-scoped partial unique index (migration 033). One active connection
+        # per (org, vendor) — mirrors the user-scoped pattern.
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ehr_connections_org_active"
+            " ON ehr_connections (organization_id, ehr_vendor)"
+            " WHERE revoked_at IS NULL AND organization_id IS NOT NULL"
         )
         self._conn.commit()
 
     @staticmethod
     def _row_to_ehr_connection(row: sqlite3.Row) -> EHRConnection:
+        # organization_id is added by migration 033; older rows lack the column.
+        try:
+            org_id = row["organization_id"]
+        except (IndexError, KeyError):
+            org_id = None
         return EHRConnection(
             id=row["id"],
             user_id=row["user_id"],
+            organization_id=org_id,
             ehr_vendor=row["ehr_vendor"],
             iss=row["iss"],
             patient_fhir_id=row["patient_fhir_id"],
             access_token_enc=row["access_token_enc"],
             refresh_token_enc=row["refresh_token_enc"],
-            expires_at=_parse_sqlite_utc(row["expires_at"]),  # type: ignore[arg-type]
+            expires_at=_parse_sqlite_utc(row["expires_at"]) if row["expires_at"] else None,
             scope=row["scope"],
             revoked_at=_parse_sqlite_utc(row["revoked_at"]) if row["revoked_at"] else None,
             created_at=_parse_sqlite_utc(row["created_at"]),  # type: ignore[arg-type]
@@ -5306,6 +5332,82 @@ class Storage(StorageBase):
             "UPDATE ehr_connections SET revoked_at = ?, updated_at = ?"
             " WHERE user_id = ? AND ehr_vendor = ? AND revoked_at IS NULL",
             (now, now, user_id, ehr_vendor),
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    # --- Org-scoped EHR connections (Phase 12.E) ---
+
+    def create_org_ehr_connection(
+        self,
+        *,
+        organization_id: int,
+        ehr_vendor: str,
+        iss: str,
+        scope: str | None = None,
+        access_token_enc: str | None = None,
+        refresh_token_enc: str | None = None,
+        expires_at: datetime | None = None,
+        patient_fhir_id: str | None = None,
+    ) -> EHRConnection:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._conn:
+            # Race-safe revoke prior active rows for (org, vendor) before insert.
+            self._conn.execute(
+                "UPDATE ehr_connections SET revoked_at = ?, updated_at = ?"
+                " WHERE organization_id = ? AND ehr_vendor = ? AND revoked_at IS NULL",
+                (now, now, organization_id, ehr_vendor),
+            )
+            cur = self._conn.execute(
+                "INSERT INTO ehr_connections"
+                " (user_id, organization_id, ehr_vendor, iss, patient_fhir_id,"
+                "  access_token_enc, refresh_token_enc, expires_at, scope,"
+                "  created_at, updated_at)"
+                " VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    organization_id,
+                    ehr_vendor,
+                    iss,
+                    patient_fhir_id,
+                    access_token_enc,
+                    refresh_token_enc,
+                    expires_at.isoformat() if expires_at else None,
+                    scope,
+                    now,
+                    now,
+                ),
+            )
+        row = self._conn.execute(
+            "SELECT * FROM ehr_connections WHERE id = ?", (cur.lastrowid,)
+        ).fetchone()
+        return self._row_to_ehr_connection(row)
+
+    def get_active_org_ehr_connection(
+        self, organization_id: int, ehr_vendor: str
+    ) -> EHRConnection | None:
+        row = self._conn.execute(
+            "SELECT * FROM ehr_connections"
+            " WHERE organization_id = ? AND ehr_vendor = ? AND revoked_at IS NULL"
+            " ORDER BY id DESC LIMIT 1",
+            (organization_id, ehr_vendor),
+        ).fetchone()
+        return self._row_to_ehr_connection(row) if row else None
+
+    def list_active_org_ehr_connections(self, organization_id: int) -> list[EHRConnection]:
+        rows = self._conn.execute(
+            "SELECT * FROM ehr_connections"
+            " WHERE organization_id = ? AND revoked_at IS NULL"
+            " ORDER BY created_at DESC, id DESC",
+            (organization_id,),
+        ).fetchall()
+        return [self._row_to_ehr_connection(r) for r in rows]
+
+    def revoke_org_ehr_connection(self, organization_id: int, ehr_vendor: str) -> int:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        cur = self._conn.execute(
+            "UPDATE ehr_connections SET revoked_at = ?, updated_at = ?"
+            " WHERE organization_id = ? AND ehr_vendor = ? AND revoked_at IS NULL",
+            (now, now, organization_id, ehr_vendor),
         )
         self._conn.commit()
         return cur.rowcount
@@ -5713,9 +5815,7 @@ class Storage(StorageBase):
         ).fetchone()
         return self._row_to_family_link(row) if row else None
 
-    def get_family_link(
-        self, initiator_user_id: int, linked_user_id: int
-    ) -> FamilyLink | None:
+    def get_family_link(self, initiator_user_id: int, linked_user_id: int) -> FamilyLink | None:
         row = self._conn.execute(
             """SELECT * FROM family_links
                WHERE initiator_user_id = ? AND linked_user_id = ?
@@ -5744,9 +5844,7 @@ class Storage(StorageBase):
         self._conn.commit()
         if cursor.rowcount == 0:
             return None
-        row = self._conn.execute(
-            "SELECT * FROM family_links WHERE id = ?", (link_id,)
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM family_links WHERE id = ?", (link_id,)).fetchone()
         return self._row_to_family_link(row) if row else None
 
     def revoke_family_link(self, link_id: int, user_id: int) -> bool:

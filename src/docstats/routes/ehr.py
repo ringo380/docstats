@@ -182,7 +182,13 @@ def _maybe_refresh(conn: EHRConnection, storage: StorageBase) -> str:
     Dispatches to the correct vendor module via the registry. On refresh
     failure, returns the stale token so callers can proceed (the EHR will
     return 401). Never raises.
+
+    Org-scoped JWT-bearer vendors (Redox) don't persist tokens; this helper
+    is only meaningful for SMART-on-FHIR vendors that do. Returns "" when
+    called against a token-less connection so callers fail closed.
     """
+    if conn.access_token_enc is None:
+        return ""
     try:
         access_token = decrypt_token(conn.access_token_enc)
     except (EHRConfigError, InvalidToken):
@@ -190,6 +196,10 @@ def _maybe_refresh(conn: EHRConnection, storage: StorageBase) -> str:
         return ""
 
     if conn.refresh_token_enc is None:
+        return access_token
+    if conn.expires_at is None:
+        # No expiry recorded — can't decide whether to refresh; trust the
+        # stored token and let upstream 401s drive the next refresh attempt.
         return access_token
 
     now = datetime.now(tz=timezone.utc)
