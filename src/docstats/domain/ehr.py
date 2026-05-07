@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-EHR_VENDORS: set[str] = {"epic_sandbox", "cerner_oauth", "ecw_smart"}
+EHR_VENDORS: set[str] = {"epic_sandbox", "cerner_oauth", "ecw_smart", "redox"}
 
 # Default scope set for Phase 12.A — Patient-only standalone launch.
 # offline_access is needed for refresh_token. fhirUser + openid identify the
@@ -47,19 +47,39 @@ ECW_SCOPES: str = (
 )
 ECW_SCOPES_EHR_LAUNCH: str = "openid fhirUser launch offline_access"
 
+# Redox aggregator scope set — Phase 12.E.
+# Redox uses system/* scopes (backend-to-backend trust boundary) instead of
+# patient/* (per-user SMART trust). Refresh tokens are not used; the JWT-bearer
+# assertion grant re-issues access tokens on demand.
+REDOX_SCOPES: str = (
+    "system/Patient.read system/Condition.read system/MedicationRequest.read "
+    "system/AllergyIntolerance.read system/DocumentReference.read "
+    "system/ServiceRequest.write"
+)
+
 
 class EHRConnection(BaseModel):
-    """Encrypted SMART-on-FHIR connection. Tokens are Fernet ciphertext."""
+    """EHR connection record.
+
+    For SMART-on-FHIR vendors (Epic/Cerner/eCW), tokens are Fernet ciphertext.
+    For backend-to-backend vendors (Redox), token-related columns are NULL —
+    those connections re-mint short-lived access tokens via JWT-bearer
+    assertion on each request.
+
+    Exactly one of ``user_id`` / ``organization_id`` is set. Storage CHECK
+    enforces this; in Python prefer the ``is_org_scoped`` property.
+    """
 
     id: int
-    user_id: int
+    user_id: int | None
+    organization_id: int | None = None
     ehr_vendor: str
     iss: str
     patient_fhir_id: str | None
-    access_token_enc: str
+    access_token_enc: str | None
     refresh_token_enc: str | None
-    expires_at: datetime
-    scope: str
+    expires_at: datetime | None
+    scope: str | None
     revoked_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -67,8 +87,13 @@ class EHRConnection(BaseModel):
     def is_active(self) -> bool:
         # Token may be expired but still refreshable; "active" here means the
         # connection row hasn't been revoked. Token-expiry is a separate concern
-        # handled by the Epic client's refresh path.
+        # handled by the per-vendor refresh path (or, for Redox, by re-signing
+        # a fresh JWT assertion).
         return self.revoked_at is None
+
+    @property
+    def is_org_scoped(self) -> bool:
+        return self.organization_id is not None
 
 
 class ImportedPatient(BaseModel):
