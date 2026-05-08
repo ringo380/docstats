@@ -1080,3 +1080,258 @@ def test_ehr_hook_doc_content_upload_stores_storage_ref(tmp_path, monkeypatch):
         app.dependency_overrides.clear()
         _epic._DISCOVERY_CACHE.clear()
         reset_memory_singleton_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# _redox_post_create_hook — org-scoped Redox ServiceRequest write-back
+# ---------------------------------------------------------------------------
+
+
+def _redox_writeback_fixture(tmp_path: Path, monkeypatch, *, with_ehr_fhir_id: bool = True):
+    """Return (client, storage, user_id, patient, org) with Redox enabled.
+
+    Sets up an org with admin membership, a Redox connection, PHI consent, and
+    a patient that may or may not have an ehr_fhir_id. The Redox token endpoint
+    + write_service_request are NOT mocked here — each test does that locally
+    so it can choose success / token-fail / write-fail.
+    """
+    monkeypatch.setenv("EHR_REDOX_ENABLED", "1")
+    monkeypatch.setenv("REDOX_CLIENT_ID", "test-client")
+    monkeypatch.setenv("REDOX_KEY_ID", "test-kid")
+    # Use a tiny valid keypair so request_access_token wouldn't itself blow up
+    # on REDOX_PRIVATE_KEY_PEM access — but we still mock the function below.
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    monkeypatch.setenv("REDOX_PRIVATE_KEY_PEM", pem)
+
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_id = storage.create_user("redox@example.com", "pw")
+    storage.record_phi_consent(
+        user_id=user_id,
+        phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+        ip_address="",
+        user_agent="",
+    )
+    org = storage.create_organization(name="Acme", slug="acme-rdx")
+    storage.create_membership(organization_id=org.id, user_id=user_id, role="admin")
+    storage.set_active_org(user_id, org.id)
+    storage.create_org_ehr_connection(
+        organization_id=org.id,
+        ehr_vendor="redox",
+        iss="redox-fhir-sandbox/Development",
+        scope="system/Patient.read",
+    )
+
+    org_scope = Scope(user_id=None, organization_id=org.id, membership_role="admin")
+    patient = storage.create_patient(
+        org_scope,
+        first_name="Sam",
+        last_name="Carter",
+        date_of_birth="1975-01-02",
+        created_by_user_id=user_id,
+        ehr_fhir_id="REDOX-PAT-1" if with_ehr_fhir_id else None,
+    )
+
+    user = _fake_user(user_id, "redox@example.com", active_org_id=org.id)
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: user
+
+    return TestClient(app), storage, user_id, patient, org
+
+
+def test_redox_writeback_sets_id_on_referral(tmp_path, monkeypatch):
+    """Successful Redox ServiceRequest write → ehr_service_request_id set."""
+    from docstats.ehr import redox
+
+    client, storage, user_id, patient, org = _redox_writeback_fixture(tmp_path, monkeypatch)
+    redox.reset_token_cache()
+    monkeypatch.setattr(redox, "request_access_token", lambda **_kw: "tok-x")
+    captured: dict = {}
+
+    def _write(**kwargs):
+        captured.update(kwargs)
+        return "REDOX-SR-001"
+
+    monkeypatch.setattr(redox, "write_service_request", _write)
+    try:
+        resp = _post_referral(client, patient.id)
+        assert resp.status_code == 303
+        referral_id = int(resp.headers["location"].split("/referrals/")[1])
+        org_scope = Scope(user_id=None, organization_id=org.id, membership_role="admin")
+        referral = storage.get_referral(org_scope, referral_id)
+        assert referral is not None
+        assert referral.ehr_service_request_id == "REDOX-SR-001"
+        # Verify destination_path threaded through.
+        assert captured["destination_path"] == "redox-fhir-sandbox/Development"
+        assert captured["patient_fhir_id"] == "REDOX-PAT-1"
+    finally:
+        app.dependency_overrides.clear()
+        redox.reset_token_cache()
+
+
+def test_redox_writeback_skipped_without_ehr_fhir_id(tmp_path, monkeypatch):
+    """Patient with no ehr_fhir_id → write hook is a no-op."""
+    from docstats.ehr import redox
+
+    client, storage, user_id, patient, org = _redox_writeback_fixture(
+        tmp_path, monkeypatch, with_ehr_fhir_id=False
+    )
+    redox.reset_token_cache()
+    called = {"n": 0}
+
+    def _write(**_kw):
+        called["n"] += 1
+        return "should-not-run"
+
+    monkeypatch.setattr(redox, "request_access_token", lambda **_kw: "tok-x")
+    monkeypatch.setattr(redox, "write_service_request", _write)
+    try:
+        resp = _post_referral(client, patient.id)
+        assert resp.status_code == 303
+        assert called["n"] == 0
+    finally:
+        app.dependency_overrides.clear()
+        redox.reset_token_cache()
+
+
+def test_redox_writeback_skipped_when_no_org_connection(tmp_path, monkeypatch):
+    """Org without Redox connection → write hook is a no-op."""
+    from docstats.ehr import redox
+
+    monkeypatch.setenv("EHR_REDOX_ENABLED", "1")
+    storage = Storage(db_path=tmp_path / "test.db")
+    user_id = storage.create_user("redox@example.com", "pw")
+    storage.record_phi_consent(
+        user_id=user_id,
+        phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+        ip_address="",
+        user_agent="",
+    )
+    org = storage.create_organization(name="Acme", slug="no-rdx")
+    storage.create_membership(organization_id=org.id, user_id=user_id, role="admin")
+    storage.set_active_org(user_id, org.id)
+    org_scope = Scope(user_id=None, organization_id=org.id, membership_role="admin")
+    patient = storage.create_patient(
+        org_scope,
+        first_name="Sam",
+        last_name="Carter",
+        date_of_birth="1975-01-02",
+        created_by_user_id=user_id,
+        ehr_fhir_id="REDOX-PAT-99",
+    )
+    user = _fake_user(user_id, "redox@example.com", active_org_id=org.id)
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: user
+
+    redox.reset_token_cache()
+    called = {"n": 0}
+
+    def _write(**_kw):
+        called["n"] += 1
+
+    monkeypatch.setattr(redox, "write_service_request", _write)
+    try:
+        resp = TestClient(app).post(
+            "/referrals",
+            data={
+                "patient_id": str(patient.id),
+                "reason": "test",
+                "urgency": "routine",
+                "specialty_desc": "Cardiology",
+                "receiving_organization_name": "Heart Clinic",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert called["n"] == 0
+    finally:
+        app.dependency_overrides.clear()
+        redox.reset_token_cache()
+
+
+def test_redox_writeback_token_failure_soft_fails(tmp_path, monkeypatch):
+    """Token mint failure → referral still created, no exception, no audit success."""
+    from docstats.ehr import redox
+
+    client, storage, user_id, patient, org = _redox_writeback_fixture(tmp_path, monkeypatch)
+    redox.reset_token_cache()
+
+    def _fail_token(**_kw):
+        raise redox.RedoxError("token mint timed out")
+
+    monkeypatch.setattr(redox, "request_access_token", _fail_token)
+    write_called = {"n": 0}
+    monkeypatch.setattr(
+        redox, "write_service_request", lambda **_kw: write_called.update(n=1) or "X"
+    )
+    try:
+        resp = _post_referral(client, patient.id)
+        assert resp.status_code == 303
+        referral_id = int(resp.headers["location"].split("/referrals/")[1])
+        org_scope = Scope(user_id=None, organization_id=org.id, membership_role="admin")
+        referral = storage.get_referral(org_scope, referral_id)
+        assert referral is not None
+        assert referral.ehr_service_request_id is None
+        assert write_called["n"] == 0  # never reached
+    finally:
+        app.dependency_overrides.clear()
+        redox.reset_token_cache()
+
+
+def test_redox_writeback_write_failure_audits_and_referral_survives(tmp_path, monkeypatch):
+    """write_service_request failure → audit logged, referral created, no SR id."""
+    from docstats.ehr import redox
+
+    client, storage, user_id, patient, org = _redox_writeback_fixture(tmp_path, monkeypatch)
+    redox.reset_token_cache()
+    monkeypatch.setattr(redox, "request_access_token", lambda **_kw: "tok-x")
+
+    def _fail_write(**_kw):
+        raise redox.RedoxError("ServiceRequest 502")
+
+    monkeypatch.setattr(redox, "write_service_request", _fail_write)
+    try:
+        resp = _post_referral(client, patient.id)
+        assert resp.status_code == 303
+        referral_id = int(resp.headers["location"].split("/referrals/")[1])
+        org_scope = Scope(user_id=None, organization_id=org.id, membership_role="admin")
+        referral = storage.get_referral(org_scope, referral_id)
+        assert referral is not None
+        assert referral.ehr_service_request_id is None
+        events = storage.list_audit_events(actor_user_id=user_id, limit=20)
+        assert any(
+            e.action == "ehr.service_request_write_failed"
+            and (e.metadata or {}).get("ehr_vendor") == "redox"
+            for e in events
+        )
+    finally:
+        app.dependency_overrides.clear()
+        redox.reset_token_cache()
+
+
+def test_redox_writeback_skipped_when_flag_disabled(tmp_path, monkeypatch):
+    """EHR_REDOX_ENABLED unset → hook is a no-op even with everything else set up."""
+    from docstats.ehr import redox
+
+    client, storage, user_id, patient, org = _redox_writeback_fixture(tmp_path, monkeypatch)
+    monkeypatch.delenv("EHR_REDOX_ENABLED", raising=False)
+    redox.reset_token_cache()
+    write_called = {"n": 0}
+    monkeypatch.setattr(redox, "request_access_token", lambda **_kw: "tok-x")
+    monkeypatch.setattr(
+        redox, "write_service_request", lambda **_kw: write_called.update(n=1) or "X"
+    )
+    try:
+        resp = _post_referral(client, patient.id)
+        assert resp.status_code == 303
+        assert write_called["n"] == 0
+    finally:
+        app.dependency_overrides.clear()
+        redox.reset_token_cache()

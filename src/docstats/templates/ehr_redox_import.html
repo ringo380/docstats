@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Import Patient from Redox — referme.help{% endblock %}
+{% block content %}
+<div style="max-width: 640px; margin: 0 auto; padding-top: 2rem;">
+  <a href="/patients" class="back-link">← Back to patients</a>
+
+  <h1 style="font-size:1.4rem; font-weight:700; margin-top:0.75rem; margin-bottom:0.5rem;">
+    Import Patient from Redox
+  </h1>
+  <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1.5rem;">
+    Look up a patient in any of your organization's connected EHRs via Redox by entering
+    their MRN. Connected destination:
+    <code style="font-size:0.78rem;">{{ destination_path }}</code>
+  </p>
+
+  {% if request.query_params.get('error') == 'patient_not_found' %}
+    <div class="alert alert-warning">No patient found with that MRN. Double-check the value or try a different MRN system.</div>
+  {% elif request.query_params.get('error') == 'ambiguous_mrn' %}
+    <div class="alert alert-warning">Multiple patients matched that MRN. Specify the MRN system to disambiguate.</div>
+  {% elif request.query_params.get('error') == 'lookup_failed' %}
+    <div class="alert alert-error">Lookup failed. The Redox connection may be misconfigured or the destination path may be invalid.</div>
+  {% elif request.query_params.get('error') == 'server_config' %}
+    <div class="alert alert-error">Server is not configured for Redox. Contact your system administrator.</div>
+  {% elif request.query_params.get('error') == 'fetch_failed' %}
+    <div class="alert alert-error">Could not fetch the patient resource from Redox. Try again.</div>
+  {% elif request.query_params.get('error') == 'missing_mrn' %}
+    <div class="alert alert-error">MRN is required.</div>
+  {% endif %}
+
+  <form method="post" action="/ehr/redox/import/lookup" class="card" style="padding:1.25rem;">
+    <label for="mrn" style="font-size:0.85rem; font-weight:600;">MRN</label>
+    <input
+      type="text"
+      id="mrn"
+      name="mrn"
+      maxlength="255"
+      required
+      autocomplete="off"
+      autofocus
+      style="width:100%; padding:0.5rem; margin-top:0.25rem; margin-bottom:0.4rem; font-family:monospace;"
+    >
+
+    <label for="mrn_system" style="font-size:0.85rem; font-weight:600; margin-top:0.6rem; display:block;">
+      MRN system (optional)
+    </label>
+    <input
+      type="text"
+      id="mrn_system"
+      name="mrn_system"
+      maxlength="255"
+      autocomplete="off"
+      placeholder="{{ default_mrn_system }}"
+      style="width:100%; padding:0.5rem; margin-top:0.25rem; margin-bottom:0.4rem; font-family:monospace;"
+    >
+    <p class="form-hint" style="margin-top:0.4rem;">
+      The OID/URI namespace for the MRN. Leave blank to search all identifier
+      systems — recommended only when the MRN is globally unique. The Redox
+      sandbox uses <code>{{ default_mrn_system }}</code>.
+    </p>
+
+    <button type="submit" class="btn btn-primary" style="margin-top:1rem;">
+      Look up patient
+    </button>
+  </form>
+</div>
+{% endblock %}

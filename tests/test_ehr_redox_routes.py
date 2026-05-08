@@ -115,6 +115,46 @@ def _patch_token_endpoint(monkeypatch, status: int = 200, json_body: dict | None
     )
 
 
+def _patch_redox_api(monkeypatch, handler):
+    """Patch httpx for Redox calls with a caller-supplied request handler.
+
+    The handler receives every httpx request (token mint + FHIR) and decides
+    what to return. Use ``request.url.path`` to dispatch.
+    """
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        "docstats.ehr.redox.httpx.Client",
+        lambda *a, **kw: real_client(*a, transport=httpx.MockTransport(handler), **kw),
+    )
+
+
+def _seed_org_with_redox(storage: Storage, slug: str = "acme"):
+    """Seed an org + admin + active Redox connection for import-flow tests."""
+    user_id = storage.create_user("clinician@example.com", "hashed")
+    org = storage.create_organization(name="Acme", slug=slug)
+    storage.create_membership(organization_id=org.id, user_id=user_id, role="admin")
+    storage.set_active_org(user_id, org.id)
+    # PHI consent — required for import routes.
+    from docstats.phi import CURRENT_PHI_CONSENT_VERSION
+
+    storage.record_phi_consent(
+        user_id=user_id,
+        phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+        ip_address="",
+        user_agent="",
+    )
+    storage.create_org_ehr_connection(
+        organization_id=org.id,
+        ehr_vendor="redox",
+        iss="redox-fhir-sandbox/Development",
+        scope="system/Patient.read",
+    )
+    user = _fake_user(user_id, "clinician@example.com", active_org_id=org.id, is_org_admin=True)
+    user["phi_consent_version"] = CURRENT_PHI_CONSENT_VERSION
+    user["phi_consent_at"] = "2026-01-01"
+    return user_id, org, user
+
+
 # ---------------------------------------------------------------------------
 # Feature flag gating
 # ---------------------------------------------------------------------------
@@ -332,5 +372,294 @@ def test_disconnect_404_when_disabled(storage, org_admin, monkeypatch):
     try:
         resp = _client_with(storage, user).post("/ehr/redox/disconnect")
         assert resp.status_code == 404
+    finally:
+        _cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Patient import flow
+# ---------------------------------------------------------------------------
+
+
+_TEST_FHIR_ID = "patient-fhir-99"
+_TEST_MRN = "MRN-42"
+_TEST_MRN_SYSTEM = "http://hospital.smarthealthit.org"
+
+
+def _patient_resource(
+    fhir_id: str = _TEST_FHIR_ID,
+    family: str = "Robel",
+    given: str = "Alexander",
+    dob: str = "2007-12-14",
+):
+    return {
+        "resourceType": "Patient",
+        "id": fhir_id,
+        "name": [{"use": "official", "family": family, "given": [given]}],
+        "birthDate": dob,
+        "gender": "male",
+        "identifier": [
+            {
+                "type": {"coding": [{"code": "MR"}]},
+                "system": _TEST_MRN_SYSTEM,
+                "value": _TEST_MRN,
+            }
+        ],
+    }
+
+
+def _import_flow_handler(*, search_hits: int = 1, fhir_id: str = _TEST_FHIR_ID):
+    """Build an httpx handler that supports token + Patient search + Patient read."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/v2/auth/token"):
+            return httpx.Response(200, json={"access_token": "tok-mock", "expires_in": 300})
+        if "/Patient" in path and request.url.query and b"identifier" in request.url.query:
+            entries = [{"resource": _patient_resource(fhir_id=fhir_id)}] * search_hits
+            return httpx.Response(200, json={"resourceType": "Bundle", "entry": entries})
+        if path.endswith(f"/Patient/{fhir_id}"):
+            return httpx.Response(200, json=_patient_resource(fhir_id=fhir_id))
+        return httpx.Response(404, json={"error": "unmatched test handler"})
+
+    return handler
+
+
+def test_import_form_404_when_flag_unset(storage, monkeypatch):
+    monkeypatch.delenv("EHR_REDOX_ENABLED", raising=False)
+    _, _, user = _seed_org_with_redox(storage)
+    try:
+        resp = _client_with(storage, user).get("/ehr/redox/import")
+        assert resp.status_code == 404
+    finally:
+        _cleanup()
+
+
+def test_import_form_403_when_no_org(storage, redox_env):
+    """Solo users get a 403 because Redox import is org-scoped."""
+    user_id = storage.create_user("solo@example.com", "hashed")
+    from docstats.phi import CURRENT_PHI_CONSENT_VERSION
+
+    storage.record_phi_consent(
+        user_id=user_id,
+        phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+        ip_address="",
+        user_agent="",
+    )
+    user = _fake_user(user_id, "solo@example.com", active_org_id=None)
+    user["phi_consent_version"] = CURRENT_PHI_CONSENT_VERSION
+    user["phi_consent_at"] = "2026-01-01"
+    try:
+        resp = _client_with(storage, user).get("/ehr/redox/import")
+        assert resp.status_code == 403
+    finally:
+        _cleanup()
+
+
+def test_import_form_403_when_org_has_no_connection(storage, redox_env):
+    """Org without an active Redox connection sees 403, not the form."""
+    user_id = storage.create_user("admin@example.com", "hashed")
+    org = storage.create_organization(name="No-Redox Co", slug="no-redox")
+    storage.create_membership(organization_id=org.id, user_id=user_id, role="admin")
+    storage.set_active_org(user_id, org.id)
+    from docstats.phi import CURRENT_PHI_CONSENT_VERSION
+
+    storage.record_phi_consent(
+        user_id=user_id,
+        phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+        ip_address="",
+        user_agent="",
+    )
+    user = _fake_user(user_id, "admin@example.com", active_org_id=org.id, is_org_admin=True)
+    user["phi_consent_version"] = CURRENT_PHI_CONSENT_VERSION
+    user["phi_consent_at"] = "2026-01-01"
+    try:
+        resp = _client_with(storage, user).get("/ehr/redox/import")
+        assert resp.status_code == 403
+    finally:
+        _cleanup()
+
+
+def test_import_form_renders_for_org_with_connection(storage, redox_env):
+    _, _, user = _seed_org_with_redox(storage)
+    try:
+        resp = _client_with(storage, user).get("/ehr/redox/import")
+        assert resp.status_code == 200
+        assert b"Import Patient from Redox" in resp.content
+        assert b"redox-fhir-sandbox/Development" in resp.content
+    finally:
+        _cleanup()
+
+
+def test_import_lookup_redirects_to_review_on_hit(storage, redox_env, monkeypatch):
+    _, _, user = _seed_org_with_redox(storage)
+    _patch_redox_api(monkeypatch, _import_flow_handler())
+    try:
+        client = _client_with(storage, user)
+        resp = client.post(
+            "/ehr/redox/import/lookup",
+            data={"mrn": _TEST_MRN, "mrn_system": _TEST_MRN_SYSTEM},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert f"/ehr/redox/import/review?fhir_id={_TEST_FHIR_ID}" in resp.headers["location"]
+    finally:
+        _cleanup()
+
+
+def test_import_lookup_redirects_with_not_found_on_miss(storage, redox_env, monkeypatch):
+    _, _, user = _seed_org_with_redox(storage)
+    _patch_redox_api(monkeypatch, _import_flow_handler(search_hits=0))
+    try:
+        resp = _client_with(storage, user).post(
+            "/ehr/redox/import/lookup",
+            data={"mrn": "missing-mrn"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert "error=patient_not_found" in resp.headers["location"]
+    finally:
+        _cleanup()
+
+
+def test_import_lookup_ambiguous_mrn(storage, redox_env, monkeypatch):
+    _, _, user = _seed_org_with_redox(storage)
+    _patch_redox_api(monkeypatch, _import_flow_handler(search_hits=2))
+    try:
+        resp = _client_with(storage, user).post(
+            "/ehr/redox/import/lookup",
+            data={"mrn": _TEST_MRN},  # no mrn_system → ambiguous
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert "error=ambiguous_mrn" in resp.headers["location"]
+    finally:
+        _cleanup()
+
+
+def test_import_lookup_missing_mrn(storage, redox_env, monkeypatch):
+    _, _, user = _seed_org_with_redox(storage)
+    _patch_redox_api(monkeypatch, _import_flow_handler())
+    try:
+        resp = _client_with(storage, user).post(
+            "/ehr/redox/import/lookup",
+            data={"mrn": "   "},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert "error=missing_mrn" in resp.headers["location"]
+    finally:
+        _cleanup()
+
+
+def test_import_review_renders_with_patient(storage, redox_env, monkeypatch):
+    _, _, user = _seed_org_with_redox(storage)
+    _patch_redox_api(monkeypatch, _import_flow_handler())
+    try:
+        resp = _client_with(storage, user).get(f"/ehr/redox/import/review?fhir_id={_TEST_FHIR_ID}")
+        assert resp.status_code == 200
+        assert b"Robel" in resp.content
+        assert b"Alexander" in resp.content
+        assert b"2007-12-14" in resp.content
+        # Hidden field carries fhir_id forward into confirm form.
+        assert _TEST_FHIR_ID.encode() in resp.content
+    finally:
+        _cleanup()
+
+
+def test_import_confirm_create_new_creates_patient(storage, redox_env, monkeypatch):
+    _, org, user = _seed_org_with_redox(storage)
+    _patch_redox_api(monkeypatch, _import_flow_handler())
+    try:
+        resp = _client_with(storage, user).post(
+            "/ehr/redox/import/confirm",
+            data={"action": "create_new", "fhir_id": _TEST_FHIR_ID},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"].startswith("/patients/")
+        # Find the created patient in storage.
+        from docstats.scope import Scope
+
+        org_scope = Scope(user_id=None, organization_id=org.id, membership_role="admin")
+        patients = storage.list_patients(org_scope, mrn=_TEST_MRN, limit=5)
+        assert len(patients) == 1
+        p = patients[0]
+        assert p.first_name == "Alexander"
+        assert p.last_name == "Robel"
+        assert p.ehr_fhir_id == _TEST_FHIR_ID
+    finally:
+        _cleanup()
+
+
+def test_import_confirm_merge_fills_only_blank_fields(storage, redox_env, monkeypatch):
+    user_id, org, user = _seed_org_with_redox(storage)
+    _patch_redox_api(monkeypatch, _import_flow_handler())
+    from docstats.scope import Scope
+
+    org_scope = Scope(user_id=None, organization_id=org.id, membership_role="admin")
+    # Pre-existing patient with curated last_name + DOB; missing MRN.
+    existing = storage.create_patient(
+        org_scope,
+        first_name="Alex",
+        last_name="Robel",
+        date_of_birth="2007-12-14",
+        created_by_user_id=user_id,
+    )
+    try:
+        resp = _client_with(storage, user).post(
+            "/ehr/redox/import/confirm",
+            data={
+                "action": "merge",
+                "fhir_id": _TEST_FHIR_ID,
+                "patient_id": str(existing.id),
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        # Re-fetch the existing patient and confirm MRN was filled in.
+        merged = storage.get_patient(org_scope, existing.id)
+        assert merged is not None
+        assert merged.mrn == _TEST_MRN
+        assert merged.ehr_fhir_id == _TEST_FHIR_ID
+        # Curated first_name was NOT overwritten.
+        assert merged.first_name == "Alex"
+    finally:
+        _cleanup()
+
+
+def test_import_confirm_merge_requires_patient_id(storage, redox_env, monkeypatch):
+    _, _, user = _seed_org_with_redox(storage)
+    _patch_redox_api(monkeypatch, _import_flow_handler())
+    try:
+        resp = _client_with(storage, user).post(
+            "/ehr/redox/import/confirm",
+            data={"action": "merge", "fhir_id": _TEST_FHIR_ID},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert "error=merge_requires_patient_id" in resp.headers["location"]
+    finally:
+        _cleanup()
+
+
+def test_import_routes_404_when_flag_unset(storage, monkeypatch):
+    monkeypatch.delenv("EHR_REDOX_ENABLED", raising=False)
+    _, _, user = _seed_org_with_redox(storage)
+    try:
+        client = _client_with(storage, user)
+        for path in (
+            "/ehr/redox/import",
+            f"/ehr/redox/import/review?fhir_id={_TEST_FHIR_ID}",
+        ):
+            assert client.get(path).status_code == 404
+        assert client.post("/ehr/redox/import/lookup", data={"mrn": "x"}).status_code == 404
+        assert (
+            client.post(
+                "/ehr/redox/import/confirm",
+                data={"action": "create_new", "fhir_id": _TEST_FHIR_ID},
+            ).status_code
+            == 404
+        )
     finally:
         _cleanup()
