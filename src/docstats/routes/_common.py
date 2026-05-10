@@ -168,11 +168,11 @@ def _inject_nav_context(context: dict) -> None:
         context["assigned_open_count"] = assigned_open_count(storage, scope, user_id)
 
 
-def render(name: str, context: dict) -> Response:
+def render(name: str, context: dict, *, status_code: int = 200) -> Response:
     """Render a template, compatible with Starlette 0.50+."""
     _inject_nav_context(context)
     request = context["request"]
-    return templates.TemplateResponse(request, name, context)
+    return templates.TemplateResponse(request, name, context, status_code=status_code)
 
 
 def saved_count(storage: StorageBase, user_id: int | None) -> int:

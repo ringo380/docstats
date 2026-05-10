@@ -27,6 +27,7 @@ from docstats.oauth import (
     primary_github_email,
 )
 from docstats.routes._common import US_STATES, get_client, get_oig_client, render
+from docstats.routes._rate_limit import RateLimiter
 from docstats.storage import get_storage
 from docstats.storage_base import StorageBase
 from docstats.validators import (
@@ -39,6 +40,13 @@ from docstats.validators import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Phase 15 R-007 — login throttling. Per-IP and per-account independent
+# limiters; either tripping returns the same generic 429 to avoid leaking
+# which dimension was hit. Limits target credential-stuffing + brute-force,
+# not legitimate user typos.
+_LOGIN_LIMIT_PER_IP = RateLimiter(max_attempts=20, window_seconds=900)  # 20/15min
+_LOGIN_LIMIT_PER_ACCOUNT = RateLimiter(max_attempts=10, window_seconds=900)  # 10/15min
 
 _US_STATE_CODES = frozenset(code for code, _ in US_STATES)
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z\-' .]{0,99}$")
@@ -121,6 +129,46 @@ async def login_post(
             "github_enabled": GITHUB_ENABLED,
         },
     )
+
+    throttled_error = render(
+        "login.html",
+        {
+            "request": request,
+            "active_page": None,
+            "saved_count": 0,
+            "user": None,
+            "error": "Too many login attempts. Please wait a few minutes and try again.",
+            "github_enabled": GITHUB_ENABLED,
+        },
+        status_code=429,
+    )
+
+    # Per-IP throttle first — protects against credential stuffing across
+    # accounts from the same source. Falls back to "unknown" only if the
+    # request truly has no client info (test client + no override).
+    ip_key = client_ip(request) or "unknown"
+    if not _LOGIN_LIMIT_PER_IP.allow(ip_key):
+        audit.record(
+            storage,
+            action="user.login_throttled",
+            request=request,
+            metadata={"dimension": "ip"},
+        )
+        return throttled_error
+
+    # Per-account throttle — keyed on the submitted email (lowercased)
+    # before format validation so probing variations of one address still
+    # counts. We deliberately count BEFORE looking the user up so the
+    # decision doesn't leak account existence.
+    account_key = email.strip().lower()
+    if not _LOGIN_LIMIT_PER_ACCOUNT.allow(account_key):
+        audit.record(
+            storage,
+            action="user.login_throttled",
+            request=request,
+            metadata={"dimension": "account", "email_hint": account_key[:3]},
+        )
+        return throttled_error
 
     # Validate format before the storage lookup. Collapse format errors
     # into the generic "invalid email or password" response so malformed

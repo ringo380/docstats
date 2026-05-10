@@ -192,6 +192,30 @@ async def add_robots_header(request: Request, call_next):
 # --- Security headers (HSTS only emitted on HTTPS so local http dev still works) ---
 _HSTS_VALUE = "max-age=31536000; includeSubDomains; preload"
 
+# Phase 15 R-006 — Content Security Policy. Permissive on script/style
+# (templates embed inline JS+CSS) but locks down the dangerous directives:
+# frame-ancestors blocks clickjacking, base-uri blocks <base> hijacking,
+# form-action limits where forms can POST, object-src blocks Flash/applet
+# legacy injection. External origins explicitly enumerated (Mapbox geocoder,
+# Google Fonts, GA4, htmx CDN) — adding a new vendor means updating this
+# list.
+_CSP_VALUE = "; ".join(
+    [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' https://www.googletagmanager.com "
+        "https://www.google-analytics.com https://unpkg.com",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' https://fonts.gstatic.com data:",
+        "img-src 'self' data: blob: https:",
+        "connect-src 'self' https://api.mapbox.com "
+        "https://www.google-analytics.com https://region1.google-analytics.com",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "object-src 'none'",
+    ]
+)
+
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
@@ -199,6 +223,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Content-Security-Policy", _CSP_VALUE)
     if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
         response.headers.setdefault("Strict-Transport-Security", _HSTS_VALUE)
     return response
