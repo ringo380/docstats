@@ -31,6 +31,19 @@ def test_baseline_security_headers_present(client: TestClient):
     assert resp.headers.get("X-Robots-Tag") == "noindex, nofollow"
 
 
+def test_csp_header_present_and_locks_dangerous_directives(client: TestClient):
+    resp = client.get("/")
+    csp = resp.headers.get("Content-Security-Policy", "")
+    # The directives that prevent clickjacking, <base> hijacking, and
+    # legacy plugin injection MUST be locked down.
+    assert "frame-ancestors 'none'" in csp
+    assert "base-uri 'self'" in csp
+    assert "form-action 'self'" in csp
+    assert "object-src 'none'" in csp
+    # default-src must be self.
+    assert "default-src 'self'" in csp
+
+
 def test_hsts_only_on_https(client: TestClient):
     # TestClient defaults to http — HSTS must NOT be emitted.
     resp = client.get("/")
