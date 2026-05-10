@@ -43,6 +43,38 @@ jobs:
       - name: Mypy
         run: mypy src/docstats/
 
+  # Phase 15 — vulnerability + secret scanning. Non-blocking initially so
+  # findings surface in PR checks without gating merges. Drop
+  # continue-on-error once the backlog is clean.
+  vuln-scan:
+    name: Vulnerability scan (Trivy)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy on filesystem
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest

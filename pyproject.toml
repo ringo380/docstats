@@ -41,3 +41,6 @@ disable_error_code = ["prop-decorator"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "compliance: Phase 15 compliance/security gates (security headers, log redaction)",
+]
