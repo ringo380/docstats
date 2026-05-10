@@ -189,6 +189,21 @@ async def add_robots_header(request: Request, call_next):
     return response
 
 
+# --- Security headers (HSTS only emitted on HTTPS so local http dev still works) ---
+_HSTS_VALUE = "max-age=31536000; includeSubDomains; preload"
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        response.headers.setdefault("Strict-Transport-Security", _HSTS_VALUE)
+    return response
+
+
 # --- Exception handlers ---
 
 
