@@ -33,7 +33,7 @@ Every vendor that processes, transmits, or stores PHI on behalf of referme.help 
 
 | Vendor | Service | BAA status | Effective | Notes |
 |---|---|---|---|---|
-| Availity | X12 270/271/278 clearinghouse | 🔄 | — | 2026-05-10 email to support@availity.com bounced (address no longer in service). 2026-05-11: registering an Availity Essentials account as **Billing Service** (correct account type for software vendors calling Availity APIs on behalf of providers, not "Healthcare Provider"); awaiting email verification + org approval. Next step: file a Support Case via Essentials → Help & Training → My Support Tickets per the QRG guide. |
+| Availity | X12 270/271/278 clearinghouse | 🔄 | — | 2026-05-10 email to support@availity.com bounced (address no longer in service). 2026-05-11: discovered existing Developer Portal account already in place with the `referme-phase11` app on the Demo Plan. Submitted Contact Sales form at availity.com/contact-sales requesting Standard Plan contracting + BAA template from Trading Partner Management. Also registered a parallel Essentials Billing Service account that day; awaiting routing decision from Availity. |
 | Redox | EHR aggregator | 🔄 | — | BAA bundles with Redox subscription. Sandbox-only currently; production needs new contract. |
 | Epic | App Orchard / Showroom | ⛔ | — | Sandbox listing today; production requires Epic-side approval + BAA. Defer until first customer site requests Epic integration. |
 | Cerner / Oracle Health | SMART app | ⛔ | — | Sandbox only. Same as Epic. |
@@ -67,7 +67,7 @@ Append-only — every BAA-related send recorded here for audit trail.
 | 2026-05-10 | Supabase | support@supabase.io | Business Associate Agreement (BAA) request — Robworks Software / referme.help (project uhnymifvdauzlmaogjfj) | Awaiting reply |
 | 2026-05-10 | Documo | support@documo.com | Business Associate Agreement (BAA) confirmation — Robworks Software / referme.help | Awaiting reply |
 | 2026-05-10 | Availity | support@availity.com | Business Associate Agreement (BAA) confirmation — Robworks Software / referme.help | **Bounced** — address no longer in service. Switching to Essentials portal Support Case. |
-| 2026-05-11 | Availity | (portal Support Case, pending account activation) | Business Associate Agreement (BAA) execution — Robworks Software / referme.help | Pending — registered org as Billing Service; awaiting email verification + org approval. |
+| 2026-05-11 | Availity | availity.com/contact-sales (Marketo form → Trading Partner Management) | Standard Plan contracting + BAA execution — referme.help (existing Demo Plan app `referme-phase11`) | Submitted. Awaiting routing to Trading Partner Management. |
 
 If no reply within 14 days, bump (one polite follow-up, then escalate via vendor portal / sales channel).
 
