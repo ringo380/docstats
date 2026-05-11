@@ -33,7 +33,7 @@ Every vendor that processes, transmits, or stores PHI on behalf of referme.help 
 
 | Vendor | Service | BAA status | Effective | Notes |
 |---|---|---|---|---|
-| Availity | X12 270/271/278 clearinghouse | 🔄 | — | BAA confirmation request sent 2026-05-10 to support@availity.com asking whether BAA is on file from existing Essentials API contract; awaiting reply. |
+| Availity | X12 270/271/278 clearinghouse | 🔄 | — | 2026-05-10 email to support@availity.com bounced (address no longer in service). 2026-05-11: registering an Availity Essentials account as **Billing Service** (correct account type for software vendors calling Availity APIs on behalf of providers, not "Healthcare Provider"); awaiting email verification + org approval. Next step: file a Support Case via Essentials → Help & Training → My Support Tickets per the QRG guide. |
 | Redox | EHR aggregator | 🔄 | — | BAA bundles with Redox subscription. Sandbox-only currently; production needs new contract. |
 | Epic | App Orchard / Showroom | ⛔ | — | Sandbox listing today; production requires Epic-side approval + BAA. Defer until first customer site requests Epic integration. |
 | Cerner / Oracle Health | SMART app | ⛔ | — | Sandbox only. Same as Epic. |
@@ -66,7 +66,8 @@ Append-only — every BAA-related send recorded here for audit trail.
 | 2026-05-10 | Anthropic | support@anthropic.com | Business Associate Agreement (BAA) request for Claude API — Robworks Software / referme.help | Awaiting reply |
 | 2026-05-10 | Supabase | support@supabase.io | Business Associate Agreement (BAA) request — Robworks Software / referme.help (project uhnymifvdauzlmaogjfj) | Awaiting reply |
 | 2026-05-10 | Documo | support@documo.com | Business Associate Agreement (BAA) confirmation — Robworks Software / referme.help | Awaiting reply |
-| 2026-05-10 | Availity | support@availity.com | Business Associate Agreement (BAA) confirmation — Robworks Software / referme.help | Awaiting reply |
+| 2026-05-10 | Availity | support@availity.com | Business Associate Agreement (BAA) confirmation — Robworks Software / referme.help | **Bounced** — address no longer in service. Switching to Essentials portal Support Case. |
+| 2026-05-11 | Availity | (portal Support Case, pending account activation) | Business Associate Agreement (BAA) execution — Robworks Software / referme.help | Pending — registered org as Billing Service; awaiting email verification + org approval. |
 
 If no reply within 14 days, bump (one polite follow-up, then escalate via vendor portal / sales channel).
 
@@ -75,3 +76,4 @@ If no reply within 14 days, bump (one polite follow-up, then escalate via vendor
 - **Railway BAA timeline**: open ticket as of 2026-05-09. If no response by 2026-06-09, evaluate Fly.io migration.
 - **Supabase Storage scope**: confirm the BAA explicitly covers the `attachments` bucket (not just Postgres rows).
 - **Resend Business upgrade**: trigger upgrade when (a) first paying customer signs, OR (b) we start sending anything with PHI in the body (we shouldn't).
+- **Round 1 bounce sweep**: 2026-05-10 sends to `support@{resend,cloudmersive,anthropic,supabase.io,documo}.com` should all reach a live mailbox, but the Availity address is dead — scan the Sent folder + Inbox 24-48h after each send for delivery failures; mark any bounced vendor in this register and switch to portal/web-form/phone path.
