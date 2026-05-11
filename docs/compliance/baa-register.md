@@ -26,14 +26,14 @@ Every vendor that processes, transmits, or stores PHI on behalf of referme.help 
 | Vendor | Service | BAA status | Effective | Notes |
 |---|---|---|---|---|
 | Resend | Transactional email | 🔄 | — | Business tier required for BAA. Currently on Pro. Request sent 2026-05-10 to support@resend.com asking for plan-tier confirmation + BAA execution path; awaiting reply. |
-| Documo | Fax | 🔄 | — | BAA available on production plan. Request sent. |
+| Documo | Fax | 🔄 | — | BAA confirmation request sent 2026-05-10 to support@documo.com asking whether BAA is on file from existing contract; awaiting reply. |
 | DataMotion | Direct Trust HISP | 🔄 | — | BAA bundles with HISP contract. Not yet contracted. |
 
 ## Clinical integrations
 
 | Vendor | Service | BAA status | Effective | Notes |
 |---|---|---|---|---|
-| Availity | X12 270/271/278 clearinghouse | 🔄 | — | BAA standard on Essentials API contract. |
+| Availity | X12 270/271/278 clearinghouse | 🔄 | — | BAA confirmation request sent 2026-05-10 to support@availity.com asking whether BAA is on file from existing Essentials API contract; awaiting reply. |
 | Redox | EHR aggregator | 🔄 | — | BAA bundles with Redox subscription. Sandbox-only currently; production needs new contract. |
 | Epic | App Orchard / Showroom | ⛔ | — | Sandbox listing today; production requires Epic-side approval + BAA. Defer until first customer site requests Epic integration. |
 | Cerner / Oracle Health | SMART app | ⛔ | — | Sandbox only. Same as Epic. |
@@ -65,6 +65,8 @@ Append-only — every BAA-related send recorded here for audit trail.
 | 2026-05-10 | Cloudmersive | support@cloudmersive.com | Business Associate Agreement (BAA) request — Robworks Software / referme.help | Awaiting reply |
 | 2026-05-10 | Anthropic | support@anthropic.com | Business Associate Agreement (BAA) request for Claude API — Robworks Software / referme.help | Awaiting reply |
 | 2026-05-10 | Supabase | support@supabase.io | Business Associate Agreement (BAA) request — Robworks Software / referme.help (project uhnymifvdauzlmaogjfj) | Awaiting reply |
+| 2026-05-10 | Documo | support@documo.com | Business Associate Agreement (BAA) confirmation — Robworks Software / referme.help | Awaiting reply |
+| 2026-05-10 | Availity | support@availity.com | Business Associate Agreement (BAA) confirmation — Robworks Software / referme.help | Awaiting reply |
 
 If no reply within 14 days, bump (one polite follow-up, then escalate via vendor portal / sales channel).
 
