@@ -31,7 +31,7 @@ Every vendor that processes, transmits, or stores PHI on behalf of referme.help 
 | Vendor | Service | BAA status | Effective | Notes |
 |---|---|---|---|---|
 | Resend | Transactional email | 💸 | — | 2026-05-11 reply from Brian (Customer Success) answered sub-processor list (resend.com/legal/subprocessors) + breach notification (72h via email) but **did not address the BAA itself**. BAA is gated to the Business plan ($20/mo upgrade from Pro). **Deferred until first paying customer.** Mitigation while deferred: keep the "no PHI in email bodies, signed-link pattern only" discipline so a transient BAA gap doesn't expose PHI through this channel. |
-| Documo | Fax | 🔄 | — | 2026-05-11 reply (ticket #137511) from Customer Success: outreach email address not on file. Vendor asking for the account number (Documo dashboard → Account Details → Account Settings). **Action: reply with account number to unblock.** Once unblocked, BAA should be bundled with the existing paid Documo contract (qualifies as "included"). |
+| Documo | Fax | 💸 | — | 2026-05-12 clarification: no Documo signup yet — earlier register entry incorrectly assumed an existing paid account. Documo's free tier doesn't include BAA, and we have no paid plan to bundle one into, so this falls under the "free-or-included only" funding policy. **Production fax delivery is not active.** Re-engage when first paying customer funds the Documo signup + BAA. Existing ticket #137511 will close on its own — we won't be replying with an account number. |
 | DataMotion | Direct Trust HISP | 🔄 | — | BAA bundles with HISP contract. Not yet contracted. |
 
 ## Clinical integrations
@@ -70,7 +70,7 @@ Append-only — every BAA-related send recorded here for audit trail.
 | 2026-05-10 | Cloudmersive | support@cloudmersive.com | Business Associate Agreement (BAA) request — Robworks Software / referme.help | Awaiting reply |
 | 2026-05-10 | Anthropic | support@anthropic.com | Business Associate Agreement (BAA) request for Claude API — Robworks Software / referme.help | Awaiting reply |
 | 2026-05-10 | Supabase | support@supabase.io | Business Associate Agreement (BAA) request — Robworks Software / referme.help (project uhnymifvdauzlmaogjfj) | Awaiting reply |
-| 2026-05-10 | Documo | support@documo.com | Business Associate Agreement (BAA) confirmation — Robworks Software / referme.help | Awaiting reply |
+| 2026-05-10 | Documo | support@documo.com | Business Associate Agreement (BAA) confirmation — Robworks Software / referme.help | **Closed** — vendor asked for account number; we don't have a Documo signup (free tier doesn't include BAA, no paid plan to bundle into). Ticket #137511 will close on its own; defer until first paying customer funds the signup. |
 | 2026-05-10 | Availity | support@availity.com | Business Associate Agreement (BAA) confirmation — Robworks Software / referme.help | **Bounced** — address no longer in service. Switching to Essentials portal Support Case. |
 | 2026-05-11 | Availity | availity.com/contact-sales (Marketo form → Trading Partner Management) | Standard Plan contracting + BAA execution — referme.help (existing Demo Plan app `referme-phase11`) | Submitted. Awaiting routing to Trading Partner Management. |
 
