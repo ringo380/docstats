@@ -44,18 +44,18 @@ All three are tracked with explicit treatment plans below. None block pilot work
 - **Due**: Re-evaluate quarterly.
 - **Status**: Accepted.
 
-### R-003: BAAs not all signed
+### R-003: BAAs not all signed — paid BAAs deferred until revenue
 
 - **Asset**: Legal posture for PHI processing.
 - **Threat**: HIPAA enforcement action; customer breach-of-contract claims.
-- **Vulnerability**: Per `baa-register.md`, several vendors are still 🔄 in progress.
-- **Likelihood**: Low (pre-revenue, no real PHI flowing yet); Medium once first paying customer signs.
+- **Vulnerability**: Per `baa-register.md`, several vendors gate BAA execution to a paid plan we have not funded (Supabase Team ≈ $7–10k/year; Resend Business; Cloudmersive enterprise). Per the explicit pre-revenue funding policy, those are 💸 (deferred until revenue).
+- **Likelihood**: Low pre-revenue (no real PHI flowing); becomes High the moment a paying customer onboards if upgrades haven't been funded simultaneously.
 - **Impact**: High.
-- **Risk**: HIGH (rises to "do not proceed" if PHI flows before BAAs are signed).
-- **Treatment**: Mitigate. Send all outstanding BAA requests within 7 days. Track to closure in `baa-register.md`. Do not onboard a paying customer until 100% of PHI-touching vendors are ✅.
+- **Risk**: HIGH if PHI flows before BAAs are signed; LOW while we strictly enforce the no-real-PHI gate below.
+- **Treatment**: **Partial mitigation + accepted residual.** Pursue all free / form-based / already-bundled BAAs to closure (Anthropic, Documo, Availity Trading Partner, Railway ticket). Paid-tier-gated BAAs (Supabase, Resend, Cloudmersive) explicitly deferred until first paying customer funds the upgrade. Hard gate: **no real patient PHI in production until 100% of PHI-touching vendors are ✅** — sandbox and synthetic-data work continues unrestricted. See R-011 for the gate itself.
 - **Owner**: Founder.
-- **Due**: 2026-08-15.
-- **Status**: Open.
+- **Due**: Re-evaluate at first revenue event.
+- **Status**: Partially accepted (deferred), partially open (free-tier BAAs still actively pursued).
 
 ### R-004: No external pen test
 
@@ -135,6 +135,26 @@ All three are tracked with explicit treatment plans below. None block pilot work
 - **Due**: N/A.
 - **Status**: Mitigated.
 
+### R-011: PHI launch gate — production-PHI block until paid-tier BAAs are funded
+
+- **Asset**: HIPAA-compliant production posture.
+- **Threat**: A paying customer (or pilot organization) is onboarded into production and starts pushing real PHI through Supabase / Resend / Cloudmersive **before** those vendors' BAAs are signed, because the upgrades were deferred for cost reasons.
+- **Vulnerability**: Per R-003, paid-tier-gated BAAs are deferred until revenue. If onboarding outpaces upgrade execution, the gap is a HIPAA violation on day 1 of revenue.
+- **Likelihood**: Medium — pre-revenue today, but the whole point of the deferral is that we expect to need to flip the switch quickly when a deal closes.
+- **Impact**: Critical (regulatory + contractual).
+- **Risk**: HIGH at first revenue event; LOW today.
+- **Treatment**: Mitigate via a hard pre-launch checklist. Before the **first** real-PHI byte enters production:
+  1. Supabase Team plan active + HIPAA add-on processed + BAA countersigned and filed.
+  2. Resend Business plan active + BAA countersigned (or PHI-channel removed if BAA can't be executed in time).
+  3. Cloudmersive enterprise BAA in hand, OR replacement scanner (ClamAV sidecar) in production with a documented test result.
+  4. All other 🔄 vendors moved to ✅.
+  5. Update `baa-register.md` + this risk row + the compliance one-pager in the same PR that launches the customer.
+
+  The checklist lives in `docs/compliance/policies/business-continuity.md` (new "PHI launch gate" section to be added) and gets re-verified before each new BAA-touching vendor is added.
+- **Owner**: Founder.
+- **Due**: Before first paying customer's production go-live.
+- **Status**: Open (no current customer; gate not yet tripped).
+
 ### R-010: Compromised vendor key
 
 - **Asset**: Whatever the key authenticates to (Supabase, Availity, Documo, Resend, EHR client secrets).
@@ -154,14 +174,15 @@ All three are tracked with explicit treatment plans below. None block pilot work
 |---|---|---|
 | R-001 Founder concentration | Open | 2026-09-30 |
 | R-002 No SOC 2 | Accepted | Re-evaluate quarterly |
-| R-003 BAAs incomplete | Open | 2026-08-15 |
+| R-003 BAAs incomplete (paid-tier deferred) | Partially accepted | Re-evaluate at first revenue |
 | R-004 No pen test | Accepted (interim) | On first enterprise deal |
-| R-005 Cross-region backup | Open | 2026-Q3 |
-| R-006 No CSP header | Open | 2026-Q3 |
-| R-007 No login throttling | Open | 2026-Q3 |
+| R-005 Cross-region backup (Supabase Team can't do it natively → pg_dump → S3 cron) | Open | 2026-Q3 |
+| R-006 No CSP header | Mitigated | — |
+| R-007 No login throttling | Mitigated | — |
 | R-008 PHI in logs | Mitigated | — |
 | R-009 Webhook replay | Mitigated | — |
 | R-010 Compromised vendor key | Open (rotation pending) | 2027-Q1 |
+| R-011 PHI launch gate (paid-BAA must be funded before first paying customer go-live) | Open | Before first paying customer's production go-live |
 
 ## Sign-off
 

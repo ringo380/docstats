@@ -122,3 +122,18 @@ Drill log: `docs/compliance/dr-drills.md` (created on first drill).
 ## Annual test
 
 The full BCP/DR plan is tested end-to-end at least annually. Test results documented in `docs/compliance/dr-drills.md` with deficiencies tracked to closure.
+
+## PHI launch gate (cross-references R-011)
+
+The platform is engineered to handle PHI but, per the pre-revenue funding policy in `docs/compliance/baa-register.md`, a subset of sub-processor BAAs are deferred until first paying customer funds the plan upgrades. **Real patient PHI must not enter production until every item below is checked:**
+
+1. **Supabase**: Team plan active (~$599/mo) + HIPAA add-on processed + BAA countersigned and filed in `~/Documents/robworks/baa/`. Project's HIPAA Security Advisor checklist green (SSL enforcement, network restrictions, MFA on all accounts, PITR on the project carrying PHI).
+2. **Resend**: Business plan active + BAA countersigned, OR the email channel is removed from the PHI path entirely (and the signed-link discipline remains in place for non-PHI account email).
+3. **Cloudmersive enterprise BAA in hand**, OR replacement scanner (self-hosted ClamAV in a Railway sidecar) deployed to production with a documented test result and `VIRUS_SCAN_REQUIRED=1` still enforced fail-closed.
+4. **Anthropic** BAA on file if Claude API is on the PHI path (it is not today; defer until Phase 16 ships).
+5. **Documo**, **Availity** (Trading Partner Management), **Redox** (production tier), **Railway**: each at ✅ in `docs/compliance/baa-register.md`.
+6. **DataMotion** (or whichever HISP we contract) BAA bundled with the signed HISP contract if Direct Trust is on the PHI path.
+
+The first paying customer's contract MUST NOT close at "we'll be ready next week" — the upgrade-and-sign sequence above is week-long minimum (Supabase HIPAA add-on processing time alone is days). Build the timeline into the deal.
+
+When the gate is crossed for the first time, update `baa-register.md`, `risk-assessment-YYYY.md` (R-011 status), and this section with the date and the customer name (one line; we're tracking the event, not the customer roster). Subsequent customers don't re-trigger the gate, but new BAA-touching vendors do.

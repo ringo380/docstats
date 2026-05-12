@@ -77,6 +77,7 @@ We can also walk through the application's PHI-flow in a 30-minute call.
 - We are a one-person operation today. Single-point-of-failure risk on the founder is documented + partially mitigated; not eliminated.
 - We have not yet undergone third-party penetration testing.
 - We do not currently carry cyber insurance; engaging a carrier before first paying customer.
+- **BAA execution policy**: a subset of our sub-processors (notably our database/storage host and our transactional email vendor) gate BAA execution behind paid plan tiers. We are pre-revenue, so those BAAs are deferred until first paying customer funds the plan upgrades. We will **not** route real patient PHI through production until every PHI-touching vendor has a countersigned BAA on file. Until then, the platform runs against synthetic data + sandbox environments. The pre-launch gate is documented in our internal risk register (R-011).
 
 If any of the above is a hard procurement blocker, let's talk early — we can sometimes find a path (e.g., conditional BAA + verbal commitment to fund audit by [date]).
 
