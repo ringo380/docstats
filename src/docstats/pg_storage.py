@@ -383,6 +383,7 @@ def _row_to_insurance_plan(row: dict) -> InsurancePlan:
         requires_prior_auth=bool(row.get("requires_prior_auth", False)),
         notes=row.get("notes"),
         availity_payer_id=row.get("availity_payer_id"),
+        shared_with_family=bool(row.get("shared_with_family", False)),
         created_at=created,
         updated_at=updated,
         deleted_at=_parse_ts(row.get("deleted_at")),
@@ -4471,6 +4472,7 @@ class PostgresStorage(StorageBase):
             accepted_at=_parse_ts(row.get("accepted_at")),
             revoked_at=_parse_ts(row.get("revoked_at")),
             created_at=_parse_ts(row["created_at"]) or datetime.now(tz=timezone.utc),
+            source_patient_id=row.get("source_patient_id"),
         )
 
     def create_family_link(
@@ -4480,6 +4482,7 @@ class PostgresStorage(StorageBase):
         relationship: str,
         invite_token: str,
         invite_email: str,
+        source_patient_id: int | None = None,
     ) -> FamilyLink:
         row = {
             "initiator_user_id": initiator_user_id,
@@ -4487,6 +4490,7 @@ class PostgresStorage(StorageBase):
             "relationship": relationship,
             "invite_token": invite_token,
             "invite_email": invite_email,
+            "source_patient_id": source_patient_id,
             "created_at": _now_iso(),
         }
         result = self._t("family_links").insert(row).execute()
@@ -4571,6 +4575,122 @@ class PostgresStorage(StorageBase):
             self._t("family_links").update({"revoked_at": _now_iso()}).eq("id", link_id).execute()
         )
         return bool(result.data)
+
+    def list_linked_family_user_ids(self, user_id: int) -> list[int]:
+        r1 = (
+            self._t("family_links")
+            .select("linked_user_id")
+            .eq("initiator_user_id", user_id)
+            .is_("revoked_at", None)
+            .not_.is_("accepted_at", None)
+            .execute()
+        )
+        r2 = (
+            self._t("family_links")
+            .select("initiator_user_id")
+            .eq("linked_user_id", user_id)
+            .is_("revoked_at", None)
+            .not_.is_("accepted_at", None)
+            .execute()
+        )
+        ids: set[int] = set()
+        for row in r1.data:
+            ids.add(int(row["linked_user_id"]))
+        for row in r2.data:
+            ids.add(int(row["initiator_user_id"]))
+        ids.discard(user_id)
+        return sorted(ids)
+
+    def reparent_patient_to_user(
+        self,
+        patient_id: int,
+        *,
+        from_user_id: int,
+        to_user_id: int,
+    ) -> int:
+        # Postgres REST has no multi-statement tx; fetch + verify + update with
+        # compensation on partial failure.
+        check = (
+            self._t("patients")
+            .select("id,scope_user_id")
+            .eq("id", patient_id)
+            .is_("deleted_at", None)
+            .execute()
+        )
+        if not check.data:
+            raise ValueError(f"Patient {patient_id} not found")
+        current_scope = check.data[0].get("scope_user_id")
+        if current_scope != from_user_id:
+            raise ValueError(f"Patient {patient_id} not owned by user {from_user_id}")
+
+        # Fetch ids of referrals to move (need count + compensation list).
+        ref_ids_query = (
+            self._t("referrals")
+            .select("id")
+            .eq("patient_id", patient_id)
+            .eq("scope_user_id", from_user_id)
+            .is_("deleted_at", None)
+            .execute()
+        )
+        referral_ids = [int(r["id"]) for r in ref_ids_query.data]
+
+        # Move referrals first so a failure leaves the patient row untouched.
+        if referral_ids:
+            self._t("referrals").update(
+                {"scope_user_id": to_user_id, "updated_at": _now_iso()}
+            ).in_("id", referral_ids).execute()
+
+        try:
+            self._t("patients").update(
+                {
+                    "scope_user_id": to_user_id,
+                    "relationship": None,
+                    "updated_at": _now_iso(),
+                }
+            ).eq("id", patient_id).execute()
+        except Exception:
+            # Compensate: roll referrals back to the prior owner so we don't
+            # leave a split-ownership state.
+            if referral_ids:
+                self._t("referrals").update(
+                    {"scope_user_id": from_user_id, "updated_at": _now_iso()}
+                ).in_("id", referral_ids).execute()
+            raise
+
+        return len(referral_ids)
+
+    def set_insurance_plan_share(
+        self, scope: Scope, plan_id: int, *, shared: bool
+    ) -> InsurancePlan | None:
+        query = (
+            self._t("insurance_plans")
+            .update({"shared_with_family": shared, "updated_at": _now_iso()})
+            .eq("id", plan_id)
+            .not_.is_("scope_user_id", None)
+            .is_("deleted_at", None)
+        )
+        query = self._apply_scope(query, scope)
+        result = query.execute()
+        if not result.data:
+            return None
+        return _row_to_insurance_plan(result.data[0])
+
+    def list_shared_family_plans(self, user_id: int) -> list[InsurancePlan]:
+        linked_ids = self.list_linked_family_user_ids(user_id)
+        if not linked_ids:
+            return []
+        result = (
+            self._t("insurance_plans")
+            .select("*")
+            .in_("scope_user_id", linked_ids)
+            .eq("shared_with_family", True)
+            .is_("deleted_at", None)
+            .order("payer_name")
+            .order("plan_name")
+            .order("id")
+            .execute()
+        )
+        return [_row_to_insurance_plan(r) for r in result.data]
 
     def close(self) -> None:
         pass  # supabase-py client has no close method

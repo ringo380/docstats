@@ -121,6 +121,40 @@
     </div>
   </fieldset>
 
+  {% if insurance_plans or shared_insurance_plans %}
+  <fieldset>
+    <legend>Insurance <span class="sub">(optional)</span></legend>
+    {% if user.account_type == 'patient' %}
+      <p class="sub" style="margin-bottom: 0.5rem;">Pick a plan so the specialist's office can verify coverage. <a href="/profile/insurance">Manage plans</a>.</p>
+    {% endif %}
+    <label>Insurance plan
+      <select name="payer_plan_id">
+        <option value="">— none —</option>
+        {% if insurance_plans %}
+          <optgroup label="My plans">
+            {% for plan in insurance_plans %}
+              <option value="{{ plan.id }}" {% if values.payer_plan_id == plan.id|string %}selected{% endif %}>
+                {{ plan.payer_name }}{% if plan.plan_name %} — {{ plan.plan_name }}{% endif %}
+              </option>
+            {% endfor %}
+          </optgroup>
+        {% endif %}
+        {% if shared_insurance_plans %}
+          <optgroup label="Shared by family">
+            {% for plan in shared_insurance_plans %}
+              {% set meta = (shared_plan_meta or {}).get(plan.id, {}) %}
+              <option value="{{ plan.id }}" {% if values.payer_plan_id == plan.id|string %}selected{% endif %}>
+                {{ plan.payer_name }}{% if plan.plan_name %} — {{ plan.plan_name }}{% endif %}
+                {% if meta.holder_name %}(shared by {{ meta.holder_name }}){% endif %}
+              </option>
+            {% endfor %}
+          </optgroup>
+        {% endif %}
+      </select>
+    </label>
+  </fieldset>
+  {% endif %}
+
   <div class="action-bar">
     <a href="/referrals" class="btn btn-secondary">Cancel</a>
     <button type="submit" class="btn btn-primary">Create as draft</button>

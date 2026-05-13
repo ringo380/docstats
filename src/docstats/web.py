@@ -44,6 +44,7 @@ from docstats.routes.eligibility import router as eligibility_router
 from docstats.routes.prior_auth import router as prior_auth_router
 from docstats.routes.ehr import router as ehr_router
 from docstats.routes.ehr_redox import router as ehr_redox_router
+from docstats.routes.insurance import router as insurance_router
 from docstats.routes.patients import router as patients_router
 from docstats.routes.profile import router as profile_router
 from docstats.routes.referrals import router as referrals_router
@@ -332,6 +333,7 @@ async def _saved_export_json_redirect(request: Request):
 app.include_router(auth_router)
 app.include_router(onboarding_router)
 app.include_router(profile_router)
+app.include_router(insurance_router)
 app.include_router(search_router)
 app.include_router(api_router)
 app.include_router(api_v2_router)

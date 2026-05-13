@@ -88,6 +88,70 @@ def _clean(value: str | None) -> str | None:
     return v or None
 
 
+def _insurance_plans_for_picker(
+    storage: StorageBase, scope: Scope, current_user: dict
+) -> tuple[list[Any], list[Any], dict[int, dict[str, Any]]]:
+    """Return (own_plans, shared_family_plans, shared_meta) for the picker.
+
+    Only patient accounts surface shared-family plans — for org-scoped users
+    the family-sharing concept doesn't apply.
+    """
+    own = storage.list_insurance_plans(scope)
+    shared: list[Any] = []
+    meta: dict[int, dict[str, Any]] = {}
+    if current_user.get("account_type") == "patient":
+        shared = storage.list_shared_family_plans(current_user["id"])
+        for plan in shared:
+            holder_id = plan.scope_user_id
+            if holder_id is None:
+                continue
+            holder = storage.get_user_by_id(holder_id) or {}
+            name = (
+                f"{holder.get('first_name', '')} {holder.get('last_name', '')}".strip()
+                or holder.get("email", "")
+                or "Family"
+            )
+            meta[plan.id] = {"holder_name": name, "holder_user_id": holder_id}
+    return own, shared, meta
+
+
+def _resolve_payer_plan_for_referral(
+    storage: StorageBase,
+    scope: Scope,
+    current_user: dict,
+    raw_plan_id: int | None,
+) -> int | None:
+    """Translate a wizard-picked plan_id to a value valid in ``scope``.
+
+    Own-scope plans return as-is. Shared family plans are cloned into the
+    current user's scope so the resulting referral has a clean local FK
+    (avoids cross-scope ``get_insurance_plan`` lookups in exports).
+    Unknown ids return None — caller decides whether that's an error.
+    """
+    if raw_plan_id is None:
+        return None
+    if storage.get_insurance_plan(scope, raw_plan_id) is not None:
+        return raw_plan_id
+    if current_user.get("account_type") != "patient":
+        return None
+    for shared in storage.list_shared_family_plans(current_user["id"]):
+        if shared.id != raw_plan_id:
+            continue
+        clone = storage.create_insurance_plan(
+            scope,
+            payer_name=shared.payer_name,
+            plan_name=shared.plan_name,
+            plan_type=shared.plan_type,
+            member_id_pattern=shared.member_id_pattern,
+            group_id_pattern=shared.group_id_pattern,
+            requires_referral=shared.requires_referral,
+            requires_prior_auth=shared.requires_prior_auth,
+            notes=shared.notes,
+        )
+        return clone.id
+    return None
+
+
 def _validate_optional_npi(value: str | None, field: str) -> str | None:
     """Accept blank; reject malformed 10-digit pattern."""
     v = _clean(value)
@@ -259,6 +323,11 @@ async def referral_new_form(
     auto_patient_id: int | None = None
     if current_user.get("account_type") == "patient" and len(patients) == 1:
         auto_patient_id = patients[0].id
+
+    own_plans, shared_plans, shared_plan_meta = _insurance_plans_for_picker(
+        storage, scope, current_user
+    )
+
     return render(
         "referral_new.html",
         _ctx(
@@ -272,6 +341,9 @@ async def referral_new_form(
             errors=None,
             auto_patient_id=auto_patient_id,
             prefill_receiving_npi=receiving_npi,
+            insurance_plans=own_plans,
+            shared_insurance_plans=shared_plans,
+            shared_plan_meta=shared_plan_meta,
         ),
     )
 
@@ -699,6 +771,7 @@ async def referral_create(
     referring_provider_name: str | None = Form(None, max_length=200),
     referring_provider_npi: str | None = Form(None, max_length=10),
     referring_organization: str | None = Form(None, max_length=200),
+    payer_plan_id: str | None = Form(None, max_length=16),
     current_user: dict = Depends(require_phi_consent),
     scope: Scope = Depends(get_scope),
     storage: StorageBase = Depends(get_storage),
@@ -706,8 +779,19 @@ async def referral_create(
     if urgency not in URGENCY_VALUES:
         raise HTTPException(status_code=422, detail="Unknown urgency value.")
 
+    plan_id_int: int | None = None
+    plan_id_clean = (payer_plan_id or "").strip()
+    if plan_id_clean:
+        try:
+            plan_id_int = int(plan_id_clean)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid plan id.") from exc
+
     def _rerender(errors: list[str]) -> Response:
         patients = storage.list_patients(scope, limit=200)
+        own_plans, shared_plans, shared_meta = _insurance_plans_for_picker(
+            storage, scope, current_user
+        )
         return render(
             "referral_new.html",
             _ctx(
@@ -730,8 +814,12 @@ async def referral_create(
                     "referring_provider_name": referring_provider_name,
                     "referring_provider_npi": referring_provider_npi,
                     "referring_organization": referring_organization,
+                    "payer_plan_id": plan_id_clean,
                 },
                 errors=errors,
+                insurance_plans=own_plans,
+                shared_insurance_plans=shared_plans,
+                shared_plan_meta=shared_meta,
             ),
         )
 
@@ -779,6 +867,17 @@ async def referral_create(
                 effective_scope = _other_scope
                 break
 
+    # Resolve the picked insurance plan to a row valid in effective_scope.
+    # Family-shared plans get cloned into the local scope so create_referral's
+    # scope-strict validation passes and downstream exports can re-fetch.
+    resolved_plan_id: int | None = None
+    if plan_id_int is not None:
+        resolved_plan_id = _resolve_payer_plan_for_referral(
+            storage, effective_scope, current_user, plan_id_int
+        )
+        if resolved_plan_id is None:
+            return _rerender(["The selected insurance plan isn't available."])
+
     try:
         referral = storage.create_referral(
             effective_scope,
@@ -794,6 +893,7 @@ async def referral_create(
             referring_provider_name=_clean(referring_provider_name),
             referring_provider_npi=ref_npi,
             referring_organization=_clean(referring_organization),
+            payer_plan_id=resolved_plan_id,
             created_by_user_id=current_user["id"],
         )
     except ValueError as e:

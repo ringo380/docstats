@@ -79,6 +79,11 @@ class InsurancePlan(BaseModel):
     # Availity payer link (Phase 11.D) — soft link, not a FK
     availity_payer_id: str | None = None
 
+    # When True (user-scoped plans only), any user linked to the holder via an
+    # active family_links row sees this plan in their plan picker (read-only).
+    # Org-scoped plans ignore this flag — org members already share visibility.
+    shared_with_family: bool = False
+
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None

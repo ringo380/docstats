@@ -406,6 +406,9 @@ def _row_to_insurance_plan(row: sqlite3.Row) -> InsurancePlan:
         requires_prior_auth=bool(row["requires_prior_auth"]),
         notes=row["notes"],
         availity_payer_id=row["availity_payer_id"] if "availity_payer_id" in row.keys() else None,
+        shared_with_family=bool(row["shared_with_family"])
+        if "shared_with_family" in row.keys() and row["shared_with_family"] is not None
+        else False,
         created_at=created,
         updated_at=updated,
         deleted_at=_parse_sqlite_utc(row["deleted_at"]),
@@ -623,6 +626,8 @@ class Storage(StorageBase):
         self._migrate_prior_auth_submissions()
         self._migrate_patients_relationship()
         self._migrate_family_links()
+        self._migrate_insurance_plans_shared_with_family()
+        self._migrate_family_links_source_patient_id()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -5774,6 +5779,26 @@ class Storage(StorageBase):
         )
         self._conn.commit()
 
+    def _migrate_insurance_plans_shared_with_family(self) -> None:
+        try:
+            self._conn.execute(
+                "ALTER TABLE insurance_plans "
+                "ADD COLUMN shared_with_family INTEGER NOT NULL DEFAULT 0"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+    def _migrate_family_links_source_patient_id(self) -> None:
+        try:
+            self._conn.execute(
+                "ALTER TABLE family_links ADD COLUMN source_patient_id INTEGER "
+                "REFERENCES patients(id) ON DELETE SET NULL"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     @staticmethod
     def _row_to_family_link(row: sqlite3.Row) -> FamilyLink:
         return FamilyLink(
@@ -5786,6 +5811,9 @@ class Storage(StorageBase):
             accepted_at=_parse_sqlite_utc(row["accepted_at"]),
             revoked_at=_parse_sqlite_utc(row["revoked_at"]),
             created_at=_parse_sqlite_utc(row["created_at"]) or datetime.now(tz=timezone.utc),
+            source_patient_id=row["source_patient_id"]
+            if "source_patient_id" in row.keys()
+            else None,
         )
 
     def create_family_link(
@@ -5795,12 +5823,21 @@ class Storage(StorageBase):
         relationship: str,
         invite_token: str,
         invite_email: str,
+        source_patient_id: int | None = None,
     ) -> FamilyLink:
         cursor = self._conn.execute(
             """INSERT INTO family_links
-               (initiator_user_id, linked_user_id, relationship, invite_token, invite_email)
-               VALUES (?, ?, ?, ?, ?)""",
-            (initiator_user_id, linked_user_id, relationship, invite_token, invite_email),
+               (initiator_user_id, linked_user_id, relationship, invite_token, invite_email,
+                source_patient_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                initiator_user_id,
+                linked_user_id,
+                relationship,
+                invite_token,
+                invite_email,
+                source_patient_id,
+            ),
         )
         self._conn.commit()
         row = self._conn.execute(
@@ -5857,3 +5894,77 @@ class Storage(StorageBase):
         )
         self._conn.commit()
         return cursor.rowcount > 0
+
+    def list_linked_family_user_ids(self, user_id: int) -> list[int]:
+        rows = self._conn.execute(
+            """SELECT initiator_user_id, linked_user_id FROM family_links
+               WHERE accepted_at IS NOT NULL AND revoked_at IS NULL
+               AND (initiator_user_id = ? OR linked_user_id = ?)""",
+            (user_id, user_id),
+        ).fetchall()
+        ids: set[int] = set()
+        for r in rows:
+            for uid in (int(r["initiator_user_id"]), int(r["linked_user_id"])):
+                if uid != user_id:
+                    ids.add(uid)
+        return sorted(ids)
+
+    def reparent_patient_to_user(
+        self,
+        patient_id: int,
+        *,
+        from_user_id: int,
+        to_user_id: int,
+    ) -> int:
+        with self._conn:
+            row = self._conn.execute(
+                "SELECT scope_user_id FROM patients WHERE id = ? AND deleted_at IS NULL",
+                (patient_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Patient {patient_id} not found")
+            if row["scope_user_id"] != from_user_id:
+                raise ValueError(f"Patient {patient_id} not owned by user {from_user_id}")
+            cursor = self._conn.execute(
+                "UPDATE referrals SET scope_user_id = ?, "
+                "updated_at = datetime('now') "
+                "WHERE patient_id = ? AND scope_user_id = ? AND deleted_at IS NULL",
+                (to_user_id, patient_id, from_user_id),
+            )
+            referrals_moved = cursor.rowcount
+            self._conn.execute(
+                "UPDATE patients SET scope_user_id = ?, relationship = NULL, "
+                "updated_at = datetime('now') WHERE id = ?",
+                (to_user_id, patient_id),
+            )
+        return referrals_moved
+
+    def set_insurance_plan_share(
+        self, scope: Scope, plan_id: int, *, shared: bool
+    ) -> InsurancePlan | None:
+        clause, scope_params = scope_sql_clause(scope)
+        cursor = self._conn.execute(
+            f"UPDATE insurance_plans SET shared_with_family = ?, "
+            f"updated_at = datetime('now') "
+            f"WHERE id = ? AND scope_user_id IS NOT NULL "
+            f"AND {clause} AND deleted_at IS NULL",
+            [1 if shared else 0, plan_id, *scope_params],
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_insurance_plan(scope, plan_id)
+
+    def list_shared_family_plans(self, user_id: int) -> list[InsurancePlan]:
+        linked_ids = self.list_linked_family_user_ids(user_id)
+        if not linked_ids:
+            return []
+        placeholders = ",".join("?" * len(linked_ids))
+        rows = self._conn.execute(
+            f"SELECT * FROM insurance_plans "
+            f"WHERE scope_user_id IN ({placeholders}) "
+            f"AND shared_with_family = 1 AND deleted_at IS NULL "
+            f"ORDER BY payer_name ASC, plan_name ASC, id ASC",
+            linked_ids,
+        ).fetchall()
+        return [_row_to_insurance_plan(r) for r in rows]
