@@ -42,12 +42,13 @@
           <span class="badge badge-warn">Upgrade invite pending</span>
         {% endif %}
       </span>
-      <span class="row-actions">
+      <span class="row-actions" id="dep-actions-{{ p.id }}">
         {% if meta.pending_upgrade_link_id %}
           <button class="btn btn-secondary btn-sm"
                   hx-delete="/profile/family/link/{{ meta.pending_upgrade_link_id }}"
-                  hx-target="#dep-row-{{ p.id }}"
-                  hx-swap="outerHTML swap:300ms">Cancel invite</button>
+                  hx-target="#dep-actions-{{ p.id }}"
+                  hx-swap="innerHTML"
+                  hx-on::after-request="window.location.reload()">Cancel invite</button>
         {% elif meta.eligible %}
           <details class="dep-upgrade-toggle">
             <summary class="btn btn-secondary btn-sm">Invite to manage their own account</summary>

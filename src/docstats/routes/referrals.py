@@ -123,9 +123,18 @@ def _resolve_payer_plan_for_referral(
 ) -> int | None:
     """Translate a wizard-picked plan_id to a value valid in ``scope``.
 
-    Own-scope plans return as-is. Shared family plans are cloned into the
-    current user's scope so the resulting referral has a clean local FK
+    Own-scope plans return as-is. Plans owned by ``current_user`` but not in
+    ``scope`` (parent picking their plan for a linked family member's
+    referral) and plans shared TO ``current_user`` via family_links are
+    cloned into ``scope`` so the resulting referral has a clean local FK
     (avoids cross-scope ``get_insurance_plan`` lookups in exports).
+
+    Snapshot semantics: each clone is a point-in-time copy. Edits to the
+    holder's plan after cloning don't propagate — referral documents are
+    point-in-time records, not live views. We dedupe against an existing
+    local clone with the same (payer_name, plan_type, plan_name) so picking
+    the same shared plan twice doesn't create N duplicate rows.
+
     Unknown ids return None — caller decides whether that's an error.
     """
     if raw_plan_id is None:
@@ -134,22 +143,44 @@ def _resolve_payer_plan_for_referral(
         return raw_plan_id
     if current_user.get("account_type") != "patient":
         return None
-    for shared in storage.list_shared_family_plans(current_user["id"]):
-        if shared.id != raw_plan_id:
-            continue
-        clone = storage.create_insurance_plan(
-            scope,
-            payer_name=shared.payer_name,
-            plan_name=shared.plan_name,
-            plan_type=shared.plan_type,
-            member_id_pattern=shared.member_id_pattern,
-            group_id_pattern=shared.group_id_pattern,
-            requires_referral=shared.requires_referral,
-            requires_prior_auth=shared.requires_prior_auth,
-            notes=shared.notes,
-        )
-        return clone.id
-    return None
+
+    source = None
+    user_id = current_user["id"]
+    # Case A: the picked plan is the picker's own plan, but the referral is
+    # being created in a linked-family-member's scope.
+    own = storage.get_insurance_plan(Scope(user_id=user_id), raw_plan_id)
+    if own is not None:
+        source = own
+    else:
+        # Case B: the picked plan was shared TO this user by linked family.
+        for shared in storage.list_shared_family_plans(user_id):
+            if shared.id == raw_plan_id:
+                source = shared
+                break
+    if source is None:
+        return None
+
+    # Dedupe against an existing local clone before cloning again.
+    for existing in storage.list_insurance_plans(scope):
+        if (
+            existing.payer_name == source.payer_name
+            and existing.plan_type == source.plan_type
+            and (existing.plan_name or None) == (source.plan_name or None)
+        ):
+            return existing.id
+
+    clone = storage.create_insurance_plan(
+        scope,
+        payer_name=source.payer_name,
+        plan_name=source.plan_name,
+        plan_type=source.plan_type,
+        member_id_pattern=source.member_id_pattern,
+        group_id_pattern=source.group_id_pattern,
+        requires_referral=source.requires_referral,
+        requires_prior_auth=source.requires_prior_auth,
+        notes=source.notes,
+    )
+    return clone.id
 
 
 def _validate_optional_npi(value: str | None, field: str) -> str | None:

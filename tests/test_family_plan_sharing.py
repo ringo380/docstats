@@ -238,3 +238,50 @@ def test_referral_picker_clones_shared_plan(tmp_path: Path):
     assert cloned is not None
     assert cloned.id != plan.id
     assert cloned.payer_name == "Shared"
+
+
+def test_clone_dedupes_on_repeat_selection(tmp_path: Path):
+    storage = Storage(db_path=tmp_path / "s.db")
+    holder_id = storage.create_user("h@x.com", "x")
+    spouse_id = storage.create_user("s@x.com", "x")
+    for uid in (holder_id, spouse_id):
+        storage.record_phi_consent(
+            user_id=uid,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+    _link_users(storage, holder_id, spouse_id)
+    plan = storage.create_insurance_plan(
+        Scope(user_id=holder_id), payer_name="Dedupe", plan_type="ppo"
+    )
+    storage.set_insurance_plan_share(Scope(user_id=holder_id), plan.id, shared=True)
+    pt = storage.create_patient(
+        Scope(user_id=spouse_id),
+        first_name="A",
+        last_name="B",
+        created_by_user_id=spouse_id,
+    )
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _patient_user(spouse_id, "s@x.com")
+    try:
+        client = TestClient(app)
+        for _ in range(3):
+            client.post(
+                "/referrals",
+                data={
+                    "patient_id": str(pt.id),
+                    "reason": "consult",
+                    "urgency": "routine",
+                    "payer_plan_id": str(plan.id),
+                },
+                follow_redirects=False,
+            )
+    finally:
+        app.dependency_overrides.clear()
+    # 3 referrals, but only 1 local clone (dedup by payer_name+plan_type+plan_name).
+    local = storage.list_insurance_plans(Scope(user_id=spouse_id))
+    assert len(local) == 1
+    refs = storage.list_referrals(Scope(user_id=spouse_id), patient_id=pt.id)
+    assert len(refs) == 3
+    assert {r.payer_plan_id for r in refs} == {local[0].id}
