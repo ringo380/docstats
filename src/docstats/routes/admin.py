@@ -1282,6 +1282,7 @@ _KNOWN_AUDIT_ACTIONS: tuple[str, ...] = (
     "provider.unsave",
     "referral.create",
     "referral.delete",
+    "referral.ehr_status_changed",
     "referral.export",
     "referral.status",
     "referral.update",

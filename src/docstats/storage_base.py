@@ -661,13 +661,6 @@ class StorageBase(ABC):
         ...
 
     @abstractmethod
-    def update_referral_ehr_service_request_id(
-        self, referral_id: int, ehr_service_request_id: str
-    ) -> None:
-        """Store the Epic FHIR ServiceRequest.id written back on referral creation."""
-        ...
-
-    @abstractmethod
     def set_referral_ehr_writeback(
         self,
         referral_id: int,

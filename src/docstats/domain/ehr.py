@@ -54,7 +54,7 @@ ECW_SCOPES_EHR_LAUNCH: str = "openid fhirUser launch offline_access"
 REDOX_SCOPES: str = (
     "system/Patient.read system/Condition.read system/MedicationRequest.read "
     "system/AllergyIntolerance.read system/DocumentReference.read "
-    "system/ServiceRequest.write"
+    "system/ServiceRequest.write system/ServiceRequest.read"
 )
 
 

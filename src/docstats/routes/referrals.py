@@ -459,12 +459,17 @@ async def _ehr_post_create_hook(
         if patient is None or not patient.ehr_fhir_id:
             return
 
-        # Pick the most recently created active connection that has a
-        # patient_fhir_id. Iterating `_reg.list_vendors()` and stopping at
-        # the first match picks an arbitrary vendor in multi-vendor accounts,
-        # which can route Patient PHI to the wrong EHR.
+        # Pick the connection whose ``patient_fhir_id`` matches the patient's
+        # imported FHIR id — that's the connection that imported them. Falling
+        # back to "first active connection with any patient_fhir_id" (the
+        # previous behavior — flagged P1 on PR #142) can mis-route in
+        # multi-vendor accounts: if the patient was imported via Cerner but
+        # the user later added an Epic connection, the Epic connection would
+        # be picked first and Patient PHI would be sent to Epic with a
+        # Cerner-format FHIR id.
+        active_conns = storage.list_active_ehr_connections(user_id)
         conn = next(
-            (c for c in storage.list_active_ehr_connections(user_id) if c.patient_fhir_id),
+            (c for c in active_conns if c.patient_fhir_id == patient.ehr_fhir_id),
             None,
         )
         if conn is None:
@@ -766,6 +771,26 @@ async def _redox_post_create_hook(
         conn = storage.get_active_org_ehr_connection(scope.organization_id, "redox")
         if conn is None:
             return
+
+        # Don't double-route: if any user in the org has a SMART connection
+        # whose ``patient_fhir_id`` matches this patient's id, the patient
+        # was imported via SMART and the SMART hook already handled this
+        # referral. Without this guard (flagged P2 on PR #164) we'd POST a
+        # Redox ServiceRequest with a SMART-format FHIR id. We only have a
+        # user-scoped active-connection lister, so this guard isn't exhaustive
+        # across the whole org — but it does cover the common case where the
+        # importing user is also the referral creator.
+        if user_id is not None:
+            smart_match = next(
+                (
+                    c
+                    for c in storage.list_active_ehr_connections(user_id)
+                    if c.patient_fhir_id == ehr_fhir_id and c.ehr_vendor != "redox"
+                ),
+                None,
+            )
+            if smart_match is not None:
+                return
 
         loop = asyncio.get_running_loop()
         try:

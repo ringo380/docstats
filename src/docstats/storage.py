@@ -5445,16 +5445,6 @@ class Storage(StorageBase):
         self._conn.commit()
         return cur.rowcount
 
-    def update_referral_ehr_service_request_id(
-        self, referral_id: int, ehr_service_request_id: str
-    ) -> None:
-        with self._conn:
-            self._conn.execute(
-                "UPDATE referrals SET ehr_service_request_id = ?, updated_at = datetime('now')"
-                " WHERE id = ?",
-                (ehr_service_request_id, referral_id),
-            )
-
     def set_referral_ehr_writeback(
         self,
         referral_id: int,
@@ -5481,8 +5471,13 @@ class Storage(StorageBase):
         """Issue #157: rows the EHR status poller should pick up this tick.
 
         Picks pollable referrals (write-back happened, vendor recorded,
-        internal status non-terminal, not soft-deleted) whose write-back is
-        within ``max_age`` of ``now``. Sorts least-recently-polled first
+        internal status non-terminal, not soft-deleted). Never-polled rows
+        (``ehr_status_polled_at IS NULL``) are always queued so freshly
+        written-back referrals get their first read regardless of how old
+        the parent row is. Previously-polled rows are dropped once their
+        last poll is older than ``max_age`` — that's the "stop polling
+        stale write-backs" cutoff (a row that hasn't moved in a month is
+        unlikely to start moving). Sorts least-recently-polled first
         (NULLS FIRST) so errored rows naturally back off after each attempt
         bumps their ``ehr_status_polled_at``.
         """
@@ -5494,7 +5489,7 @@ class Storage(StorageBase):
               AND ehr_vendor IS NOT NULL
               AND deleted_at IS NULL
               AND status NOT IN ('completed','cancelled')
-              AND created_at >= ?
+              AND (ehr_status_polled_at IS NULL OR ehr_status_polled_at >= ?)
             ORDER BY ehr_status_polled_at IS NULL DESC, ehr_status_polled_at ASC, id ASC
             LIMIT ?
             """,

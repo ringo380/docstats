@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -50,6 +51,16 @@ DEFAULT_INTERVAL_SECONDS = 600  # 10 min
 DEFAULT_BATCH_SIZE = 50
 DEFAULT_MAX_AGE_DAYS = 30
 _MAX_ERROR_LENGTH = 500
+
+# Serializes ``_process_one`` storage writes when multiple poller workers run
+# in parallel under the limiter. Production storage is supabase-py-over-HTTP
+# (each call is an independent request, naturally thread-safe), so the lock
+# contention is negligible there. Under local SQLite the shared
+# ``sqlite3.Connection`` is NOT safe for concurrent use even with
+# ``check_same_thread=False`` — this lock prevents the
+# ``sqlite3.InterfaceError: bad parameter or other API misuse`` that
+# concurrent ``with self._conn:`` blocks otherwise produce.
+_STORAGE_WRITE_LOCK = threading.Lock()
 
 
 def _get_interval_seconds() -> int:
@@ -160,6 +171,22 @@ def _truncate(s: str | None) -> str | None:
     return s if len(s) <= _MAX_ERROR_LENGTH else s[: _MAX_ERROR_LENGTH - 1] + "…"
 
 
+# Per-vendor ``_redact()`` already strips access/refresh/id-token fields from
+# response bodies before raising ``EHRError``, but the raised string may still
+# carry a stray ``Authorization: Bearer ...`` from a request-error message, or
+# a FHIR URL with a patient id embedded in the path. ``_safe_excerpt`` is a
+# defense-in-depth scrub before persisting to ``ehr_status_error`` (which is
+# surfaced on ``/admin/deliveries/health.json``).
+_BEARER_RE = re.compile(r"[Bb]earer\s+[A-Za-z0-9._\-]+", re.ASCII)
+
+
+def _safe_excerpt(s: str | None) -> str | None:
+    if s is None:
+        return None
+    scrubbed = _BEARER_RE.sub("Bearer [REDACTED]", s)
+    return _truncate(scrubbed)
+
+
 def _emit_status_change_event(
     storage: "StorageBase",
     referral: "Referral",
@@ -183,29 +210,31 @@ def _emit_status_change_event(
         membership_role=None,
     )
     try:
-        storage.record_referral_event(
-            scope,
-            referral.id,
-            event_type="ehr_status",
-            from_value=from_status,
-            to_value=to_status,
-            note=vendor,
-            actor_user_id=None,
-        )
+        with _STORAGE_WRITE_LOCK:
+            storage.record_referral_event(
+                scope,
+                referral.id,
+                event_type="ehr_status",
+                from_value=from_status,
+                to_value=to_status,
+                note=vendor,
+                actor_user_id=None,
+            )
     except Exception:
         logger.exception("Failed to emit ehr_status event for referral %s", referral.id)
     try:
-        _audit_mod.record(
-            storage,
-            action="referral.ehr_status_changed",
-            request=None,
-            actor_user_id=None,
-            scope_user_id=referral.scope_user_id,
-            scope_organization_id=referral.scope_organization_id,
-            entity_type="referral",
-            entity_id=str(referral.id),
-            metadata={"from": from_status, "to": to_status, "ehr_vendor": vendor},
-        )
+        with _STORAGE_WRITE_LOCK:
+            _audit_mod.record(
+                storage,
+                action="referral.ehr_status_changed",
+                request=None,
+                actor_user_id=None,
+                scope_user_id=referral.scope_user_id,
+                scope_organization_id=referral.scope_organization_id,
+                entity_type="referral",
+                entity_id=str(referral.id),
+                metadata={"from": from_status, "to": to_status, "ehr_vendor": vendor},
+            )
     except Exception:
         logger.exception("Failed to audit ehr_status change for referral %s", referral.id)
 
@@ -217,12 +246,14 @@ def _resolve_access_token(
     """Return ``(access_token, iss_or_destination, error)`` for the row.
 
     For SMART vendors (epic/cerner/eclinicalworks) we use the stored
-    connection's encrypted access token via ``routes.ehr._maybe_refresh``.
+    connection's encrypted access token via ``ehr.tokens.maybe_refresh``.
     For Redox we mint a fresh JWT-bearer token at call time; the connection
     only provides ``iss`` (the ``{org}/{Environment}`` segment).
 
     Returns ``(None, None, "<reason>")`` on any unrecoverable error.
     """
+    from docstats.ehr.tokens import maybe_refresh
+
     vendor = referral.ehr_vendor or ""
     conn_id = referral.ehr_connection_id
 
@@ -249,11 +280,7 @@ def _resolve_access_token(
     if conn is None or conn.revoked_at is not None:
         return None, None, f"{vendor}: connection revoked or missing"
     try:
-        from docstats.routes.ehr import _maybe_refresh
-    except Exception as exc:
-        return None, None, f"{vendor}: refresh helper unavailable: {type(exc).__name__}"
-    try:
-        token = _maybe_refresh(conn, storage)
+        token = maybe_refresh(conn, storage)
     except Exception as exc:
         return None, None, f"{vendor}: token refresh failed: {type(exc).__name__}"
     if not token:
@@ -280,6 +307,29 @@ def _vendor_read(vendor: str, *, access_token: str, sr_id: str, route: str | Non
     )
 
 
+def _persist_status(
+    storage: "StorageBase",
+    referral_id: int,
+    *,
+    ehr_status: str | None,
+    polled_at: datetime,
+    error: str | None,
+) -> bool:
+    """Serialized ehr_status write. Returns True on success."""
+    try:
+        with _STORAGE_WRITE_LOCK:
+            storage.update_referral_ehr_status(
+                referral_id,
+                ehr_status=ehr_status,
+                polled_at=polled_at,
+                error=error,
+            )
+        return True
+    except Exception:
+        logger.exception("Failed to persist ehr_status for referral %s", referral_id)
+        return False
+
+
 def _process_one(storage: "StorageBase", referral: "Referral", now: datetime) -> tuple[bool, bool]:
     """Poll one referral. Returns ``(processed, changed)``.
 
@@ -292,15 +342,15 @@ def _process_one(storage: "StorageBase", referral: "Referral", now: datetime) ->
 
     access_token, route, err = _resolve_access_token(storage, referral)
     if err is not None:
-        try:
-            storage.update_referral_ehr_status(
-                referral.id,
-                ehr_status=referral.ehr_status,  # leave prior status untouched
-                polled_at=now,
-                error=_truncate(err),
-            )
-        except Exception:
-            logger.exception("Failed to record ehr_status auth error for referral %s", referral.id)
+        # Leave prior ehr_status untouched on auth errors so the patient-facing
+        # pill doesn't flicker to "unknown" during a transient token blip.
+        _persist_status(
+            storage,
+            referral.id,
+            ehr_status=referral.ehr_status,
+            polled_at=now,
+            error=_safe_excerpt(err),
+        )
         return True, False
 
     try:
@@ -311,54 +361,38 @@ def _process_one(storage: "StorageBase", referral: "Referral", now: datetime) ->
             route=route,
         )
     except EHRError as exc:
-        try:
-            storage.update_referral_ehr_status(
-                referral.id,
-                ehr_status=referral.ehr_status,
-                polled_at=now,
-                error=_truncate(f"{type(exc).__name__}: {exc}"),
-            )
-        except Exception:
-            logger.exception("Failed to record ehr_status fetch error for referral %s", referral.id)
+        _persist_status(
+            storage,
+            referral.id,
+            ehr_status=referral.ehr_status,
+            polled_at=now,
+            error=_safe_excerpt(f"{type(exc).__name__}: {exc}"),
+        )
         return True, False
     except ValueError as exc:
         # registry.get() raised — unknown vendor on this row.
-        try:
-            storage.update_referral_ehr_status(
-                referral.id,
-                ehr_status=referral.ehr_status,
-                polled_at=now,
-                error=_truncate(f"unknown vendor: {exc}"),
-            )
-        except Exception:
-            logger.exception(
-                "Failed to record ehr_status vendor error for referral %s", referral.id
-            )
+        _persist_status(
+            storage,
+            referral.id,
+            ehr_status=referral.ehr_status,
+            polled_at=now,
+            error=_safe_excerpt(f"unknown vendor: {exc}"),
+        )
         return True, False
     except Exception:
         logger.exception("Unexpected error polling referral %s", referral.id)
-        try:
-            storage.update_referral_ehr_status(
-                referral.id,
-                ehr_status=referral.ehr_status,
-                polled_at=now,
-                error="unexpected",
-            )
-        except Exception:
-            logger.exception("Failed to record ehr_status unexpected error %s", referral.id)
+        _persist_status(
+            storage,
+            referral.id,
+            ehr_status=referral.ehr_status,
+            polled_at=now,
+            error="unexpected",
+        )
         return True, False
 
     new_status = snapshot.status
     prior_status = referral.ehr_status
-    try:
-        storage.update_referral_ehr_status(
-            referral.id,
-            ehr_status=new_status,
-            polled_at=now,
-            error=None,
-        )
-    except Exception:
-        logger.exception("Failed to persist ehr_status for referral %s", referral.id)
+    if not _persist_status(storage, referral.id, ehr_status=new_status, polled_at=now, error=None):
         return True, False
 
     changed = new_status != prior_status
@@ -377,7 +411,15 @@ def _process_one(storage: "StorageBase", referral: "Referral", now: datetime) ->
 
 
 async def _run_iteration(storage: "StorageBase") -> tuple[int, int, int]:
-    """One tick: fetch pollable rows, process each. Returns (processed, errors, changed)."""
+    """One tick: fetch pollable rows, process each. Returns (processed, errors, changed).
+
+    Concurrency is capped via ``async_limiter()`` (CLAUDE.md: "Batch paths use
+    async_limiter() (not unbounded asyncio.gather)"). Without the cap a
+    default batch of 50 would fire 50 simultaneous reads against the EHR and
+    trip per-app rate limits.
+    """
+    from docstats.concurrency import async_limiter
+
     now = datetime.now(tz=timezone.utc)
     rows = storage.list_referrals_for_ehr_status_poll(
         limit=_get_batch_size(),
@@ -387,12 +429,23 @@ async def _run_iteration(storage: "StorageBase") -> tuple[int, int, int]:
     if not rows:
         return 0, 0, 0
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
+    limiter = async_limiter()
 
     async def _bounded(r):
-        # Each vendor call is sync httpx — run in executor to free the event loop.
-        return await loop.run_in_executor(None, _process_one, storage, r, now)
+        # Each vendor call is sync httpx — run in executor to free the event
+        # loop. The limiter caps the concurrent in-flight executor work; under
+        # SQLite (local dev / tests) ``_STORAGE_WRITE_LOCK`` also serializes
+        # the few storage writes inside ``_process_one`` so the shared
+        # ``sqlite3.Connection`` object isn't hit concurrently.
+        async with limiter:
+            return await loop.run_in_executor(None, _process_one, storage, r, now)
 
+    # ``asyncio.shield`` lets the in-flight tasks finish if the outer ``run``
+    # coroutine is cancelled mid-tick. It does NOT interrupt the executor
+    # thread — that's a side benefit of the executor model itself (Python
+    # can't cancel a running OS thread). What shield buys us: the asyncio
+    # task awaiting the executor result still gets to write the result back.
     results = await asyncio.gather(
         *(asyncio.shield(_bounded(r)) for r in rows),
         return_exceptions=True,
@@ -425,7 +478,7 @@ async def run(
     logger.info("EHR status poller started", extra={"interval_seconds": interval})
     try:
         while not stop_event.is_set():
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             start = loop.time()
             processed = errors = changed = 0
             iteration_error: str | None = None

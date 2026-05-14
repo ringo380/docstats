@@ -24,7 +24,6 @@ import os
 from datetime import datetime, timedelta, timezone
 from types import ModuleType
 
-from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
@@ -42,7 +41,7 @@ from docstats.domain.ehr import (
 )
 from docstats.ehr import epic, cerner, eclinicalworks  # noqa: F401 — side-effect: registers vendors
 from docstats.ehr import registry as _registry
-from docstats.ehr.crypto import EHRConfigError, decrypt_token, encrypt_token
+from docstats.ehr.crypto import EHRConfigError, encrypt_token
 from docstats.ehr.registry import EHRError
 from docstats.ehr.mappers import parse_fhir_patient
 from docstats.phi import require_phi_consent
@@ -54,8 +53,6 @@ from docstats.storage_base import StorageBase
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ehr", tags=["ehr"])
-
-_REFRESH_LEAD_SECONDS = 60
 
 _ALLOWED_ERROR_REASONS: frozenset[str] = frozenset(
     {
@@ -176,77 +173,11 @@ def _session_launch_mode_key(vendor: str) -> str:
     return f"ehr_{vendor}_launch_mode"
 
 
-def _maybe_refresh(conn: EHRConnection, storage: StorageBase) -> str:
-    """Return a fresh plaintext access token, refreshing if needed.
-
-    Dispatches to the correct vendor module via the registry. On refresh
-    failure, returns the stale token so callers can proceed (the EHR will
-    return 401). Never raises.
-
-    Org-scoped JWT-bearer vendors (Redox) don't persist tokens; this helper
-    is only meaningful for SMART-on-FHIR vendors that do. Returns "" when
-    called against a token-less connection so callers fail closed.
-    """
-    if conn.access_token_enc is None:
-        return ""
-    try:
-        access_token = decrypt_token(conn.access_token_enc)
-    except (EHRConfigError, InvalidToken):
-        logger.exception("Failed to decrypt EHR access token for connection_id=%d", conn.id)
-        return ""
-
-    if conn.refresh_token_enc is None:
-        return access_token
-    if conn.expires_at is None:
-        # No expiry recorded — can't decide whether to refresh; trust the
-        # stored token and let upstream 401s drive the next refresh attempt.
-        return access_token
-
-    now = datetime.now(tz=timezone.utc)
-    if (conn.expires_at - now).total_seconds() > _REFRESH_LEAD_SECONDS:
-        return access_token
-
-    vendor = conn.ehr_vendor
-    try:
-        vendor_mod = _registry.get(vendor)
-    except ValueError:
-        logger.error("Unknown EHR vendor %r for connection_id=%d", vendor, conn.id)
-        return access_token
-
-    try:
-        refresh_token = decrypt_token(conn.refresh_token_enc)
-        # Pass iss_override so multi-tenant vendors (eCW; future Epic/Cerner
-        # multi-tenant) refresh against the same FHIR base the connection was
-        # minted against, not the configured default.
-        token = vendor_mod.refresh(refresh_token, iss_override=conn.iss)
-        new_access_enc = encrypt_token(token.access_token)
-        new_refresh_enc = encrypt_token(token.refresh_token) if token.refresh_token else None
-        new_expires_at = now + timedelta(seconds=token.expires_in)
-        storage.update_ehr_connection_tokens(
-            conn.id,
-            access_token_enc=new_access_enc,
-            refresh_token_enc=new_refresh_enc,
-            expires_at=new_expires_at,
-        )
-        logger.info("Refreshed EHR token for connection_id=%d", conn.id)
-        audit.record(
-            storage,
-            action="ehr.token_refreshed",
-            request=None,
-            actor_user_id=conn.user_id,
-            metadata={"ehr_vendor": vendor},
-        )
-        return str(token.access_token)
-    except Exception:
-        logger.exception("EHR token refresh failed for connection_id=%d", conn.id)
-        audit.record(
-            storage,
-            action="ehr.token_refresh_failed",
-            request=None,
-            actor_user_id=conn.user_id,
-            metadata={"ehr_vendor": vendor},
-        )
-        return access_token
+# The token-refresh helper now lives in ``docstats.ehr.tokens`` so the
+# background poller can use it without inverting the ehr/ → routes/ layer
+# boundary. Re-exported here under the original ``_maybe_refresh`` name to
+# avoid churning every call site. Issue #157.
+from docstats.ehr.tokens import maybe_refresh as _maybe_refresh  # noqa: E402, F401
 
 
 async def _load_pending_patient(

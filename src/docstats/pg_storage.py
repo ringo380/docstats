@@ -1796,16 +1796,6 @@ class PostgresStorage(StorageBase):
         )
         return len(result.data)
 
-    def update_referral_ehr_service_request_id(
-        self, referral_id: int, ehr_service_request_id: str
-    ) -> None:
-        (
-            self._t("referrals")
-            .update({"ehr_service_request_id": ehr_service_request_id, "updated_at": _now_iso()})
-            .eq("id", referral_id)
-            .execute()
-        )
-
     def set_referral_ehr_writeback(
         self,
         referral_id: int,
@@ -1840,6 +1830,12 @@ class PostgresStorage(StorageBase):
         Equivalent of the SQLite query, expressed through supabase-py.
         Sort key matches the partial index on the Postgres side:
         ``(ehr_status_polled_at NULLS FIRST, id)``.
+
+        Never-polled rows (``ehr_status_polled_at IS NULL``) are always
+        included; previously-polled rows are dropped after ``max_age``
+        days of inactivity. ``cutoff`` is derived from ``now()`` + an env
+        var, never from user input, so interpolating into the ``.or_()``
+        filter string is safe (CLAUDE.md guidance on .or_ + user input).
         """
         cutoff = (now - max_age).isoformat()
         result = (
@@ -1848,7 +1844,7 @@ class PostgresStorage(StorageBase):
             .not_.is_("ehr_service_request_id", None)
             .not_.is_("ehr_vendor", None)
             .is_("deleted_at", None)
-            .gte("created_at", cutoff)
+            .or_(f"ehr_status_polled_at.is.null,ehr_status_polled_at.gte.{cutoff}")
             .not_.in_("status", ["completed", "cancelled"])
             .order("ehr_status_polled_at", nullsfirst=True)
             .order("id")
