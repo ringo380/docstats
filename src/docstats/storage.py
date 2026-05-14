@@ -409,6 +409,9 @@ def _row_to_insurance_plan(row: sqlite3.Row) -> InsurancePlan:
         shared_with_family=bool(row["shared_with_family"])
         if "shared_with_family" in row.keys() and row["shared_with_family"] is not None
         else False,
+        cloned_from_plan_id=row["cloned_from_plan_id"]
+        if "cloned_from_plan_id" in row.keys()
+        else None,
         created_at=created,
         updated_at=updated,
         deleted_at=_parse_sqlite_utc(row["deleted_at"]),
@@ -628,6 +631,7 @@ class Storage(StorageBase):
         self._migrate_family_links()
         self._migrate_insurance_plans_shared_with_family()
         self._migrate_family_links_source_patient_id()
+        self._migrate_insurance_plans_cloned_from()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -3785,6 +3789,7 @@ class Storage(StorageBase):
         requires_referral: bool = False,
         requires_prior_auth: bool = False,
         notes: str | None = None,
+        cloned_from_plan_id: int | None = None,
     ) -> InsurancePlan:
         scope_sql_clause(scope)  # raises on anonymous
         if plan_type not in PLAN_TYPE_VALUES:
@@ -3798,8 +3803,8 @@ class Storage(StorageBase):
             """INSERT INTO insurance_plans
                (scope_user_id, scope_organization_id, payer_name, plan_name, plan_type,
                 member_id_pattern, group_id_pattern, requires_referral, requires_prior_auth,
-                notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                notes, cloned_from_plan_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 scope.user_id if scope.is_solo else None,
                 scope.organization_id if scope.is_org else None,
@@ -3811,6 +3816,7 @@ class Storage(StorageBase):
                 1 if requires_referral else 0,
                 1 if requires_prior_auth else 0,
                 notes,
+                cloned_from_plan_id,
             ),
         )
         self._conn.commit()
@@ -5799,6 +5805,13 @@ class Storage(StorageBase):
         except sqlite3.OperationalError:
             pass  # column already exists
 
+    def _migrate_insurance_plans_cloned_from(self) -> None:
+        try:
+            self._conn.execute("ALTER TABLE insurance_plans ADD COLUMN cloned_from_plan_id INTEGER")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     @staticmethod
     def _row_to_family_link(row: sqlite3.Row) -> FamilyLink:
         return FamilyLink(
@@ -5932,11 +5945,18 @@ class Storage(StorageBase):
                 (to_user_id, patient_id, from_user_id),
             )
             referrals_moved = cursor.rowcount
-            self._conn.execute(
+            # Repeat the scope_user_id guard on the patients UPDATE — closes
+            # the TOCTOU window between the verifying SELECT above and this
+            # UPDATE. If a concurrent connection moved the patient first,
+            # rowcount will be 0 and we raise so the transaction rolls back.
+            patient_cursor = self._conn.execute(
                 "UPDATE patients SET scope_user_id = ?, relationship = NULL, "
-                "updated_at = datetime('now') WHERE id = ?",
-                (to_user_id, patient_id),
+                "updated_at = datetime('now') "
+                "WHERE id = ? AND scope_user_id = ?",
+                (to_user_id, patient_id, from_user_id),
             )
+            if patient_cursor.rowcount == 0:
+                raise ValueError(f"Patient {patient_id} ownership changed during reparent")
         return referrals_moved
 
     def set_insurance_plan_share(

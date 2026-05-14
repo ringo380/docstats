@@ -1268,6 +1268,7 @@ _KNOWN_AUDIT_ACTIONS: tuple[str, ...] = (
     "import.map",
     "import.row.edit",
     "import.validate",
+    "insurance_plan.cloned",
     "insurance_plan.created",
     "insurance_plan.deleted",
     "insurance_plan.shared",

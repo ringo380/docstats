@@ -1001,7 +1001,7 @@ async def family_accept_invite(
 async def family_accept_invite_post(
     token: str,
     request: Request,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_phi_consent),
     storage: StorageBase = Depends(get_storage),
 ):
     """POST handler for the dependent-upgrade confirmation form.
@@ -1009,6 +1009,17 @@ async def family_accept_invite_post(
     Adult linking still uses the GET-style accept (one click from email →
     immediate accept). The dependent-upgrade flow re-parents Patient + every
     related referral on accept and gets its own confirmation step.
+
+    Gated on ``require_phi_consent`` — receiving an adult's clinical record
+    into your account is itself a PHI-handling event, so the receiver must
+    have an active consent on record before the transfer fires.
+
+    Ordering: we accept the family_link FIRST, then reparent. If the
+    reparent fails, we revoke the just-accepted link as compensation so
+    we don't leave the parent without family-link visibility AND without
+    the data. Accept-then-reparent is the safer order because the
+    family_link mutation is cheap and idempotent to compensate, while
+    reparent_patient_to_user is the expensive multi-row move.
     """
     link = storage.get_family_link_by_token(token)
     if not link or not link.is_pending():
@@ -1021,17 +1032,35 @@ async def family_accept_invite_post(
     if not link.is_dependent_upgrade() or link.source_patient_id is None:
         raise HTTPException(status_code=400, detail="Not a dependent-upgrade invitation.")
 
+    accepted = storage.accept_family_link(link.id, current_user["id"])
+    if accepted is None:
+        # Concurrent revoke / double-accept — surface as 409 so the user
+        # retries from the invite link rather than seeing a stale success.
+        raise HTTPException(
+            status_code=409, detail="Invitation was just accepted or revoked elsewhere."
+        )
+
     try:
         moved = storage.reparent_patient_to_user(
             link.source_patient_id,
             from_user_id=link.initiator_user_id,
             to_user_id=current_user["id"],
         )
-    except ValueError as exc:
-        # TOCTOU: parent already moved/deleted the patient. Surface as 409.
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    storage.accept_family_link(link.id, current_user["id"])
+    except (ValueError, Exception) as exc:
+        # Compensate: revoke the just-accepted link so the parent doesn't
+        # end up linked but with no data transferred (or worse, a partial
+        # transfer). The link stays in the audit trail via revoked_at.
+        try:
+            storage.revoke_family_link(link.id, current_user["id"])
+        except Exception:
+            logger.exception(
+                "Failed to compensate-revoke family_link %s after reparent failure",
+                link.id,
+            )
+        if isinstance(exc, ValueError):
+            # TOCTOU: parent already moved/deleted the patient. Surface 409.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise
 
     audit.record(
         storage,
@@ -1054,6 +1083,7 @@ async def family_accept_invite_post(
         action="family_link.upgrade_accepted",
         request=request,
         actor_user_id=current_user["id"],
+        scope_user_id=current_user["id"],
         entity_type="family_link",
         entity_id=str(link.id),
     )
@@ -1111,6 +1141,15 @@ async def family_invite_dependent_upgrade(
         errors.append(
             f"{email_clean} doesn't have a referme.help account yet. "
             "Ask them to sign up first, then send the invite."
+        )
+    elif not errors and invited_user is not None and invited_user.get("account_type") != "patient":
+        # The receiving UI (family section, /profile/insurance, patient list)
+        # is gated on account_type == 'patient'. A clinician account that
+        # accepted this invite would own the data but have no UI to manage
+        # it — refuse upfront with a clear message.
+        errors.append(
+            f"{email_clean} has a clinician account. Ask them to switch to a "
+            "patient account at /profile before accepting the invite."
         )
 
     if errors:

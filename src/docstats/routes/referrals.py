@@ -120,6 +120,8 @@ def _resolve_payer_plan_for_referral(
     scope: Scope,
     current_user: dict,
     raw_plan_id: int | None,
+    *,
+    request: Request | None = None,
 ) -> int | None:
     """Translate a wizard-picked plan_id to a value valid in ``scope``.
 
@@ -129,11 +131,17 @@ def _resolve_payer_plan_for_referral(
     cloned into ``scope`` so the resulting referral has a clean local FK
     (avoids cross-scope ``get_insurance_plan`` lookups in exports).
 
+    Consent gate: Case A (picker's own plan being written into another
+    user's scope) only proceeds when the source plan is explicitly
+    ``shared_with_family``. Without that flag the holder hasn't authorized
+    a cross-scope clone, so we refuse and the wizard surfaces an error.
+
     Snapshot semantics: each clone is a point-in-time copy. Edits to the
     holder's plan after cloning don't propagate — referral documents are
-    point-in-time records, not live views. We dedupe against an existing
-    local clone with the same (payer_name, plan_type, plan_name) so picking
-    the same shared plan twice doesn't create N duplicate rows.
+    point-in-time records, not live views. We dedupe by ``cloned_from_plan_id``
+    so picking the same shared plan multiple times reuses a single local
+    clone, even when two linked family members share plans with identical
+    payer/type/name labels.
 
     Unknown ids return None — caller decides whether that's an error.
     """
@@ -147,9 +155,13 @@ def _resolve_payer_plan_for_referral(
     source = None
     user_id = current_user["id"]
     # Case A: the picked plan is the picker's own plan, but the referral is
-    # being created in a linked-family-member's scope.
+    # being created in a linked-family-member's scope. Only allowed when the
+    # holder (picker) has flagged the plan shared_with_family, which is the
+    # explicit cross-scope-consent signal.
     own = storage.get_insurance_plan(Scope(user_id=user_id), raw_plan_id)
     if own is not None:
+        if not own.shared_with_family:
+            return None
         source = own
     else:
         # Case B: the picked plan was shared TO this user by linked family.
@@ -160,13 +172,11 @@ def _resolve_payer_plan_for_referral(
     if source is None:
         return None
 
-    # Dedupe against an existing local clone before cloning again.
+    # Dedupe against an existing local clone of THIS source plan. Keyed by
+    # cloned_from_plan_id so two holders sharing the same payer/type/name
+    # don't collide (each source has its own clone in the target scope).
     for existing in storage.list_insurance_plans(scope):
-        if (
-            existing.payer_name == source.payer_name
-            and existing.plan_type == source.plan_type
-            and (existing.plan_name or None) == (source.plan_name or None)
-        ):
+        if existing.cloned_from_plan_id == source.id:
             return existing.id
 
     clone = storage.create_insurance_plan(
@@ -179,6 +189,21 @@ def _resolve_payer_plan_for_referral(
         requires_referral=source.requires_referral,
         requires_prior_auth=source.requires_prior_auth,
         notes=source.notes,
+        cloned_from_plan_id=source.id,
+    )
+    audit_record(
+        storage,
+        action="insurance_plan.cloned",
+        request=request,
+        actor_user_id=user_id,
+        scope_user_id=scope.user_id if scope.is_solo else None,
+        scope_organization_id=scope.organization_id,
+        entity_type="insurance_plan",
+        entity_id=str(clone.id),
+        metadata={
+            "source_plan_id": source.id,
+            "source_scope_user_id": source.scope_user_id,
+        },
     )
     return clone.id
 
@@ -904,7 +929,7 @@ async def referral_create(
     resolved_plan_id: int | None = None
     if plan_id_int is not None:
         resolved_plan_id = _resolve_payer_plan_for_referral(
-            storage, effective_scope, current_user, plan_id_int
+            storage, effective_scope, current_user, plan_id_int, request=request
         )
         if resolved_plan_id is None:
             return _rerender(["The selected insurance plan isn't available."])

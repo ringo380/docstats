@@ -146,7 +146,7 @@ async def insurance_create(
 async def insurance_set_share(
     plan_id: int,
     request: Request,
-    shared: str = Form("0", max_length=1),
+    shared: str = Form(..., max_length=1),
     current_user: dict = Depends(require_user),
     storage: StorageBase = Depends(get_storage),
 ):

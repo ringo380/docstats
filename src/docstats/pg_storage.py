@@ -384,6 +384,7 @@ def _row_to_insurance_plan(row: dict) -> InsurancePlan:
         notes=row.get("notes"),
         availity_payer_id=row.get("availity_payer_id"),
         shared_with_family=bool(row.get("shared_with_family", False)),
+        cloned_from_plan_id=row.get("cloned_from_plan_id"),
         created_at=created,
         updated_at=updated,
         deleted_at=_parse_ts(row.get("deleted_at")),
@@ -3111,6 +3112,7 @@ class PostgresStorage(StorageBase):
         requires_referral: bool = False,
         requires_prior_auth: bool = False,
         notes: str | None = None,
+        cloned_from_plan_id: int | None = None,
     ) -> InsurancePlan:
         self._require_scoped(scope)
         if plan_type not in PLAN_TYPE_VALUES:
@@ -3129,6 +3131,7 @@ class PostgresStorage(StorageBase):
             "requires_referral": requires_referral,
             "requires_prior_auth": requires_prior_auth,
             "notes": notes,
+            "cloned_from_plan_id": cloned_from_plan_id,
             "created_at": now,
             "updated_at": now,
         }
@@ -4641,13 +4644,26 @@ class PostgresStorage(StorageBase):
             ).in_("id", referral_ids).execute()
 
         try:
-            self._t("patients").update(
-                {
-                    "scope_user_id": to_user_id,
-                    "relationship": None,
-                    "updated_at": _now_iso(),
-                }
-            ).eq("id", patient_id).execute()
+            # Re-apply the scope_user_id guard on the UPDATE WHERE clause to
+            # close the TOCTOU window between the verifying SELECT above and
+            # this write. If a concurrent process moved the patient first,
+            # supabase-py returns an empty data set and we treat it like a
+            # raised exception so the compensation path runs.
+            patient_result = (
+                self._t("patients")
+                .update(
+                    {
+                        "scope_user_id": to_user_id,
+                        "relationship": None,
+                        "updated_at": _now_iso(),
+                    }
+                )
+                .eq("id", patient_id)
+                .eq("scope_user_id", from_user_id)
+                .execute()
+            )
+            if not patient_result.data:
+                raise ValueError(f"Patient {patient_id} ownership changed during reparent")
         except Exception:
             # Compensate: roll referrals back to the prior owner so we don't
             # leave a split-ownership state.

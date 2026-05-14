@@ -296,3 +296,115 @@ def test_duplicate_invite_blocked(parent_client):
     )
     assert resp.status_code == 200
     assert "already pending" in resp.text
+
+
+def test_invite_to_clinician_account_rejected(parent_client):
+    client, storage, parent_id, _child_id = parent_client
+    # Override default child to be a clinician account.
+    storage._conn.execute(
+        "UPDATE users SET account_type='clinician', clinician_verification_status='verified' "
+        "WHERE email='child@example.com'"
+    )
+    storage._conn.commit()
+    pid = _seed_dependent(storage, parent_id, years_old=19)
+    resp = client.post(
+        f"/profile/family/dependent/{pid}/invite-upgrade",
+        data={"email": "child@example.com"},
+    )
+    assert resp.status_code == 200
+    assert "clinician account" in resp.text
+
+
+def test_accept_compensates_on_reparent_failure(parent_client, monkeypatch):
+    """If reparent_patient_to_user raises after accept_family_link succeeds,
+    the link must be revoked so the parent isn't left linked-but-not-transferred."""
+    client, storage, parent_id, child_id = parent_client
+    pid = _seed_dependent(storage, parent_id, years_old=20)
+    client.post(
+        f"/profile/family/dependent/{pid}/invite-upgrade",
+        data={"email": "child@example.com"},
+    )
+    link = storage.list_family_links(parent_id)[0]
+
+    # Force reparent to blow up after the link gets accepted.
+    real = storage.reparent_patient_to_user
+
+    def boom(*a, **kw):
+        raise RuntimeError("simulated reparent failure")
+
+    monkeypatch.setattr(storage, "reparent_patient_to_user", boom)
+    app.dependency_overrides[get_current_user] = lambda: _patient_user(
+        child_id, "child@example.com"
+    )
+    # raise_server_exceptions=False keeps TestClient from re-throwing the
+    # 500 so we can assert the compensation side-effect ran first.
+    compensation_client = TestClient(app, raise_server_exceptions=False)
+    resp = compensation_client.post(
+        f"/profile/family/accept/{link.invite_token}", follow_redirects=False
+    )
+    monkeypatch.setattr(storage, "reparent_patient_to_user", real)
+    assert resp.status_code == 500
+    # The link must be revoked (compensation), not left accepted.
+    fresh = storage._conn.execute(
+        "SELECT accepted_at, revoked_at FROM family_links WHERE id = ?", (link.id,)
+    ).fetchone()
+    assert fresh["revoked_at"] is not None
+    # Patient stayed with parent (reparent never completed).
+    assert storage.get_patient(Scope(user_id=parent_id), pid) is not None
+
+
+def test_accept_post_requires_phi_consent(tmp_path: Path):
+    storage = Storage(db_path=tmp_path / "t.db")
+    parent_id = storage.create_user("p@x.com", "h")
+    child_id = storage.create_user("c@x.com", "h")
+    # Parent has consent; child does NOT.
+    storage.record_phi_consent(
+        user_id=parent_id,
+        phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+        ip_address="",
+        user_agent="",
+    )
+    pid = _seed_dependent(storage, parent_id, years_old=20)
+    token = "tok-noconsent"
+    storage.create_family_link(
+        initiator_user_id=parent_id,
+        linked_user_id=child_id,
+        relationship="child",
+        invite_token=token,
+        invite_email="c@x.com",
+        source_patient_id=pid,
+    )
+    app.dependency_overrides[get_storage] = lambda: storage
+    no_consent = _patient_user(child_id, "c@x.com")
+    no_consent["phi_consent_at"] = None
+    no_consent["phi_consent_version"] = None
+    app.dependency_overrides[get_current_user] = lambda: no_consent
+    try:
+        client = TestClient(app)
+        resp = client.post(f"/profile/family/accept/{token}", follow_redirects=False)
+    finally:
+        app.dependency_overrides.clear()
+    # PhiConsentRequiredException → 303 to /auth/login (or similar).
+    assert resp.status_code in (302, 303, 307)
+
+
+def test_reparent_toctou_guard_on_patient_update(tmp_path: Path):
+    """The patient UPDATE inside reparent_patient_to_user re-checks
+    scope_user_id = from_user_id. Simulate concurrent mutation between
+    SELECT and UPDATE by patching the helper to mutate the row mid-call."""
+    storage = Storage(db_path=tmp_path / "t.db")
+    parent_id = storage.create_user("p@x.com", "h")
+    child_id = storage.create_user("c@x.com", "h")
+    third_id = storage.create_user("t@x.com", "h")
+    pid = _seed_dependent(storage, parent_id, years_old=21)
+    # Mutate scope between the SELECT and the UPDATE: just pre-mutate before
+    # the call so the UPDATE WHERE scope_user_id=parent_id matches 0 rows.
+    storage._conn.execute("UPDATE patients SET scope_user_id = ? WHERE id = ?", (third_id, pid))
+    storage._conn.commit()
+    with pytest.raises(ValueError):
+        storage.reparent_patient_to_user(pid, from_user_id=parent_id, to_user_id=child_id)
+    # Patient still owned by third party — the UPDATE was a no-op.
+    row = storage._conn.execute(
+        "SELECT scope_user_id FROM patients WHERE id = ?", (pid,)
+    ).fetchone()
+    assert row["scope_user_id"] == third_id

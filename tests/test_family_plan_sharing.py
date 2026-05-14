@@ -279,9 +279,226 @@ def test_clone_dedupes_on_repeat_selection(tmp_path: Path):
             )
     finally:
         app.dependency_overrides.clear()
-    # 3 referrals, but only 1 local clone (dedup by payer_name+plan_type+plan_name).
+    # 3 referrals, but only 1 local clone (dedup by cloned_from_plan_id).
     local = storage.list_insurance_plans(Scope(user_id=spouse_id))
     assert len(local) == 1
+    assert local[0].cloned_from_plan_id == plan.id
     refs = storage.list_referrals(Scope(user_id=spouse_id), patient_id=pt.id)
     assert len(refs) == 3
     assert {r.payer_plan_id for r in refs} == {local[0].id}
+
+
+def test_cross_holder_same_label_does_not_collide(tmp_path: Path):
+    """Two linked family members share plans with identical labels but
+    different member IDs — pre-fix the dedup keyed off (payer, type, name)
+    would silently reuse the first holder's clone for the second pick."""
+    storage = Storage(db_path=tmp_path / "s.db")
+    holder_a = storage.create_user("a@x.com", "x")
+    holder_b = storage.create_user("b@x.com", "x")
+    me = storage.create_user("me@x.com", "x")
+    for uid in (holder_a, holder_b, me):
+        storage.record_phi_consent(
+            user_id=uid,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+    _link_users(storage, holder_a, me)
+    _link_users(storage, holder_b, me)
+    # Identical labels, different member_id_pattern (Anthem vs Anthem-EPO etc).
+    pa = storage.create_insurance_plan(
+        Scope(user_id=holder_a),
+        payer_name="Anthem",
+        plan_type="ppo",
+        plan_name="Silver",
+        member_id_pattern="A-",
+    )
+    pb = storage.create_insurance_plan(
+        Scope(user_id=holder_b),
+        payer_name="Anthem",
+        plan_type="ppo",
+        plan_name="Silver",
+        member_id_pattern="B-",
+    )
+    storage.set_insurance_plan_share(Scope(user_id=holder_a), pa.id, shared=True)
+    storage.set_insurance_plan_share(Scope(user_id=holder_b), pb.id, shared=True)
+    pt = storage.create_patient(
+        Scope(user_id=me), first_name="X", last_name="Y", created_by_user_id=me
+    )
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _patient_user(me, "me@x.com")
+    try:
+        client = TestClient(app)
+        for plan_id in (pa.id, pb.id):
+            client.post(
+                "/referrals",
+                data={
+                    "patient_id": str(pt.id),
+                    "reason": "consult",
+                    "urgency": "routine",
+                    "payer_plan_id": str(plan_id),
+                },
+                follow_redirects=False,
+            )
+    finally:
+        app.dependency_overrides.clear()
+    locals_ = storage.list_insurance_plans(Scope(user_id=me))
+    assert len(locals_) == 2
+    sources = {p.cloned_from_plan_id for p in locals_}
+    assert sources == {pa.id, pb.id}
+    patterns = {p.member_id_pattern for p in locals_}
+    assert patterns == {"A-", "B-"}
+
+
+def test_case_a_refuses_unshared_own_plan_for_linked_member(tmp_path: Path):
+    """Picker selects their OWN plan but it isn't shared_with_family. The
+    referral is being created in a linked family member's scope — should
+    refuse (no implicit cross-scope clone without consent flag)."""
+    storage = Storage(db_path=tmp_path / "s.db")
+    parent_id = storage.create_user("p@x.com", "x")
+    spouse_id = storage.create_user("s@x.com", "x")
+    for uid in (parent_id, spouse_id):
+        storage.record_phi_consent(
+            user_id=uid,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+    _link_users(storage, parent_id, spouse_id)
+    own = storage.create_insurance_plan(
+        Scope(user_id=parent_id), payer_name="Acme", plan_type="ppo"
+    )
+    # Spouse's patient — parent creating referral on their behalf.
+    pt = storage.create_patient(
+        Scope(user_id=spouse_id),
+        first_name="P",
+        last_name="T",
+        created_by_user_id=spouse_id,
+    )
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _patient_user(parent_id, "p@x.com")
+    try:
+        client = TestClient(app)
+        resp = client.post(
+            "/referrals",
+            data={
+                "patient_id": str(pt.id),
+                "reason": "x",
+                "urgency": "routine",
+                "payer_plan_id": str(own.id),
+            },
+            follow_redirects=False,
+        )
+    finally:
+        app.dependency_overrides.clear()
+    # Wizard re-renders with error; spouse's scope gets no new plan row.
+    assert resp.status_code == 200
+    assert "isn&#39;t available" in resp.text or "isn't available" in resp.text
+    spouse_plans = storage.list_insurance_plans(Scope(user_id=spouse_id))
+    assert spouse_plans == []
+
+
+def test_case_a_allows_shared_own_plan_for_linked_member(tmp_path: Path):
+    """Same setup but the parent's plan is shared_with_family — clone goes through."""
+    storage = Storage(db_path=tmp_path / "s.db")
+    parent_id = storage.create_user("p@x.com", "x")
+    spouse_id = storage.create_user("s@x.com", "x")
+    for uid in (parent_id, spouse_id):
+        storage.record_phi_consent(
+            user_id=uid,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+    _link_users(storage, parent_id, spouse_id)
+    own = storage.create_insurance_plan(
+        Scope(user_id=parent_id), payer_name="Acme", plan_type="ppo"
+    )
+    storage.set_insurance_plan_share(Scope(user_id=parent_id), own.id, shared=True)
+    pt = storage.create_patient(
+        Scope(user_id=spouse_id),
+        first_name="P",
+        last_name="T",
+        created_by_user_id=spouse_id,
+    )
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _patient_user(parent_id, "p@x.com")
+    try:
+        client = TestClient(app)
+        resp = client.post(
+            "/referrals",
+            data={
+                "patient_id": str(pt.id),
+                "reason": "x",
+                "urgency": "routine",
+                "payer_plan_id": str(own.id),
+            },
+            follow_redirects=False,
+        )
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 303
+    spouse_plans = storage.list_insurance_plans(Scope(user_id=spouse_id))
+    assert len(spouse_plans) == 1
+    assert spouse_plans[0].cloned_from_plan_id == own.id
+
+
+def test_clone_emits_audit_event(tmp_path: Path):
+    storage = Storage(db_path=tmp_path / "s.db")
+    holder_id = storage.create_user("h@x.com", "x")
+    spouse_id = storage.create_user("s@x.com", "x")
+    for uid in (holder_id, spouse_id):
+        storage.record_phi_consent(
+            user_id=uid,
+            phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+            ip_address="",
+            user_agent="",
+        )
+    _link_users(storage, holder_id, spouse_id)
+    plan = storage.create_insurance_plan(Scope(user_id=holder_id), payer_name="X", plan_type="ppo")
+    storage.set_insurance_plan_share(Scope(user_id=holder_id), plan.id, shared=True)
+    pt = storage.create_patient(
+        Scope(user_id=spouse_id),
+        first_name="A",
+        last_name="B",
+        created_by_user_id=spouse_id,
+    )
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _patient_user(spouse_id, "s@x.com")
+    try:
+        client = TestClient(app)
+        client.post(
+            "/referrals",
+            data={
+                "patient_id": str(pt.id),
+                "reason": "x",
+                "urgency": "routine",
+                "payer_plan_id": str(plan.id),
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+    events = storage.list_audit_events(actor_user_id=spouse_id, limit=20)
+    assert any(e.action == "insurance_plan.cloned" for e in events)
+
+
+def test_set_share_route_requires_shared_field(tmp_path: Path):
+    """POST /profile/insurance/{id}/share without `shared` body must 422 —
+    Form(..., max_length=1) is required, no default."""
+    storage = Storage(db_path=tmp_path / "s.db")
+    uid = storage.create_user("u@x.com", "h")
+    storage.record_phi_consent(
+        user_id=uid,
+        phi_consent_version=CURRENT_PHI_CONSENT_VERSION,
+        ip_address="",
+        user_agent="",
+    )
+    plan = storage.create_insurance_plan(Scope(user_id=uid), payer_name="X", plan_type="ppo")
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: _patient_user(uid, "u@x.com")
+    try:
+        client = TestClient(app)
+        resp = client.post(f"/profile/insurance/{plan.id}/share", data={})
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 422

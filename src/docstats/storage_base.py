@@ -1162,6 +1162,7 @@ class StorageBase(ABC):
         requires_referral: bool = False,
         requires_prior_auth: bool = False,
         notes: str | None = None,
+        cloned_from_plan_id: int | None = None,
     ) -> "InsurancePlan": ...
 
     @abstractmethod
