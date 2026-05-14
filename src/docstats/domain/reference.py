@@ -79,6 +79,19 @@ class InsurancePlan(BaseModel):
     # Availity payer link (Phase 11.D) — soft link, not a FK
     availity_payer_id: str | None = None
 
+    # When True (user-scoped plans only), any user linked to the holder via an
+    # active family_links row sees this plan in their plan picker (read-only).
+    # Org-scoped plans ignore this flag — org members already share visibility.
+    shared_with_family: bool = False
+
+    # If this row was cloned from another scope's plan (a shared-family plan
+    # selected on a referral), this carries the source plan's id. Soft link —
+    # no FK so the source can be soft-deleted independently. Used by
+    # ``_resolve_payer_plan_for_referral`` to dedupe per source plan rather
+    # than per (payer_name, plan_type, plan_name) label which collides across
+    # holders sharing identical plan labels.
+    cloned_from_plan_id: int | None = None
+
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None

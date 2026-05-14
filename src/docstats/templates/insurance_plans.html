@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Insurance — referme.help{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width: 720px; margin: 2rem auto;">
+  <h1>Insurance plans</h1>
+  <p class="muted sub">
+    Add the insurance plans you use most often. When you create a referral
+    you can pick from this list — no need to retype payer details every time.
+  </p>
+
+  {% if errors %}
+    <div class="alert alert-error" style="margin-top: 1rem;">
+      <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+    </div>
+  {% endif %}
+  {% if request.query_params.get('created') %}
+    <div class="alert alert-success" style="margin-top: 1rem;">Plan added.</div>
+  {% endif %}
+
+  <div class="card" style="margin-top: 1rem;">
+    <h2>My plans</h2>
+    {% if plans %}
+      <table class="data-table" style="width:100%; margin-top: 0.5rem;">
+        <thead>
+          <tr>
+            <th>Payer</th>
+            <th>Plan</th>
+            <th>Type</th>
+            <th>Shared with family</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for plan in plans %}
+            <tr>
+              <td>{{ plan.payer_name }}</td>
+              <td>{{ plan.plan_name or '—' }}</td>
+              <td>{{ plan.plan_type | replace('_', ' ') }}</td>
+              <td>
+                <form method="post" action="/profile/insurance/{{ plan.id }}/share" style="display:inline;">
+                  <input type="hidden" name="shared" value="{{ '0' if plan.shared_with_family else '1' }}">
+                  <button type="submit" class="btn btn-sm {{ 'btn-primary' if plan.shared_with_family else 'btn-secondary' }}">
+                    {{ 'Shared · click to stop' if plan.shared_with_family else 'Share with family' }}
+                  </button>
+                </form>
+              </td>
+              <td>
+                <form method="post" action="/profile/insurance/{{ plan.id }}/delete" style="display:inline;"
+                      onsubmit="return confirm('Remove this plan?');">
+                  <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">You haven't added any plans yet.</p>
+    {% endif %}
+  </div>
+
+  {% if shared_plans %}
+    <div class="card" style="margin-top: 1rem;">
+      <h2>Shared by family</h2>
+      <p class="sub">These plans were shared with you. You can use them on referrals; only the holder can edit or remove them.</p>
+      <table class="data-table" style="width:100%; margin-top: 0.5rem;">
+        <thead>
+          <tr><th>Holder</th><th>Payer</th><th>Plan</th><th>Type</th></tr>
+        </thead>
+        <tbody>
+          {% for plan in shared_plans %}
+            <tr>
+              <td>{{ holder_names.get(plan.scope_user_id, 'Family member') }}</td>
+              <td>{{ plan.payer_name }}</td>
+              <td>{{ plan.plan_name or '—' }}</td>
+              <td>{{ plan.plan_type | replace('_', ' ') }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+  <div class="card" style="margin-top: 1rem;">
+    <h2>Add a plan</h2>
+    <form method="post" action="/profile/insurance" class="patient-form">
+      <div class="grid-2">
+        <label>Payer name *
+          <input type="text" name="payer_name" required maxlength="200"
+                 value="{{ values.payer_name or '' }}" placeholder="e.g. Blue Shield of California">
+        </label>
+        <label>Plan name
+          <input type="text" name="plan_name" maxlength="200"
+                 value="{{ values.plan_name or '' }}" placeholder="e.g. PPO Silver 2000">
+        </label>
+        <label>Plan type *
+          <select name="plan_type" required>
+            {% for t in plan_type_values %}
+              <option value="{{ t }}" {% if values.plan_type == t %}selected{% endif %}>{{ t | replace('_', ' ') | title }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Notes
+          <input type="text" name="notes" maxlength="1000" value="{{ values.notes or '' }}">
+        </label>
+      </div>
+      <div class="action-bar" style="margin-top: 0.75rem;">
+        <a href="/profile" class="btn btn-secondary">Back to profile</a>
+        <button type="submit" class="btn btn-primary">Add plan</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

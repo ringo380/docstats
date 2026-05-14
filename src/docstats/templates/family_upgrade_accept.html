@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Take over your account — referme.help{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width:560px; margin:3rem auto;">
+  <div class="card">
+    <h1>Take over your account</h1>
+    <p class="muted sub">
+      {% set inviter_name = (initiator.first_name ~ ' ' ~ initiator.last_name) if initiator.get('first_name') and initiator.get('last_name') else initiator.get('email', 'Your family member') %}
+      <strong>{{ inviter_name }}</strong> has invited you to manage your own referme.help account.
+    </p>
+
+    {% if patient %}
+      <div class="alert" style="margin-top: 12px;">
+        <p>If you accept, the following will move from {{ inviter_name }}'s account to yours:</p>
+        <ul style="margin: 0.5rem 0 0 1.25rem;">
+          <li>Your patient profile (<strong>{{ patient.display_name }}</strong>{% if patient.date_of_birth %}, DOB {{ patient.date_of_birth }}{% endif %})</li>
+          <li>{{ referral_count }} referral{{ '' if referral_count == 1 else 's' }} and any attached records</li>
+        </ul>
+        <p style="margin-top: 0.5rem;">
+          You'll remain connected as family, so {{ inviter_name }} can still see and help
+          coordinate your care — but you'll be the owner from here on.
+        </p>
+      </div>
+    {% else %}
+      <div class="alert alert-error" style="margin-top: 12px;">
+        The dependent profile attached to this invitation isn't available anymore.
+        Ask {{ inviter_name }} to send a fresh invite.
+      </div>
+    {% endif %}
+
+    {% if patient %}
+      <form method="post" action="/profile/family/accept/{{ link.invite_token }}" style="margin-top: 12px;">
+        <div class="action-bar" style="display:flex; gap:10px;">
+          <button type="submit" class="btn btn-primary">Accept and take over</button>
+          <a href="/profile" class="btn btn-secondary">Not now</a>
+        </div>
+      </form>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -31,14 +31,40 @@
   {# Dependent (minor) patient rows #}
   {% for p in family_patients %}
     {% set initials = (p.first_name[0] ~ p.last_name[0]) | upper %}
+    {% set meta = (dependent_meta or {}).get(p.id, {}) %}
     <div class="family-row" id="dep-row-{{ p.id }}">
       <span class="who-avatar">{{ initials }}</span>
       <span class="who-info">
         <span class="who-name">{{ p.display_name }}</span>
         <span class="badge badge-secondary">Dependent{% if p.relationship %} · {{ p.relationship | title }}{% endif %}</span>
-        {% if p.date_of_birth %}<span class="sub">DOB {{ p.date_of_birth }}</span>{% endif %}
+        {% if p.date_of_birth %}<span class="sub">DOB {{ p.date_of_birth }}{% if meta.age is not none %} · age {{ meta.age }}{% endif %}</span>{% endif %}
+        {% if meta.pending_upgrade_link_id %}
+          <span class="badge badge-warn">Upgrade invite pending</span>
+        {% endif %}
       </span>
-      <span class="row-actions">
+      <span class="row-actions" id="dep-actions-{{ p.id }}">
+        {% if meta.pending_upgrade_link_id %}
+          <button class="btn btn-secondary btn-sm"
+                  hx-delete="/profile/family/link/{{ meta.pending_upgrade_link_id }}"
+                  hx-target="#dep-actions-{{ p.id }}"
+                  hx-swap="innerHTML"
+                  hx-on::after-request="window.location.reload()">Cancel invite</button>
+        {% elif meta.eligible %}
+          <details class="dep-upgrade-toggle">
+            <summary class="btn btn-secondary btn-sm">Invite to manage their own account</summary>
+            <form method="post" action="/profile/family/dependent/{{ p.id }}/invite-upgrade"
+                  class="patient-form" style="margin-top: 0.5rem; min-width: 280px;">
+              <label>{{ p.display_name }}'s email *
+                <input type="email" name="email" required maxlength="320" autocomplete="off">
+              </label>
+              <p class="sub" style="margin: 0.25rem 0 0.5rem;">
+                When they accept, {{ p.display_name }}'s profile and all their referrals
+                will move to their account. You'll stay connected through Family.
+              </p>
+              <button type="submit" class="btn btn-primary btn-sm">Send invite</button>
+            </form>
+          </details>
+        {% endif %}
         <button class="btn btn-danger btn-sm"
                 hx-delete="/profile/family/dependent/{{ p.id }}"
                 hx-target="#dep-row-{{ p.id }}"

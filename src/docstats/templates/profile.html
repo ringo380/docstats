@@ -170,6 +170,14 @@
   {# ── People I manage (patient accounts only) ── #}
   {% if user.account_type == 'patient' %}
     {% include "_family_section.html" %}
+
+    <div class="card" style="padding:1.25rem; margin-bottom:1.5rem;">
+      <h2 style="font-size:0.95rem; font-weight:600; margin-bottom:0.5rem; color:var(--text-dim);">Insurance plans</h2>
+      <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">
+        Add insurance plans once and reuse them on referrals. Optionally share plans with linked family.
+      </p>
+      <a href="/profile/insurance" class="btn btn-secondary btn-sm">Manage insurance plans</a>
+    </div>
   {% endif %}
 
   {# ── Support Access ── #}

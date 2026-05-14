@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
 import uuid
 from datetime import date, datetime, timezone
 from typing import Annotated
@@ -118,7 +119,12 @@ async def profile(
     family_patients = []
     family_links = []
     linked_users_by_id: dict[int, dict] = {}
+    dependent_meta: dict[int, dict] = {}
     if user_for_template.get("account_type") == "patient":
+        from docstats.domain.family import (
+            is_eligible_for_self_upgrade as _is_eligible,
+            patient_age as _patient_age,
+        )
         from docstats.scope import Scope as _Scope
 
         solo_scope = _Scope(user_id=user_id)
@@ -126,6 +132,20 @@ async def profile(
         # family_patients = dependent profiles (not the user's own self-profile)
         family_patients = [p for p in all_patients if p.relationship is not None]
         family_links = storage.list_family_links(user_id)
+        today = date.today()
+        pending_upgrade_by_patient = {
+            link.source_patient_id: link.id
+            for link in family_links
+            if link.is_pending() and link.source_patient_id is not None
+        }
+        dependent_meta = {
+            p.id: {
+                "age": _patient_age(p, today),
+                "eligible": _is_eligible(p, today),
+                "pending_upgrade_link_id": pending_upgrade_by_patient.get(p.id),
+            }
+            for p in family_patients
+        }
         for link in family_links:
             other_id = (
                 link.linked_user_id if link.initiator_user_id == user_id else link.initiator_user_id
@@ -156,6 +176,7 @@ async def profile(
             "signature_error": signature_error,
             "family_patients": family_patients,
             "family_links": family_links,
+            "dependent_meta": dependent_meta,
             "linked_users_by_id": linked_users_by_id,
             "relationship_values": RELATIONSHIP_VALUES,
             "family_errors": None,
@@ -667,11 +688,30 @@ def _family_profile_context(
     """Build the context dict needed to re-render the full profile page with family errors."""
     from docstats.scope import Scope as _Scope
 
+    from docstats.domain.family import (
+        is_eligible_for_self_upgrade as _is_eligible,
+        patient_age as _patient_age,
+    )
+
     user_id = current_user["id"]
     solo_scope = _Scope(user_id=user_id)
     all_patients = storage.list_patients(solo_scope, limit=50)
     family_patients = [p for p in all_patients if p.relationship is not None]
     family_links = storage.list_family_links(user_id)
+    today = date.today()
+    pending_upgrade_by_patient: dict[int, int] = {
+        link.source_patient_id: link.id
+        for link in family_links
+        if link.is_pending() and link.source_patient_id is not None
+    }
+    dependent_meta = {
+        p.id: {
+            "age": _patient_age(p, today),
+            "eligible": _is_eligible(p, today),
+            "pending_upgrade_link_id": pending_upgrade_by_patient.get(p.id),
+        }
+        for p in family_patients
+    }
     linked_users_by_id: dict[int, dict] = {}
     for link in family_links:
         other_id = (
@@ -701,6 +741,7 @@ def _family_profile_context(
         "signature_error": None,
         "family_patients": family_patients,
         "family_links": family_links,
+        "dependent_meta": dependent_meta,
         "linked_users_by_id": linked_users_by_id,
         "relationship_values": RELATIONSHIP_VALUES,
         "family_errors": family_errors,
@@ -921,8 +962,234 @@ async def family_accept_invite(
             detail="This invitation was sent to a different account.",
         )
 
+    # Dependent-upgrade flow: show a distinct confirmation page describing the
+    # data transfer before the user POSTs to accept.
+    if link.is_dependent_upgrade():
+        initiator = storage.get_user_by_id(link.initiator_user_id) or {}
+        patient = None
+        if link.source_patient_id is not None:
+            patient = storage.get_patient(
+                Scope(user_id=link.initiator_user_id), link.source_patient_id
+            )
+        referral_count = 0
+        if patient is not None:
+            referral_count = len(
+                storage.list_referrals(
+                    Scope(user_id=link.initiator_user_id),
+                    patient_id=patient.id,
+                    limit=200,
+                )
+            )
+        return render(
+            "family_upgrade_accept.html",
+            {
+                "request": request,
+                "active_page": "profile",
+                "user": current_user,
+                "link": link,
+                "initiator": initiator,
+                "patient": patient,
+                "referral_count": referral_count,
+            },
+        )
+
     storage.accept_family_link(link.id, current_user["id"])
     return RedirectResponse("/profile?family_accepted=1#family-section", status_code=303)
+
+
+@router.post("/profile/family/accept/{token}", response_class=HTMLResponse)
+async def family_accept_invite_post(
+    token: str,
+    request: Request,
+    current_user: dict = Depends(require_phi_consent),
+    storage: StorageBase = Depends(get_storage),
+):
+    """POST handler for the dependent-upgrade confirmation form.
+
+    Adult linking still uses the GET-style accept (one click from email →
+    immediate accept). The dependent-upgrade flow re-parents Patient + every
+    related referral on accept and gets its own confirmation step.
+
+    Gated on ``require_phi_consent`` — receiving an adult's clinical record
+    into your account is itself a PHI-handling event, so the receiver must
+    have an active consent on record before the transfer fires.
+
+    Ordering: we accept the family_link FIRST, then reparent. If the
+    reparent fails, we revoke the just-accepted link as compensation so
+    we don't leave the parent without family-link visibility AND without
+    the data. Accept-then-reparent is the safer order because the
+    family_link mutation is cheap and idempotent to compensate, while
+    reparent_patient_to_user is the expensive multi-row move.
+    """
+    link = storage.get_family_link_by_token(token)
+    if not link or not link.is_pending():
+        raise HTTPException(status_code=404, detail="Invitation not found or already used.")
+    if link.linked_user_id != current_user["id"]:
+        raise HTTPException(
+            status_code=403,
+            detail="This invitation was sent to a different account.",
+        )
+    if not link.is_dependent_upgrade() or link.source_patient_id is None:
+        raise HTTPException(status_code=400, detail="Not a dependent-upgrade invitation.")
+
+    accepted = storage.accept_family_link(link.id, current_user["id"])
+    if accepted is None:
+        # Concurrent revoke / double-accept — surface as 409 so the user
+        # retries from the invite link rather than seeing a stale success.
+        raise HTTPException(
+            status_code=409, detail="Invitation was just accepted or revoked elsewhere."
+        )
+
+    try:
+        moved = storage.reparent_patient_to_user(
+            link.source_patient_id,
+            from_user_id=link.initiator_user_id,
+            to_user_id=current_user["id"],
+        )
+    except (ValueError, Exception) as exc:
+        # Compensate: revoke the just-accepted link so the parent doesn't
+        # end up linked but with no data transferred (or worse, a partial
+        # transfer). The link stays in the audit trail via revoked_at.
+        try:
+            storage.revoke_family_link(link.id, current_user["id"])
+        except Exception:
+            logger.exception(
+                "Failed to compensate-revoke family_link %s after reparent failure",
+                link.id,
+            )
+        if isinstance(exc, ValueError):
+            # TOCTOU: parent already moved/deleted the patient. Surface 409.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise
+
+    audit.record(
+        storage,
+        action="patient.scope_transferred",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=current_user["id"],
+        entity_type="patient",
+        entity_id=str(link.source_patient_id),
+        metadata={
+            "from_user_id": link.initiator_user_id,
+            "to_user_id": current_user["id"],
+            "referral_count": moved,
+            "via": "family_link",
+            "family_link_id": link.id,
+        },
+    )
+    audit.record(
+        storage,
+        action="family_link.upgrade_accepted",
+        request=request,
+        actor_user_id=current_user["id"],
+        scope_user_id=current_user["id"],
+        entity_type="family_link",
+        entity_id=str(link.id),
+    )
+
+    return RedirectResponse("/profile?family_accepted=1#family-section", status_code=303)
+
+
+@router.post(
+    "/profile/family/dependent/{patient_id}/invite-upgrade",
+    response_class=HTMLResponse,
+)
+async def family_invite_dependent_upgrade(
+    patient_id: int,
+    request: Request,
+    email: str = Form(..., max_length=320),
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+):
+    """Parent invites a dependent (age 18+) to take over their own account."""
+    if current_user.get("account_type") != "patient":
+        raise HTTPException(status_code=403, detail="Patient account required.")
+
+    from docstats.domain.family import is_eligible_for_self_upgrade as _is_eligible
+
+    user_id = current_user["id"]
+    solo_scope = Scope(user_id=user_id)
+    patient = storage.get_patient(solo_scope, patient_id)
+    if patient is None or patient.relationship is None:
+        raise HTTPException(status_code=404, detail="Dependent not found.")
+
+    errors: list[str] = []
+    if not _is_eligible(patient, date.today()):
+        errors.append(f"{patient.display_name} isn't eligible yet — needs a known DOB and age 18+.")
+
+    email_clean = email.strip()
+    try:
+        email_clean = validate_email(email_clean)
+    except ValidationError as exc:
+        errors.append(str(exc))
+
+    if email_clean and normalize_email(email_clean) == normalize_email(
+        current_user.get("email", "")
+    ):
+        errors.append("You can't invite yourself.")
+
+    # Reject if there's already a pending upgrade for this patient
+    existing_links = storage.list_family_links(user_id)
+    for link in existing_links:
+        if link.is_pending() and link.source_patient_id == patient.id:
+            errors.append(f"An upgrade invitation is already pending for {patient.display_name}.")
+            break
+
+    invited_user = storage.get_user_by_email(normalize_email(email_clean)) if not errors else None
+    if not errors and invited_user is None:
+        errors.append(
+            f"{email_clean} doesn't have a referme.help account yet. "
+            "Ask them to sign up first, then send the invite."
+        )
+    elif not errors and invited_user is not None and invited_user.get("account_type") != "patient":
+        # The receiving UI (family section, /profile/insurance, patient list)
+        # is gated on account_type == 'patient'. A clinician account that
+        # accepted this invite would own the data but have no UI to manage
+        # it — refuse upfront with a clear message.
+        errors.append(
+            f"{email_clean} has a clinician account. Ask them to switch to a "
+            "patient account at /profile before accepting the invite."
+        )
+
+    if errors:
+        return render(
+            "profile.html",
+            _family_profile_context(
+                request,
+                current_user,
+                storage,
+                family_link_errors=errors,
+            ),
+        )
+
+    assert invited_user is not None  # narrowed by `if errors` above
+    token = secrets.token_urlsafe(32)
+    link = storage.create_family_link(
+        initiator_user_id=user_id,
+        linked_user_id=int(invited_user["id"]),
+        relationship=patient.relationship or "child",
+        invite_token=token,
+        invite_email=email_clean,
+        source_patient_id=patient.id,
+    )
+
+    audit.record(
+        storage,
+        action="family_link.upgrade_invited",
+        request=request,
+        actor_user_id=user_id,
+        scope_user_id=user_id,
+        entity_type="family_link",
+        entity_id=str(link.id),
+        metadata={"patient_id": patient.id, "invite_email": email_clean},
+    )
+
+    if request.headers.get("HX-Request"):
+        resp = Response(status_code=200)
+        resp.headers["HX-Redirect"] = "/profile?upgrade_sent=1#family-section"
+        return resp
+    return RedirectResponse("/profile?upgrade_sent=1#family-section", status_code=303)
 
 
 @router.delete("/profile/family/link/{link_id}", response_class=HTMLResponse)

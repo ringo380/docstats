@@ -1162,6 +1162,7 @@ class StorageBase(ABC):
         requires_referral: bool = False,
         requires_prior_auth: bool = False,
         notes: str | None = None,
+        cloned_from_plan_id: int | None = None,
     ) -> "InsurancePlan": ...
 
     @abstractmethod
@@ -1819,6 +1820,7 @@ class StorageBase(ABC):
         relationship: str,
         invite_token: str,
         invite_email: str,
+        source_patient_id: int | None = None,
     ) -> "FamilyLink": ...
 
     @abstractmethod
@@ -1840,3 +1842,44 @@ class StorageBase(ABC):
     @abstractmethod
     def revoke_family_link(self, link_id: int, user_id: int) -> bool:
         """Revoke the link. Either side can revoke. Returns True if revoked."""
+
+    # --- Dependent → linked account upgrade (#158) ---
+
+    @abstractmethod
+    def list_linked_family_user_ids(self, user_id: int) -> "list[int]":
+        """Return user IDs that share an active family_link with ``user_id``.
+
+        Used to evaluate cross-scope visibility for shared insurance plans
+        (#159) and for any other family-grant pattern.
+        """
+
+    @abstractmethod
+    def reparent_patient_to_user(
+        self,
+        patient_id: int,
+        *,
+        from_user_id: int,
+        to_user_id: int,
+    ) -> int:
+        """Move a dependent Patient row + all related referrals to a new owner.
+
+        Asserts the patient is currently scoped to ``from_user_id`` (TOCTOU
+        guard). Clears the patient's ``relationship`` field on success.
+        Returns the count of referrals re-parented. Raises ``ValueError`` on
+        scope mismatch or missing patient.
+        """
+
+    # --- Insurance plan sharing (#159) ---
+
+    @abstractmethod
+    def set_insurance_plan_share(
+        self, scope: "Scope", plan_id: int, *, shared: bool
+    ) -> "InsurancePlan | None":
+        """Toggle ``shared_with_family`` on a user-scoped plan."""
+
+    @abstractmethod
+    def list_shared_family_plans(self, user_id: int) -> "list[InsurancePlan]":
+        """Return insurance plans shared with ``user_id`` via family_links.
+
+        Excludes the user's own plans (caller combines with ``list_insurance_plans``).
+        """
