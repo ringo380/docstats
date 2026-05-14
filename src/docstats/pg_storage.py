@@ -4626,7 +4626,7 @@ class PostgresStorage(StorageBase):
         if current_scope != from_user_id:
             raise ValueError(f"Patient {patient_id} not owned by user {from_user_id}")
 
-        # Fetch ids of referrals to move (need count + compensation list).
+        # Fetch ids of referrals to move (need them for the compensation list).
         ref_ids_query = (
             self._t("referrals")
             .select("id")
@@ -4638,10 +4638,19 @@ class PostgresStorage(StorageBase):
         referral_ids = [int(r["id"]) for r in ref_ids_query.data]
 
         # Move referrals first so a failure leaves the patient row untouched.
+        # ``referrals_moved`` is sourced from the UPDATE's returned data, not
+        # the pre-fetch SELECT — supabase-py returns the affected rows, so a
+        # concurrent soft-delete or scope flip between SELECT and UPDATE is
+        # reflected in the count (which we report on the audit event).
+        referrals_moved = 0
         if referral_ids:
-            self._t("referrals").update(
-                {"scope_user_id": to_user_id, "updated_at": _now_iso()}
-            ).in_("id", referral_ids).execute()
+            update_result = (
+                self._t("referrals")
+                .update({"scope_user_id": to_user_id, "updated_at": _now_iso()})
+                .in_("id", referral_ids)
+                .execute()
+            )
+            referrals_moved = len(update_result.data)
 
         try:
             # Re-apply the scope_user_id guard on the UPDATE WHERE clause to
@@ -4673,7 +4682,7 @@ class PostgresStorage(StorageBase):
                 ).in_("id", referral_ids).execute()
             raise
 
-        return len(referral_ids)
+        return referrals_moved
 
     def set_insurance_plan_share(
         self, scope: Scope, plan_id: int, *, shared: bool
