@@ -81,3 +81,40 @@ def is_eligible_for_self_upgrade(patient: Patient, today: date) -> bool:
         return False
     age = patient_age(patient, today)
     return age is not None and age >= 18
+
+
+# Days before turning 18 to start surfacing the advance-notice hint on the
+# parent's profile. Two months is enough to set expectations and (eventually)
+# to schedule a transition appointment without becoming noisy.
+UPCOMING_18_WINDOW_DAYS: int = 60
+
+
+def upcoming_18_date(patient: Patient, today: date) -> date | None:
+    """Return the date this child dependent turns 18, when it lies within
+    the advance-notice window and the dependent is still a minor.
+
+    Returns None when:
+    - relationship isn't a child label
+    - DOB is missing or unparseable
+    - the 18th birthday is more than ``UPCOMING_18_WINDOW_DAYS`` away
+    - the dependent is already 18+ (use ``is_eligible_for_self_upgrade``
+      for that case so the invite button shows instead of the hint)
+    """
+    if patient.relationship not in CHILD_RELATIONSHIPS:
+        return None
+    if not patient.date_of_birth:
+        return None
+    try:
+        dob = date.fromisoformat(patient.date_of_birth)
+    except ValueError:
+        return None
+    try:
+        eighteenth = dob.replace(year=dob.year + 18)
+    except ValueError:
+        # Feb 29 DOB in a non-leap target year — fall back to Feb 28.
+        eighteenth = dob.replace(year=dob.year + 18, day=28)
+    if eighteenth <= today:
+        return None  # already eligible — invite UI takes over
+    if (eighteenth - today).days > UPCOMING_18_WINDOW_DAYS:
+        return None
+    return eighteenth

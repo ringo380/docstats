@@ -124,6 +124,7 @@ async def profile(
         from docstats.domain.family import (
             is_eligible_for_self_upgrade as _is_eligible,
             patient_age as _patient_age,
+            upcoming_18_date as _upcoming_18,
         )
         from docstats.scope import Scope as _Scope
 
@@ -142,6 +143,7 @@ async def profile(
             p.id: {
                 "age": _patient_age(p, today),
                 "eligible": _is_eligible(p, today),
+                "upcoming_18_on": _upcoming_18(p, today),
                 "pending_upgrade_link_id": pending_upgrade_by_patient.get(p.id),
             }
             for p in family_patients
@@ -691,6 +693,7 @@ def _family_profile_context(
     from docstats.domain.family import (
         is_eligible_for_self_upgrade as _is_eligible,
         patient_age as _patient_age,
+        upcoming_18_date as _upcoming_18,
     )
 
     user_id = current_user["id"]
@@ -708,6 +711,7 @@ def _family_profile_context(
         p.id: {
             "age": _patient_age(p, today),
             "eligible": _is_eligible(p, today),
+            "upcoming_18_on": _upcoming_18(p, today),
             "pending_upgrade_link_id": pending_upgrade_by_patient.get(p.id),
         }
         for p in family_patients
