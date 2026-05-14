@@ -19,6 +19,13 @@
       <span class="urgency-label">{{ referral.urgency | title }}</span>
       &nbsp;·&nbsp;
       <span class="status-chip status-{{ referral.status }}">{{ referral.status | replace('_', ' ') | title }}</span>
+      {% if referral.ehr_service_request_id and ehr_status_label %}
+        &nbsp;·&nbsp;
+        <span class="status-chip status-ehr-{{ referral.ehr_status or 'unknown' }}"
+              title="Reported by your PCP's EHR{% if referral.ehr_status_polled_at %} (as of {{ referral.ehr_status_polled_at.strftime('%Y-%m-%d %H:%M UTC') }}){% endif %}">
+          PCP portal: {{ ehr_status_label }}
+        </span>
+      {% endif %}
     </div>
   </div>
   <div class="header-actions">

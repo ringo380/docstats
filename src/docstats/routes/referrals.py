@@ -688,7 +688,15 @@ async def _ehr_post_create_hook(
                     iss_override=conn_iss,
                 ),
             )
-            storage.update_referral_ehr_service_request_id(referral.id, sr_id)
+            # Issue #157: record vendor + originating connection alongside
+            # the resource id so the status poller can resolve a fresh token
+            # without re-guessing which connection performed the write-back.
+            storage.set_referral_ehr_writeback(
+                referral.id,
+                ehr_service_request_id=sr_id,
+                ehr_vendor=ehr_vendor,
+                ehr_connection_id=conn.id,
+            )
             _audit(
                 storage,
                 action="ehr.service_request_written",
@@ -781,7 +789,15 @@ async def _redox_post_create_hook(
                     destination_path=conn.iss,
                 ),
             )
-            storage.update_referral_ehr_service_request_id(referral.id, sr_id)
+            # Issue #157: record vendor + connection alongside the resource id
+            # so the poller can mint a fresh JWT-bearer token and route to the
+            # right destination path.
+            storage.set_referral_ehr_writeback(
+                referral.id,
+                ehr_service_request_id=sr_id,
+                ehr_vendor="redox",
+                ehr_connection_id=conn.id,
+            )
             _audit_mod.record(
                 storage,
                 action="ehr.service_request_written",
@@ -1062,6 +1078,26 @@ def _format_actor(user_row: dict | None) -> str:
     return email or "—"
 
 
+_EHR_STATUS_DISPLAY: dict[str, str] = {
+    # FHIR R4 request-status vocabulary mapped to plain-English labels for
+    # patients. Issue #157 pill on referral_detail.html.
+    "draft": "Drafted",
+    "active": "Received by PCP",
+    "on-hold": "Under review",
+    "revoked": "Declined by PCP",
+    "completed": "Completed by PCP",
+    "entered-in-error": "Sent in error",
+    "unknown": "Status unknown",
+}
+
+
+def _ehr_status_label(ehr_status: str | None) -> str | None:
+    """Display label for the referral detail pill, or None to hide."""
+    if not ehr_status:
+        return None
+    return _EHR_STATUS_DISPLAY.get(ehr_status, ehr_status)
+
+
 def _build_actor_map(storage: StorageBase, events: list) -> dict[int, str]:
     """Fetch display names for every distinct ``actor_user_id`` on the
     event list. Per-request cache: ~50 events × small actor cardinality
@@ -1174,6 +1210,7 @@ async def _render_detail(
             response_values=response_values or {},
             note_error=note_error,
             note_value=note_value or "",
+            ehr_status_label=_ehr_status_label(referral.ehr_status),
         ),
     )
 

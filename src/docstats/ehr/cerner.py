@@ -461,4 +461,31 @@ def write_service_request(
     return resource_id
 
 
+def read_service_request(
+    *,
+    access_token: str,
+    service_request_id: str,
+    iss_override: str | None = None,
+):  # -> ServiceRequestSnapshot
+    """Issue #157: GET ServiceRequest/{id} for status polling."""
+    from docstats.ehr import parse_service_request_payload
+
+    endpoints = discover(base_url_override=iss_override)
+    url = f"{endpoints.fhir_base.rstrip('/')}/ServiceRequest/{service_request_id}"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/fhir+json",
+    }
+    with httpx.Client(timeout=get_default_timeout()) as http:
+        resp = request_with_retry(
+            http,
+            "GET",
+            url,
+            label="Cerner ServiceRequest.read",
+            error_class=CernerError,
+            headers=headers,
+        )
+    return parse_service_request_payload(resp.json())
+
+
 _ehr_registry.register("cerner_oauth", sys.modules[__name__])

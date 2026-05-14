@@ -25,6 +25,11 @@ os.environ.setdefault("DOCSTATS_SKIP_DELIVERY_DISPATCHER", "1")
 # mustn't outlive TestClient boundaries.  Tests that exercise the sweep
 # drive ``storage_files.retention.run_sweep`` directly.
 os.environ.setdefault("DOCSTATS_SKIP_ATTACHMENT_RETENTION", "1")
+# Issue #157: same rationale for the EHR status poller — TestClient tests
+# don't need a long-running background task and don't want one that survives
+# test boundaries. Tests that exercise the poller drive ``_run_iteration``
+# (or ``_process_one``) directly.
+os.environ.setdefault("DOCSTATS_SKIP_EHR_STATUS_POLLER", "1")
 
 
 SAMPLE_NPI1_RESULT = {

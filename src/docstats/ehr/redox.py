@@ -468,4 +468,27 @@ def write_service_request(
     return resource_id
 
 
+def read_service_request(
+    *,
+    access_token: str,
+    service_request_id: str,
+    destination_path: str | None = None,
+):  # -> ServiceRequestSnapshot
+    """Issue #157: GET ServiceRequest/{id} via Redox.
+
+    Redox is org-scoped JWT-bearer so the multi-tenant routing argument is
+    ``destination_path`` (the ``{org}/{Environment}`` segment), not
+    ``iss_override`` like the SMART vendors. The poller maps this from the
+    connection's ``iss`` field.
+    """
+    from docstats.ehr import parse_service_request_payload
+
+    body = _fhir_get(
+        path=f"ServiceRequest/{service_request_id}",
+        access_token=access_token,
+        destination_path=destination_path,
+    )
+    return parse_service_request_payload(body)
+
+
 _ehr_registry.register("redox", sys.modules[__name__])
