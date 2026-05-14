@@ -40,6 +40,10 @@
         {% if p.date_of_birth %}<span class="sub">DOB {{ p.date_of_birth }}{% if meta.age is not none %} · age {{ meta.age }}{% endif %}</span>{% endif %}
         {% if meta.pending_upgrade_link_id %}
           <span class="badge badge-warn">Upgrade invite pending</span>
+        {% elif meta.upcoming_18_on %}
+          <span class="sub" style="color: var(--text-muted);">
+            {{ p.first_name }} turns 18 on {{ meta.upcoming_18_on.strftime('%b %-d, %Y') }} — you'll be able to invite them to manage their own account then.
+          </span>
         {% endif %}
       </span>
       <span class="row-actions" id="dep-actions-{{ p.id }}">

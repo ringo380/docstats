@@ -10,8 +10,10 @@ from fastapi.testclient import TestClient
 
 from docstats.auth import get_current_user
 from docstats.domain.family import (
+    UPCOMING_18_WINDOW_DAYS,
     is_eligible_for_self_upgrade,
     patient_age,
+    upcoming_18_date,
 )
 from docstats.phi import CURRENT_PHI_CONSENT_VERSION
 from docstats.scope import Scope
@@ -408,3 +410,87 @@ def test_reparent_toctou_guard_on_patient_update(tmp_path: Path):
         "SELECT scope_user_id FROM patients WHERE id = ?", (pid,)
     ).fetchone()
     assert row["scope_user_id"] == third_id
+
+
+# --- Upcoming-18 hint ---
+
+
+def _patient_with_dob(dob_iso: str | None, *, relationship: str | None = "child"):
+    from docstats.domain.patients import Patient
+    from datetime import datetime, timezone
+
+    return Patient(
+        id=1,
+        scope_user_id=1,
+        first_name="A",
+        last_name="B",
+        date_of_birth=dob_iso,
+        relationship=relationship,
+        created_at=datetime.now(tz=timezone.utc),
+        updated_at=datetime.now(tz=timezone.utc),
+    )
+
+
+def test_upcoming_18_within_window_returns_birthday_date():
+    today = date.today()
+    # DOB such that the 18th birthday is 30 days from today.
+    eighteenth = today + timedelta(days=30)
+    dob = eighteenth.replace(year=eighteenth.year - 18)
+    p = _patient_with_dob(dob.isoformat())
+    assert upcoming_18_date(p, today) == eighteenth
+
+
+def test_upcoming_18_outside_window_returns_none():
+    today = date.today()
+    eighteenth = today + timedelta(days=UPCOMING_18_WINDOW_DAYS + 5)
+    dob = eighteenth.replace(year=eighteenth.year - 18)
+    p = _patient_with_dob(dob.isoformat())
+    assert upcoming_18_date(p, today) is None
+
+
+def test_upcoming_18_already_18_returns_none():
+    # Already eligible — eligibility-helper takes over; this returns None
+    # so the template renders the invite UI, not the advance-notice hint.
+    today = date.today()
+    p = _patient_with_dob(_dob(19))
+    assert upcoming_18_date(p, today) is None
+    assert is_eligible_for_self_upgrade(p, today) is True
+
+
+def test_upcoming_18_non_child_relationship_returns_none():
+    today = date.today()
+    eighteenth = today + timedelta(days=10)
+    dob = eighteenth.replace(year=eighteenth.year - 18)
+    p = _patient_with_dob(dob.isoformat(), relationship="sibling")
+    assert upcoming_18_date(p, today) is None
+
+
+def test_upcoming_18_feb29_leap_day_falls_back_to_feb28():
+    # Feb 29 DOB — 18 years later is a non-leap year; helper must clamp to Feb 28.
+    p = _patient_with_dob("2008-02-29")
+    # Use a synthetic "today" close to the fallback date so we land inside
+    # the window deterministically regardless of when the test runs.
+    today = date(2026, 1, 5)
+    res = upcoming_18_date(p, today)
+    assert res == date(2026, 2, 28)
+
+
+def test_profile_renders_upcoming_18_hint(parent_client):
+    """Dependent with DOB 30 days from turning 18 — profile page should
+    surface the advance-notice hint copy."""
+    client, storage, parent_id, _child_id = parent_client
+    today = date.today()
+    eighteenth = today + timedelta(days=30)
+    dob = eighteenth.replace(year=eighteenth.year - 18)
+    storage.create_patient(
+        Scope(user_id=parent_id),
+        first_name="Alex",
+        last_name="Kid",
+        date_of_birth=dob.isoformat(),
+        relationship="child",
+        created_by_user_id=parent_id,
+    )
+    resp = client.get("/profile")
+    assert resp.status_code == 200
+    assert "turns 18 on" in resp.text
+    assert "Alex" in resp.text
