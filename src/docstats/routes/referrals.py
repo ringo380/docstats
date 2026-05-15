@@ -459,12 +459,17 @@ async def _ehr_post_create_hook(
         if patient is None or not patient.ehr_fhir_id:
             return
 
-        # Pick the most recently created active connection that has a
-        # patient_fhir_id. Iterating `_reg.list_vendors()` and stopping at
-        # the first match picks an arbitrary vendor in multi-vendor accounts,
-        # which can route Patient PHI to the wrong EHR.
+        # Pick the connection whose ``patient_fhir_id`` matches the patient's
+        # imported FHIR id — that's the connection that imported them. Falling
+        # back to "first active connection with any patient_fhir_id" (the
+        # previous behavior — flagged P1 on PR #142) can mis-route in
+        # multi-vendor accounts: if the patient was imported via Cerner but
+        # the user later added an Epic connection, the Epic connection would
+        # be picked first and Patient PHI would be sent to Epic with a
+        # Cerner-format FHIR id.
+        active_conns = storage.list_active_ehr_connections(user_id)
         conn = next(
-            (c for c in storage.list_active_ehr_connections(user_id) if c.patient_fhir_id),
+            (c for c in active_conns if c.patient_fhir_id == patient.ehr_fhir_id),
             None,
         )
         if conn is None:
@@ -688,7 +693,15 @@ async def _ehr_post_create_hook(
                     iss_override=conn_iss,
                 ),
             )
-            storage.update_referral_ehr_service_request_id(referral.id, sr_id)
+            # Issue #157: record vendor + originating connection alongside
+            # the resource id so the status poller can resolve a fresh token
+            # without re-guessing which connection performed the write-back.
+            storage.set_referral_ehr_writeback(
+                referral.id,
+                ehr_service_request_id=sr_id,
+                ehr_vendor=ehr_vendor,
+                ehr_connection_id=conn.id,
+            )
             _audit(
                 storage,
                 action="ehr.service_request_written",
@@ -759,6 +772,26 @@ async def _redox_post_create_hook(
         if conn is None:
             return
 
+        # Don't double-route: if any user in the org has a SMART connection
+        # whose ``patient_fhir_id`` matches this patient's id, the patient
+        # was imported via SMART and the SMART hook already handled this
+        # referral. Without this guard (flagged P2 on PR #164) we'd POST a
+        # Redox ServiceRequest with a SMART-format FHIR id. We only have a
+        # user-scoped active-connection lister, so this guard isn't exhaustive
+        # across the whole org — but it does cover the common case where the
+        # importing user is also the referral creator.
+        if user_id is not None:
+            smart_match = next(
+                (
+                    c
+                    for c in storage.list_active_ehr_connections(user_id)
+                    if c.patient_fhir_id == ehr_fhir_id and c.ehr_vendor != "redox"
+                ),
+                None,
+            )
+            if smart_match is not None:
+                return
+
         loop = asyncio.get_running_loop()
         try:
             access_token = await loop.run_in_executor(
@@ -781,7 +814,15 @@ async def _redox_post_create_hook(
                     destination_path=conn.iss,
                 ),
             )
-            storage.update_referral_ehr_service_request_id(referral.id, sr_id)
+            # Issue #157: record vendor + connection alongside the resource id
+            # so the poller can mint a fresh JWT-bearer token and route to the
+            # right destination path.
+            storage.set_referral_ehr_writeback(
+                referral.id,
+                ehr_service_request_id=sr_id,
+                ehr_vendor="redox",
+                ehr_connection_id=conn.id,
+            )
             _audit_mod.record(
                 storage,
                 action="ehr.service_request_written",
@@ -1062,6 +1103,26 @@ def _format_actor(user_row: dict | None) -> str:
     return email or "—"
 
 
+_EHR_STATUS_DISPLAY: dict[str, str] = {
+    # FHIR R4 request-status vocabulary mapped to plain-English labels for
+    # patients. Issue #157 pill on referral_detail.html.
+    "draft": "Drafted",
+    "active": "Received by PCP",
+    "on-hold": "Under review",
+    "revoked": "Declined by PCP",
+    "completed": "Completed by PCP",
+    "entered-in-error": "Sent in error",
+    "unknown": "Status unknown",
+}
+
+
+def _ehr_status_label(ehr_status: str | None) -> str | None:
+    """Display label for the referral detail pill, or None to hide."""
+    if not ehr_status:
+        return None
+    return _EHR_STATUS_DISPLAY.get(ehr_status, ehr_status)
+
+
 def _build_actor_map(storage: StorageBase, events: list) -> dict[int, str]:
     """Fetch display names for every distinct ``actor_user_id`` on the
     event list. Per-request cache: ~50 events × small actor cardinality
@@ -1174,6 +1235,7 @@ async def _render_detail(
             response_values=response_values or {},
             note_error=note_error,
             note_value=note_value or "",
+            ehr_status_label=_ehr_status_label(referral.ehr_status),
         ),
     )
 

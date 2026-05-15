@@ -522,4 +522,38 @@ def write_service_request(
     return resource_id
 
 
+def read_service_request(
+    *,
+    access_token: str,
+    service_request_id: str,
+    iss_override: str | None = None,
+):  # -> ServiceRequestSnapshot (return annotation lazy-imported to avoid cycle)
+    """Issue #157: GET ServiceRequest/{id} for status polling.
+
+    Returns a ``ServiceRequestSnapshot`` carrying the FHIR-vocabulary status,
+    the raw status value (for forensics if Epic adds a code we don't know),
+    and ``meta.lastUpdated`` when present. Raises ``EpicError`` on HTTP /
+    transport failure — including 404, which the poller treats as a generic
+    error (stale write-back id; eventually gives up via the max-age cutoff).
+    """
+    from docstats.ehr import parse_service_request_payload
+
+    endpoints = discover(base_url_override=iss_override)
+    url = f"{endpoints.fhir_base.rstrip('/')}/ServiceRequest/{service_request_id}"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/fhir+json",
+    }
+    with httpx.Client(timeout=get_default_timeout()) as http:
+        resp = request_with_retry(
+            http,
+            "GET",
+            url,
+            label="Epic ServiceRequest.read",
+            error_class=EpicError,
+            headers=headers,
+        )
+    return parse_service_request_payload(resp.json())
+
+
 _ehr_registry.register("epic_sandbox", sys.modules[__name__])

@@ -80,6 +80,21 @@ EVENT_TYPE_VALUES: Final[tuple[str, ...]] = (
     "dispatched",  # delivery row moved from queued to sending
     "delivered",  # vendor confirmed end-recipient receipt
     "delivery_failed",  # retries exhausted or fatal error
+    # Issue #157: remote EHR ServiceRequest.status changed (poller observation).
+    "ehr_status",
+)
+
+# FHIR R4 ServiceRequest.status vocabulary. Used as the ``ehr_status`` column
+# value when the poller reads the remote resource after write-back.
+# https://www.hl7.org/fhir/R4/valueset-request-status.html
+EHR_STATUS_VALUES: Final[tuple[str, ...]] = (
+    "draft",
+    "active",
+    "on-hold",
+    "revoked",
+    "completed",
+    "entered-in-error",
+    "unknown",
 )
 
 # Provenance tag on every clinical sub-entity row (diagnoses, meds, allergies,
@@ -259,8 +274,16 @@ class Referral(BaseModel):
     external_reference_id: str | None = None
     external_source: str = "manual"  # must be in EXTERNAL_SOURCE_VALUES
 
-    # EHR write-back: Epic FHIR ServiceRequest.id written on referral creation.
+    # EHR write-back: FHIR ServiceRequest.id written on referral creation.
+    # Vendor + connection captured at write-back time so the issue-#157 poller
+    # can dispatch to the right module and resolve a fresh access token without
+    # re-guessing which connection performed the original POST.
     ehr_service_request_id: str | None = None
+    ehr_vendor: str | None = None  # matches docstats_ehr_connections.ehr_vendor
+    ehr_connection_id: int | None = None  # FK to ehr_connections; SET NULL on revoke
+    ehr_status: str | None = None  # most recent remote status; in EHR_STATUS_VALUES
+    ehr_status_polled_at: datetime | None = None
+    ehr_status_error: str | None = None  # last fetch error excerpt (PHI-redacted)
 
     # Prior authorization / Medical Necessity letter fields (migration 027).
     # ``cpt_codes`` is a list of {code, description, units, modifier,

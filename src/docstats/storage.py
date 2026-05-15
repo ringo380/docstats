@@ -237,6 +237,13 @@ def _row_to_referral(row: sqlite3.Row) -> Referral:
         ehr_service_request_id=row["ehr_service_request_id"]
         if "ehr_service_request_id" in row.keys()
         else None,
+        ehr_vendor=row["ehr_vendor"] if "ehr_vendor" in row.keys() else None,
+        ehr_connection_id=row["ehr_connection_id"] if "ehr_connection_id" in row.keys() else None,
+        ehr_status=row["ehr_status"] if "ehr_status" in row.keys() else None,
+        ehr_status_polled_at=_parse_sqlite_utc(row["ehr_status_polled_at"])
+        if "ehr_status_polled_at" in row.keys()
+        else None,
+        ehr_status_error=row["ehr_status_error"] if "ehr_status_error" in row.keys() else None,
         cpt_codes=parse_cpt_codes(row["cpt_codes"]) if "cpt_codes" in row.keys() else None,
         place_of_service_code=row["place_of_service_code"]
         if "place_of_service_code" in row.keys()
@@ -632,6 +639,8 @@ class Storage(StorageBase):
         self._migrate_insurance_plans_shared_with_family()
         self._migrate_family_links_source_patient_id()
         self._migrate_insurance_plans_cloned_from()
+        self._migrate_referrals_ehr_status_poll()
+        self._migrate_referral_events_event_type_ehr_status()
 
     def _migrate_saved_providers(self) -> None:
         """Rebuild saved_providers with (user_id, npi) composite PK if needed."""
@@ -5313,6 +5322,19 @@ class Storage(StorageBase):
         ).fetchall()
         return [self._row_to_ehr_connection(r) for r in rows]
 
+    def get_ehr_connection(self, connection_id: int) -> EHRConnection | None:
+        """Issue #157: fetch a single connection by id (active or revoked).
+
+        Used by the status poller to resolve the connection that performed
+        a write-back, which may have since been revoked. Returns None when
+        the row doesn't exist.
+        """
+        row = self._conn.execute(
+            "SELECT * FROM ehr_connections WHERE id = ?",
+            (connection_id,),
+        ).fetchone()
+        return self._row_to_ehr_connection(row) if row is not None else None
+
     def update_ehr_connection_tokens(
         self,
         connection_id: int,
@@ -5423,14 +5445,78 @@ class Storage(StorageBase):
         self._conn.commit()
         return cur.rowcount
 
-    def update_referral_ehr_service_request_id(
-        self, referral_id: int, ehr_service_request_id: str
+    def set_referral_ehr_writeback(
+        self,
+        referral_id: int,
+        *,
+        ehr_service_request_id: str,
+        ehr_vendor: str,
+        ehr_connection_id: int | None,
     ) -> None:
         with self._conn:
             self._conn.execute(
-                "UPDATE referrals SET ehr_service_request_id = ?, updated_at = datetime('now')"
+                "UPDATE referrals SET ehr_service_request_id = ?, ehr_vendor = ?,"
+                " ehr_connection_id = ?, updated_at = datetime('now')"
                 " WHERE id = ?",
-                (ehr_service_request_id, referral_id),
+                (ehr_service_request_id, ehr_vendor, ehr_connection_id, referral_id),
+            )
+
+    def list_referrals_for_ehr_status_poll(
+        self,
+        limit: int,
+        *,
+        max_age: timedelta,
+        now: datetime,
+    ) -> list[Referral]:
+        """Issue #157: rows the EHR status poller should pick up this tick.
+
+        Picks pollable referrals (write-back happened, vendor recorded,
+        internal status non-terminal, not soft-deleted). Never-polled rows
+        (``ehr_status_polled_at IS NULL``) are always queued so freshly
+        written-back referrals get their first read regardless of how old
+        the parent row is. Previously-polled rows are dropped once their
+        last poll is older than ``max_age`` — that's the "stop polling
+        stale write-backs" cutoff (a row that hasn't moved in a month is
+        unlikely to start moving). Sorts least-recently-polled first
+        (NULLS FIRST) so errored rows naturally back off after each attempt
+        bumps their ``ehr_status_polled_at``.
+        """
+        cutoff = (now - max_age).isoformat()
+        rows = self._conn.execute(
+            """
+            SELECT * FROM referrals
+            WHERE ehr_service_request_id IS NOT NULL
+              AND ehr_vendor IS NOT NULL
+              AND deleted_at IS NULL
+              AND status NOT IN ('completed','cancelled')
+              AND (ehr_status_polled_at IS NULL OR ehr_status_polled_at >= ?)
+            ORDER BY ehr_status_polled_at IS NULL DESC, ehr_status_polled_at ASC, id ASC
+            LIMIT ?
+            """,
+            (cutoff, int(limit)),
+        ).fetchall()
+        return [_row_to_referral(r) for r in rows]
+
+    def update_referral_ehr_status(
+        self,
+        referral_id: int,
+        *,
+        ehr_status: str | None,
+        polled_at: datetime,
+        error: str | None,
+    ) -> None:
+        # Mirrors PostgresStorage.update_referral_ehr_status: do NOT touch
+        # ``updated_at`` from the poller. ``list_referrals`` orders by it and
+        # ``count_referrals(updated_before=...)`` uses it for stale worklist
+        # counts; bumping it every tick would let any pollable referral
+        # dominate the workspace forever. Status changes are surfaced
+        # separately via ``record_referral_event`` from the poller.
+        with self._conn:
+            self._conn.execute(
+                "UPDATE referrals SET ehr_status = ?, ehr_status_polled_at = ?,"
+                " ehr_status_error = ?"
+                " WHERE id = ?",
+                (ehr_status, polled_at.isoformat(), error, referral_id),
             )
 
     @staticmethod
@@ -5811,6 +5897,77 @@ class Storage(StorageBase):
             self._conn.commit()
         except sqlite3.OperationalError:
             pass  # column already exists
+
+    def _migrate_referrals_ehr_status_poll(self) -> None:
+        """Issue #157: columns for the remote ServiceRequest.status poller.
+
+        ``ehr_vendor`` + ``ehr_connection_id`` are captured at write-back time
+        so the poller can dispatch to the right module without re-guessing
+        which connection performed the original POST. ``ehr_status`` /
+        ``ehr_status_polled_at`` / ``ehr_status_error`` are the poller's
+        output columns. All idempotent ALTER TABLE — five independent tries
+        so a partial state from a prior crashed run still resolves cleanly.
+        """
+        for stmt in (
+            "ALTER TABLE referrals ADD COLUMN ehr_vendor TEXT",
+            "ALTER TABLE referrals ADD COLUMN ehr_connection_id INTEGER "
+            "REFERENCES ehr_connections(id) ON DELETE SET NULL",
+            "ALTER TABLE referrals ADD COLUMN ehr_status TEXT",
+            "ALTER TABLE referrals ADD COLUMN ehr_status_polled_at TEXT",
+            "ALTER TABLE referrals ADD COLUMN ehr_status_error TEXT",
+        ):
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # column already exists
+        self._conn.commit()
+
+    def _migrate_referral_events_event_type_ehr_status(self) -> None:
+        """Issue #157: extend ``referral_events.event_type`` CHECK to include
+        ``ehr_status`` (poller-emitted lifecycle row when remote status changes).
+
+        Same rebuild-table dance as ``_migrate_referral_events_event_type`` —
+        SQLite can't drop a CHECK constraint in place. Sentinel: presence of
+        ``ehr_status`` in the stored CREATE TABLE sql.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='referral_events'"
+        ).fetchone()
+        if row is None:
+            return
+        existing_sql = row[0] or ""
+        if "ehr_status" in existing_sql:
+            return
+        with self._conn:
+            self._conn.execute("ALTER TABLE referral_events RENAME TO _referral_events_old")
+            self._conn.execute("""
+                CREATE TABLE referral_events (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    referral_id      INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+                    event_type       TEXT NOT NULL
+                        CHECK (event_type IN
+                               ('created','status_changed','field_edited','exported','sent',
+                                'response_received','note_added','assigned','unassigned',
+                                'dispatched','delivered','delivery_failed','ehr_status')),
+                    from_value       TEXT,
+                    to_value         TEXT,
+                    actor_user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    note             TEXT,
+                    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+            """)
+            self._conn.execute("""
+                INSERT INTO referral_events
+                    (id, referral_id, event_type, from_value, to_value, actor_user_id, note, created_at)
+                SELECT
+                    id, referral_id, event_type, from_value, to_value, actor_user_id, note, created_at
+                FROM _referral_events_old;
+            """)
+            self._conn.execute("DROP TABLE _referral_events_old")
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_referral_events_referral
+                    ON referral_events(referral_id, created_at DESC, id DESC);
+            """)
 
     @staticmethod
     def _row_to_family_link(row: sqlite3.Row) -> FamilyLink:

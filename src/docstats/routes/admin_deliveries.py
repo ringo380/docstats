@@ -218,6 +218,11 @@ async def deliveries_health_json(
 ) -> JSONResponse:
     stats = storage.get_delivery_queue_stats(scope_organization_id=scope.organization_id)
     sweep = get_sweep_stats()
+    # Issue #157: surface the EHR status poller's stats alongside the delivery
+    # dispatcher's so /admin has a single health endpoint for background tasks.
+    from docstats.ehr.status_poller import get_poll_stats
+
+    ehr = get_poll_stats()
     return JSONResponse(
         {
             "queue": stats.model_dump(),
@@ -231,6 +236,19 @@ async def deliveries_health_json(
                 "last_error": sweep.last_error,
                 "last_error_at": sweep.last_error_at.isoformat() if sweep.last_error_at else None,
                 "started_at": sweep.started_at.isoformat() if sweep.started_at else None,
+            },
+            "ehr_status_poller": {
+                "running": ehr.running,
+                "interval_seconds": ehr.interval_seconds,
+                "total_iterations": ehr.total_iterations,
+                "last_sweep_at": ehr.last_sweep_at.isoformat() if ehr.last_sweep_at else None,
+                "last_sweep_duration_seconds": ehr.last_sweep_duration_seconds,
+                "last_sweep_processed": ehr.last_sweep_processed,
+                "last_sweep_errors": ehr.last_sweep_errors,
+                "last_sweep_changed": ehr.last_sweep_changed,
+                "last_error": ehr.last_error,
+                "last_error_at": ehr.last_error_at.isoformat() if ehr.last_error_at else None,
+                "started_at": ehr.started_at.isoformat() if ehr.started_at else None,
             },
         }
     )

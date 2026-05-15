@@ -210,6 +210,11 @@ def _row_to_referral(row: dict) -> Referral:
         external_reference_id=row.get("external_reference_id"),
         external_source=row["external_source"],
         ehr_service_request_id=row.get("ehr_service_request_id"),
+        ehr_vendor=row.get("ehr_vendor"),
+        ehr_connection_id=row.get("ehr_connection_id"),
+        ehr_status=row.get("ehr_status"),
+        ehr_status_polled_at=_parse_ts(row.get("ehr_status_polled_at")),
+        ehr_status_error=row.get("ehr_status_error"),
         cpt_codes=parse_cpt_codes(row.get("cpt_codes")),
         place_of_service_code=row.get("place_of_service_code"),
         medical_necessity_text=row.get("medical_necessity_text"),
@@ -1673,6 +1678,10 @@ class PostgresStorage(StorageBase):
         )
         return [self._row_to_ehr_connection(r) for r in (result.data or [])]
 
+    def get_ehr_connection(self, connection_id: int) -> EHRConnection | None:
+        result = self._t("ehr_connections").select("*").eq("id", connection_id).limit(1).execute()
+        return self._row_to_ehr_connection(result.data[0]) if result.data else None
+
     def update_ehr_connection_tokens(
         self,
         connection_id: int,
@@ -1787,12 +1796,88 @@ class PostgresStorage(StorageBase):
         )
         return len(result.data)
 
-    def update_referral_ehr_service_request_id(
-        self, referral_id: int, ehr_service_request_id: str
+    def set_referral_ehr_writeback(
+        self,
+        referral_id: int,
+        *,
+        ehr_service_request_id: str,
+        ehr_vendor: str,
+        ehr_connection_id: int | None,
     ) -> None:
         (
             self._t("referrals")
-            .update({"ehr_service_request_id": ehr_service_request_id, "updated_at": _now_iso()})
+            .update(
+                {
+                    "ehr_service_request_id": ehr_service_request_id,
+                    "ehr_vendor": ehr_vendor,
+                    "ehr_connection_id": ehr_connection_id,
+                    "updated_at": _now_iso(),
+                }
+            )
+            .eq("id", referral_id)
+            .execute()
+        )
+
+    def list_referrals_for_ehr_status_poll(
+        self,
+        limit: int,
+        *,
+        max_age: timedelta,
+        now: datetime,
+    ) -> list[Referral]:
+        """Issue #157: rows the EHR status poller should pick up.
+
+        Equivalent of the SQLite query, expressed through supabase-py.
+        Sort key matches the partial index on the Postgres side:
+        ``(ehr_status_polled_at NULLS FIRST, id)``.
+
+        Never-polled rows (``ehr_status_polled_at IS NULL``) are always
+        included; previously-polled rows are dropped after ``max_age``
+        days of inactivity. ``cutoff`` is derived from ``now()`` + an env
+        var, never from user input, so interpolating into the ``.or_()``
+        filter string is safe (CLAUDE.md guidance on .or_ + user input).
+        """
+        cutoff = (now - max_age).isoformat()
+        result = (
+            self._t("referrals")
+            .select("*")
+            .not_.is_("ehr_service_request_id", None)
+            .not_.is_("ehr_vendor", None)
+            .is_("deleted_at", None)
+            .or_(f"ehr_status_polled_at.is.null,ehr_status_polled_at.gte.{cutoff}")
+            .not_.in_("status", ["completed", "cancelled"])
+            .order("ehr_status_polled_at", nullsfirst=True)
+            .order("id")
+            .limit(int(limit))
+            .execute()
+        )
+        return [_row_to_referral(r) for r in (result.data or [])]
+
+    def update_referral_ehr_status(
+        self,
+        referral_id: int,
+        *,
+        ehr_status: str | None,
+        polled_at: datetime,
+        error: str | None,
+    ) -> None:
+        # Deliberately does NOT touch ``updated_at``: that timestamp drives
+        # ``list_referrals`` order and the ``count_referrals(updated_before=...)``
+        # stale-worklist filter. Bumping it on every poll (even when nothing
+        # changed) would let any written-back referral dominate the workspace
+        # list and silently exclude itself from stale counts. ``ehr_status``
+        # changes still get an explicit ``record_referral_event`` row through
+        # the poller's ``_emit_status_change_event``, which is what the UI
+        # surfaces as activity.
+        (
+            self._t("referrals")
+            .update(
+                {
+                    "ehr_status": ehr_status,
+                    "ehr_status_polled_at": polled_at.isoformat(),
+                    "ehr_status_error": error,
+                }
+            )
             .eq("id", referral_id)
             .execute()
         )

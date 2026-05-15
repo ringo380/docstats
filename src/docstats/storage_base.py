@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from docstats.models import NPIResult, SavedProvider, SearchHistoryEntry
 
 if TYPE_CHECKING:
-    from datetime import datetime  # forward-ref for list_audit_events kwargs
+    from datetime import datetime, timedelta  # forward-ref for list_audit_events kwargs
 
     from docstats.domain.audit import AuditEvent
     from docstats.domain.invitations import Invitation
@@ -592,6 +592,17 @@ class StorageBase(ABC):
         ...
 
     @abstractmethod
+    def get_ehr_connection(self, connection_id: int) -> "EHRConnection | None":
+        """Fetch a single EHR connection by primary key (active or revoked).
+
+        Used by the issue-#157 status poller to resolve the connection that
+        originally performed a ServiceRequest write-back. Returns the
+        connection even when ``revoked_at`` is set — the caller decides
+        whether to honor a revoked connection.
+        """
+        ...
+
+    @abstractmethod
     def update_ehr_connection_tokens(
         self,
         connection_id: int,
@@ -650,10 +661,38 @@ class StorageBase(ABC):
         ...
 
     @abstractmethod
-    def update_referral_ehr_service_request_id(
-        self, referral_id: int, ehr_service_request_id: str
+    def set_referral_ehr_writeback(
+        self,
+        referral_id: int,
+        *,
+        ehr_service_request_id: str,
+        ehr_vendor: str,
+        ehr_connection_id: int | None,
     ) -> None:
-        """Store the Epic FHIR ServiceRequest.id written back on referral creation."""
+        """Issue #157: record write-back id + vendor + originating connection atomically."""
+        ...
+
+    @abstractmethod
+    def list_referrals_for_ehr_status_poll(
+        self,
+        limit: int,
+        *,
+        max_age: "timedelta",
+        now: "datetime",
+    ) -> list["Referral"]:
+        """Issue #157: rows the EHR status poller should pick up this tick."""
+        ...
+
+    @abstractmethod
+    def update_referral_ehr_status(
+        self,
+        referral_id: int,
+        *,
+        ehr_status: str | None,
+        polled_at: "datetime",
+        error: str | None,
+    ) -> None:
+        """Issue #157: write poller observation back to the referral row."""
         ...
 
     # --- Patients (scope-enforced) ---

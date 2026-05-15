@@ -144,6 +144,31 @@ async def _lifespan(_app: FastAPI):
         except Exception:
             logger.exception("Failed to start attachment retention sweep (continuing)")
 
+    # Issue #157: EHR ServiceRequest.status poller. Disabled under tests via
+    # DOCSTATS_SKIP_EHR_STATUS_POLLER=1.  Lifespan task that periodically
+    # reads remote ServiceRequest.status for written-back referrals so the
+    # patient sees "Received by PCP"/"Completed by PCP" without leaving the app.
+    ehr_status_task: "asyncio.Task | None" = None
+    ehr_status_stop = asyncio.Event()
+    if os.environ.get("DOCSTATS_SKIP_EHR_STATUS_POLLER") != "1":
+        # Side-effect imports register vendor modules in the registry.
+        from docstats.ehr import (  # noqa: F401
+            cerner as _cerner_register,
+            eclinicalworks as _ecw_register,
+            epic as _epic_register,
+            redox as _redox_register,
+        )
+        from docstats.ehr.status_poller import run as _ehr_status_run
+
+        try:
+            ehr_status_task = asyncio.create_task(
+                _ehr_status_run(get_storage(), stop_event=ehr_status_stop),
+                name="ehr-status-poller",
+            )
+            logger.info("EHR status poller scheduled")
+        except Exception:
+            logger.exception("Failed to start EHR status poller (continuing)")
+
     try:
         yield
     finally:
@@ -159,6 +184,12 @@ async def _lifespan(_app: FastAPI):
                 await asyncio.wait_for(retention_task, timeout=15)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 logger.warning("Attachment retention sweep did not shut down cleanly")
+        if ehr_status_task is not None:
+            ehr_status_stop.set()
+            try:
+                await asyncio.wait_for(ehr_status_task, timeout=15)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                logger.warning("EHR status poller did not shut down cleanly")
 
 
 app = FastAPI(
