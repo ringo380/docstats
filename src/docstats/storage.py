@@ -5505,10 +5505,16 @@ class Storage(StorageBase):
         polled_at: datetime,
         error: str | None,
     ) -> None:
+        # Mirrors PostgresStorage.update_referral_ehr_status: do NOT touch
+        # ``updated_at`` from the poller. ``list_referrals`` orders by it and
+        # ``count_referrals(updated_before=...)`` uses it for stale worklist
+        # counts; bumping it every tick would let any pollable referral
+        # dominate the workspace forever. Status changes are surfaced
+        # separately via ``record_referral_event`` from the poller.
         with self._conn:
             self._conn.execute(
                 "UPDATE referrals SET ehr_status = ?, ehr_status_polled_at = ?,"
-                " ehr_status_error = ?, updated_at = datetime('now')"
+                " ehr_status_error = ?"
                 " WHERE id = ?",
                 (ehr_status, polled_at.isoformat(), error, referral_id),
             )

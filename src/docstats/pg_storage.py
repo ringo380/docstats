@@ -1861,6 +1861,14 @@ class PostgresStorage(StorageBase):
         polled_at: datetime,
         error: str | None,
     ) -> None:
+        # Deliberately does NOT touch ``updated_at``: that timestamp drives
+        # ``list_referrals`` order and the ``count_referrals(updated_before=...)``
+        # stale-worklist filter. Bumping it on every poll (even when nothing
+        # changed) would let any written-back referral dominate the workspace
+        # list and silently exclude itself from stale counts. ``ehr_status``
+        # changes still get an explicit ``record_referral_event`` row through
+        # the poller's ``_emit_status_change_event``, which is what the UI
+        # surfaces as activity.
         (
             self._t("referrals")
             .update(
@@ -1868,7 +1876,6 @@ class PostgresStorage(StorageBase):
                     "ehr_status": ehr_status,
                     "ehr_status_polled_at": polled_at.isoformat(),
                     "ehr_status_error": error,
-                    "updated_at": _now_iso(),
                 }
             )
             .eq("id", referral_id)

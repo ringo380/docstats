@@ -121,6 +121,36 @@ def test_process_one_writes_status_and_emits_change_event(storage, monkeypatch):
     assert ehr_events[0].to_value == "active"
 
 
+def test_process_one_does_not_bump_updated_at(storage, monkeypatch):
+    """Codex P2 regression: list_referrals orders by updated_at and the stale
+    worklist filter uses ``count_referrals(updated_before=...)``. Polling
+    every minute must NOT keep bumping that timestamp on rows where nothing
+    changed, otherwise pollable referrals would dominate the workspace
+    forever and disappear from stale counts.
+    """
+    referral, _user_id, scope = _create_user_and_referral(
+        storage, vendor="epic_sandbox", sr_id="SR-UA", conn_id=None
+    )
+    original_updated_at = referral.updated_at
+
+    _stub_vendor(
+        monkeypatch,
+        "epic_sandbox",
+        ServiceRequestSnapshot(status="active", raw_status="active", last_modified=None),
+    )
+    _stub_token_resolver(monkeypatch)
+
+    now = datetime.now(tz=timezone.utc)
+    ok, _changed = _process_one(storage, referral, now)
+    assert ok is True
+
+    fresh = storage.get_referral(scope, referral.id)
+    assert fresh.ehr_status == "active"
+    assert fresh.ehr_status_polled_at is not None
+    # The key assertion: updated_at must NOT have moved.
+    assert fresh.updated_at == original_updated_at
+
+
 def test_process_one_no_event_when_status_unchanged(storage, monkeypatch):
     referral, user, scope = _create_user_and_referral(
         storage, vendor="epic_sandbox", sr_id="SR-B", conn_id=None
