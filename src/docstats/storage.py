@@ -5191,13 +5191,17 @@ class Storage(StorageBase):
     # --- EHR connections (Phase 12) ---
 
     def _migrate_ehr_connections(self) -> None:
-        # Schema reflects migration 033: nullable user_id, optional organization_id,
-        # widened vendor CHECK to include all four vendors, exactly-one-owner CHECK.
+        # Schema reflects migration 038: nullable user_id, optional organization_id,
+        # optional patient_id, widened vendor CHECK + three-way exclusive-or owner
+        # CHECK. Fresh DBs land on this CREATE; older dev DBs get column added via
+        # ALTER. Stale CHECK constraints on existing tables are tolerated by the
+        # storage layer (dev-only concern — drop the local SQLite to refresh).
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS ehr_connections (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id             INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 organization_id     INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+                patient_id          INTEGER REFERENCES patients(id) ON DELETE CASCADE,
                 ehr_vendor          TEXT NOT NULL CHECK (ehr_vendor IN ('epic_sandbox', 'cerner_oauth', 'ecw_smart', 'redox')),
                 iss                 TEXT NOT NULL,
                 patient_fhir_id     TEXT,
@@ -5209,19 +5213,23 @@ class Storage(StorageBase):
                 created_at          TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
                 CHECK (
-                    (user_id IS NOT NULL AND organization_id IS NULL)
-                    OR (user_id IS NULL AND organization_id IS NOT NULL)
+                    (user_id IS NOT NULL AND organization_id IS NULL AND patient_id IS NULL)
+                    OR (user_id IS NULL AND organization_id IS NOT NULL AND patient_id IS NULL)
+                    OR (user_id IS NULL AND organization_id IS NULL AND patient_id IS NOT NULL)
                 )
             )"""
         )
-        # Idempotent in-place migration for existing dev DBs (organization_id added
-        # in migration 033). ALTER TABLE ... ADD COLUMN is a no-op error on second run.
-        try:
-            self._conn.execute(
-                "ALTER TABLE ehr_connections ADD COLUMN organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE"
-            )
-        except sqlite3.OperationalError:
-            pass
+        # Idempotent in-place column adds for existing dev DBs (organization_id from
+        # migration 033, patient_id from 038). ALTER TABLE ... ADD COLUMN errors on
+        # second run — swallow it.
+        for ddl in (
+            "ALTER TABLE ehr_connections ADD COLUMN organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE",
+            "ALTER TABLE ehr_connections ADD COLUMN patient_id INTEGER REFERENCES patients(id) ON DELETE CASCADE",
+        ):
+            try:
+                self._conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
         # User-scoped partial unique index — widened in 023 to UNIQUE.
         self._conn.execute("DROP INDEX IF EXISTS idx_ehr_connections_user_active")
         self._conn.execute(
@@ -5236,19 +5244,33 @@ class Storage(StorageBase):
             " ON ehr_connections (organization_id, ehr_vendor)"
             " WHERE revoked_at IS NULL AND organization_id IS NOT NULL"
         )
+        # Patient-scoped partial unique index (migration 038). One active
+        # connection per (patient, vendor) so a parent can hold a separate
+        # MyChart proxy token per dependent.
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ehr_connections_patient_active"
+            " ON ehr_connections (patient_id, ehr_vendor)"
+            " WHERE revoked_at IS NULL AND patient_id IS NOT NULL"
+        )
         self._conn.commit()
 
     @staticmethod
     def _row_to_ehr_connection(row: sqlite3.Row) -> EHRConnection:
-        # organization_id is added by migration 033; older rows lack the column.
+        # organization_id is added by migration 033; patient_id by 038; older
+        # rows lack one or both columns.
         try:
             org_id = row["organization_id"]
         except (IndexError, KeyError):
             org_id = None
+        try:
+            patient_id = row["patient_id"]
+        except (IndexError, KeyError):
+            patient_id = None
         return EHRConnection(
             id=row["id"],
             user_id=row["user_id"],
             organization_id=org_id,
+            patient_id=patient_id,
             ehr_vendor=row["ehr_vendor"],
             iss=row["iss"],
             patient_fhir_id=row["patient_fhir_id"],
@@ -5441,6 +5463,82 @@ class Storage(StorageBase):
             "UPDATE ehr_connections SET revoked_at = ?, updated_at = ?"
             " WHERE organization_id = ? AND ehr_vendor = ? AND revoked_at IS NULL",
             (now, now, organization_id, ehr_vendor),
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    # --- Patient-scoped EHR connections (Issue #155 — dependent portals) ---
+
+    def create_patient_ehr_connection(
+        self,
+        *,
+        patient_id: int,
+        ehr_vendor: str,
+        iss: str,
+        access_token_enc: str,
+        refresh_token_enc: str | None,
+        expires_at: datetime,
+        scope: str,
+        patient_fhir_id: str | None,
+    ) -> EHRConnection:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._conn:
+            # Race-safe revoke prior active rows for (patient, vendor) first.
+            self._conn.execute(
+                "UPDATE ehr_connections SET revoked_at = ?, updated_at = ?"
+                " WHERE patient_id = ? AND ehr_vendor = ? AND revoked_at IS NULL",
+                (now, now, patient_id, ehr_vendor),
+            )
+            cur = self._conn.execute(
+                "INSERT INTO ehr_connections"
+                " (user_id, organization_id, patient_id, ehr_vendor, iss,"
+                "  patient_fhir_id, access_token_enc, refresh_token_enc,"
+                "  expires_at, scope, created_at, updated_at)"
+                " VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    patient_id,
+                    ehr_vendor,
+                    iss,
+                    patient_fhir_id,
+                    access_token_enc,
+                    refresh_token_enc,
+                    expires_at.isoformat(),
+                    scope,
+                    now,
+                    now,
+                ),
+            )
+        row = self._conn.execute(
+            "SELECT * FROM ehr_connections WHERE id = ?", (cur.lastrowid,)
+        ).fetchone()
+        return self._row_to_ehr_connection(row)
+
+    def get_active_patient_ehr_connection(
+        self, patient_id: int, ehr_vendor: str
+    ) -> EHRConnection | None:
+        row = self._conn.execute(
+            "SELECT * FROM ehr_connections"
+            " WHERE patient_id = ? AND ehr_vendor = ? AND revoked_at IS NULL"
+            " ORDER BY id DESC LIMIT 1",
+            (patient_id, ehr_vendor),
+        ).fetchone()
+        return self._row_to_ehr_connection(row) if row else None
+
+    def list_active_patient_ehr_connections(self, patient_id: int) -> list[EHRConnection]:
+        rows = self._conn.execute(
+            "SELECT * FROM ehr_connections"
+            " WHERE patient_id = ? AND revoked_at IS NULL"
+            " ORDER BY created_at DESC, id DESC",
+            (patient_id,),
+        ).fetchall()
+        return [self._row_to_ehr_connection(r) for r in rows]
+
+    def revoke_patient_ehr_connection(self, patient_id: int, ehr_vendor: str) -> int:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        cur = self._conn.execute(
+            "UPDATE ehr_connections SET revoked_at = ?, updated_at = ?"
+            " WHERE patient_id = ? AND ehr_vendor = ? AND revoked_at IS NULL",
+            (now, now, patient_id, ehr_vendor),
         )
         self._conn.commit()
         return cur.rowcount

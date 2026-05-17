@@ -47,6 +47,17 @@
         {% endif %}
       </span>
       <span class="row-actions" id="dep-actions-{{ p.id }}">
+        {% if dependent_epic_enabled %}
+          {% set dep_conns = (dependent_ehr_connections or {}).get(p.id, []) %}
+          {% set epic_conn = dep_conns | selectattr('ehr_vendor', 'equalto', 'epic_sandbox') | list | first %}
+          {% if epic_conn %}
+            <span class="badge badge-success" title="MyChart connected for {{ p.display_name }}">MyChart linked</span>
+          {% else %}
+            <form method="post" action="/ehr/connect/epic/patient/{{ p.id }}" style="display: inline;">
+              <button type="submit" class="btn btn-secondary btn-sm">Connect MyChart</button>
+            </form>
+          {% endif %}
+        {% endif %}
         {% if meta.pending_upgrade_link_id %}
           <button class="btn btn-secondary btn-sm"
                   hx-delete="/profile/family/link/{{ meta.pending_upgrade_link_id }}"

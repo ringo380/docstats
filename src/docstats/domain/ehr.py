@@ -66,13 +66,17 @@ class EHRConnection(BaseModel):
     those connections re-mint short-lived access tokens via JWT-bearer
     assertion on each request.
 
-    Exactly one of ``user_id`` / ``organization_id`` is set. Storage CHECK
-    enforces this; in Python prefer the ``is_org_scoped`` property.
+    Exactly one of ``user_id`` / ``organization_id`` / ``patient_id`` is set
+    (three-way exclusive-or; storage CHECK enforces this). Patient-scoped rows
+    represent custodial/proxy access — e.g. a parent connecting a minor
+    dependent's MyChart account (Issue #155). Prefer ``is_org_scoped`` /
+    ``is_patient_scoped`` over the raw nullable columns.
     """
 
     id: int
     user_id: int | None
     organization_id: int | None = None
+    patient_id: int | None = None
     ehr_vendor: str
     iss: str
     patient_fhir_id: str | None
@@ -94,6 +98,10 @@ class EHRConnection(BaseModel):
     @property
     def is_org_scoped(self) -> bool:
         return self.organization_id is not None
+
+    @property
+    def is_patient_scoped(self) -> bool:
+        return self.patient_id is not None
 
 
 class ImportedPatient(BaseModel):
