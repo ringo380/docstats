@@ -459,19 +459,16 @@ async def _ehr_post_create_hook(
         if patient is None or not patient.ehr_fhir_id:
             return
 
-        # Pick the connection whose ``patient_fhir_id`` matches the patient's
-        # imported FHIR id — that's the connection that imported them. Falling
-        # back to "first active connection with any patient_fhir_id" (the
-        # previous behavior — flagged P1 on PR #142) can mis-route in
-        # multi-vendor accounts: if the patient was imported via Cerner but
-        # the user later added an Epic connection, the Epic connection would
-        # be picked first and Patient PHI would be sent to Epic with a
-        # Cerner-format FHIR id.
-        active_conns = storage.list_active_ehr_connections(user_id)
-        conn = next(
-            (c for c in active_conns if c.patient_fhir_id == patient.ehr_fhir_id),
-            None,
-        )
+        # Resolve the right EHR connection for this patient. The helper checks
+        # patient-scoped (Issue #155 — parent connected the dependent's own
+        # MyChart), then user-scoped, then org-scoped (Redox), and within each
+        # set prefers a connection whose imported ``patient_fhir_id`` matches
+        # the patient's. The match predicate was introduced in PR #142 to
+        # prevent multi-vendor mis-routing (e.g. sending a Cerner-format FHIR
+        # id to an Epic ServiceRequest write-back).
+        from docstats.ehr import pick_writeback_connection as _pick_conn
+
+        conn = _pick_conn(storage, scope, patient)
         if conn is None:
             return
 
@@ -772,25 +769,16 @@ async def _redox_post_create_hook(
         if conn is None:
             return
 
-        # Don't double-route: if any user in the org has a SMART connection
-        # whose ``patient_fhir_id`` matches this patient's id, the patient
-        # was imported via SMART and the SMART hook already handled this
-        # referral. Without this guard (flagged P2 on PR #164) we'd POST a
-        # Redox ServiceRequest with a SMART-format FHIR id. We only have a
-        # user-scoped active-connection lister, so this guard isn't exhaustive
-        # across the whole org — but it does cover the common case where the
-        # importing user is also the referral creator.
-        if user_id is not None:
-            smart_match = next(
-                (
-                    c
-                    for c in storage.list_active_ehr_connections(user_id)
-                    if c.patient_fhir_id == ehr_fhir_id and c.ehr_vendor != "redox"
-                ),
-                None,
-            )
-            if smart_match is not None:
-                return
+        # Don't double-route: if a SMART connection (patient-scoped per
+        # Issue #155, or user-scoped) claims this patient via matching
+        # ``patient_fhir_id``, the SMART hook already handled the write-back.
+        # Without this guard (flagged P2 on PR #164) we'd POST a Redox
+        # ServiceRequest with a SMART-format FHIR id.
+        from docstats.ehr import pick_writeback_connection as _pick_conn
+
+        smart_match = _pick_conn(storage, scope, patient)
+        if smart_match is not None and smart_match.ehr_vendor != "redox":
+            return
 
         loop = asyncio.get_running_loop()
         try:

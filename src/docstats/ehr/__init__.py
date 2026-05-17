@@ -4,8 +4,49 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from docstats.ehr.crypto import EHRConfigError, decrypt_token, encrypt_token
+
+if TYPE_CHECKING:
+    from docstats.domain.ehr import EHRConnection
+    from docstats.domain.patients import Patient
+    from docstats.scope import Scope
+    from docstats.storage_base import StorageBase
+
+
+def pick_writeback_connection(
+    storage: "StorageBase", scope: "Scope", patient: "Patient"
+) -> "EHRConnection | None":
+    """Choose the EHR connection to use when writing back for ``patient``.
+
+    Match precedence (first hit wins):
+
+    1. A patient-scoped connection (Issue #155) whose ``patient_fhir_id``
+       matches ``patient.ehr_fhir_id`` — set when a parent connected this
+       dependent's own MyChart / Cerner / eCW account.
+    2. A user-scoped connection whose ``patient_fhir_id`` matches — the
+       common case for self-managed patients.
+    3. An org-scoped connection whose ``patient_fhir_id`` matches — the
+       Redox aggregator case.
+
+    The ``patient_fhir_id`` equality predicate was introduced in PR #142
+    to prevent multi-vendor mis-routing; we preserve it across all three
+    candidate sets rather than falling back to "first active connection".
+    Returns ``None`` when no candidate matches.
+    """
+    if not patient.ehr_fhir_id:
+        return None
+
+    candidates: list[EHRConnection] = []
+    if patient.id is not None:
+        candidates.extend(storage.list_active_patient_ehr_connections(patient.id))
+    if scope.user_id is not None:
+        candidates.extend(storage.list_active_ehr_connections(scope.user_id))
+    if scope.organization_id is not None:
+        candidates.extend(storage.list_active_org_ehr_connections(scope.organization_id))
+
+    return next((c for c in candidates if c.patient_fhir_id == patient.ehr_fhir_id), None)
 
 
 @dataclass(frozen=True)
@@ -58,4 +99,5 @@ __all__ = [
     "decrypt_token",
     "encrypt_token",
     "parse_service_request_payload",
+    "pick_writeback_connection",
 ]

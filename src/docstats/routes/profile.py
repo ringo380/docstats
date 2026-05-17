@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import secrets
 import uuid
@@ -120,6 +121,7 @@ async def profile(
     family_links = []
     linked_users_by_id: dict[int, dict] = {}
     dependent_meta: dict[int, dict] = {}
+    dependent_ehr_connections: dict[int, list] = {}
     if user_for_template.get("account_type") == "patient":
         from docstats.domain.family import (
             is_eligible_for_self_upgrade as _is_eligible,
@@ -147,6 +149,12 @@ async def profile(
                 "pending_upgrade_link_id": pending_upgrade_by_patient.get(p.id),
             }
             for p in family_patients
+        }
+        # Issue #155: surface any patient-scoped EHR connections so the
+        # family section can render "Connected: Epic" badges per dependent
+        # instead of just offering "Connect MyChart" repeatedly.
+        dependent_ehr_connections = {
+            p.id: storage.list_active_patient_ehr_connections(p.id) for p in family_patients
         }
         for link in family_links:
             other_id = (
@@ -179,6 +187,10 @@ async def profile(
             "family_patients": family_patients,
             "family_links": family_links,
             "dependent_meta": dependent_meta,
+            "dependent_ehr_connections": dependent_ehr_connections,
+            "dependent_epic_enabled": (
+                os.environ.get("EHR_EPIC_SANDBOX_ENABLED", "").strip() == "1"
+            ),
             "linked_users_by_id": linked_users_by_id,
             "relationship_values": RELATIONSHIP_VALUES,
             "family_errors": None,

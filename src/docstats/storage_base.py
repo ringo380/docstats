@@ -660,6 +660,48 @@ class StorageBase(ABC):
         """Revoke all active org-scoped connections for (org, vendor). Returns count updated."""
         ...
 
+    # --- Patient-scoped EHR connections (Issue #155 — dependent patient portals) ---
+    #
+    # Used when a parent connects a minor dependent's MyChart / Cerner / eCW
+    # patient portal. The connection is owned by the Patient row, NOT by the
+    # parent's user_id, so a parent with multiple children can hold a separate
+    # proxy token per child. Access is gated transitively: only a Scope whose
+    # user_id matches the patient's scope_user_id may read/write these rows
+    # (enforced at the route layer via storage.get_patient).
+
+    @abstractmethod
+    def create_patient_ehr_connection(
+        self,
+        *,
+        patient_id: int,
+        ehr_vendor: str,
+        iss: str,
+        access_token_enc: str,
+        refresh_token_enc: str | None,
+        expires_at: "datetime",
+        scope: str,
+        patient_fhir_id: str | None,
+    ) -> "EHRConnection":
+        """Create a new patient-scoped EHR connection, revoking prior active rows."""
+        ...
+
+    @abstractmethod
+    def get_active_patient_ehr_connection(
+        self, patient_id: int, ehr_vendor: str
+    ) -> "EHRConnection | None":
+        """Return the latest non-revoked connection for (patient, vendor), or None."""
+        ...
+
+    @abstractmethod
+    def list_active_patient_ehr_connections(self, patient_id: int) -> "list[EHRConnection]":
+        """Return all active patient-scoped connections, most-recent first."""
+        ...
+
+    @abstractmethod
+    def revoke_patient_ehr_connection(self, patient_id: int, ehr_vendor: str) -> int:
+        """Revoke all active patient-scoped connections for (patient, vendor)."""
+        ...
+
     @abstractmethod
     def set_referral_ehr_writeback(
         self,

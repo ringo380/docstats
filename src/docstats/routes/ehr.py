@@ -173,6 +173,12 @@ def _session_launch_mode_key(vendor: str) -> str:
     return f"ehr_{vendor}_launch_mode"
 
 
+def _session_patient_id_key(vendor: str) -> str:
+    """Session key holding the dependent patient_id during a patient-scoped
+    OAuth round-trip (Issue #155). Integer FK only — no PHI."""
+    return f"ehr_{vendor}_patient_id"
+
+
 # The token-refresh helper now lives in ``docstats.ehr.tokens`` so the
 # background poller can use it without inverting the ehr/ → routes/ layer
 # boundary. Re-exported here under the original ``_maybe_refresh`` name to
@@ -240,8 +246,16 @@ async def _connect_flow(
     request: Request,
     current_user: dict,
     storage: StorageBase,
+    *,
+    patient_id: int | None = None,
 ) -> Response:
-    """Begin standalone SMART launch — redirect to vendor authorize endpoint."""
+    """Begin standalone SMART launch — redirect to vendor authorize endpoint.
+
+    When ``patient_id`` is set, the resulting connection will be persisted
+    against the patient row (Issue #155 — parent connecting a dependent's
+    patient portal). The caller must have already verified the patient is
+    within the user's scope before calling this helper.
+    """
     _require_vendor_enabled(vendor)
     user_id = current_user["id"]
     vendor_mod: ModuleType = _registry.get(vendor)
@@ -265,8 +279,11 @@ async def _connect_flow(
     # callback doesn't pick up the wrong iss or launch_mode.
     request.session.pop(_session_iss_key(vendor), None)
     request.session.pop(_session_launch_mode_key(vendor), None)
+    request.session.pop(_session_patient_id_key(vendor), None)
     request.session[_session_state_key(vendor)] = state
     request.session[_session_verifier_key(vendor)] = verifier
+    if patient_id is not None:
+        request.session[_session_patient_id_key(vendor)] = patient_id
     return RedirectResponse(url, status_code=303)
 
 
@@ -336,6 +353,8 @@ async def _callback_flow(
     verifier = request.session.pop(_session_verifier_key(vendor), None)
     launch_iss: str | None = request.session.pop(_session_iss_key(vendor), None)
     launch_mode: str | None = request.session.pop(_session_launch_mode_key(vendor), None)
+    patient_id_raw = request.session.pop(_session_patient_id_key(vendor), None)
+    patient_id: int | None = int(patient_id_raw) if isinstance(patient_id_raw, int) else None
 
     if error:
         _audit_failure(storage, request, user_id, vendor, f"oauth_error:{error}")
@@ -378,6 +397,42 @@ async def _callback_flow(
 
     iss_stored = endpoints.fhir_base.rstrip("/")
     scope_fallback = scopes_ehr if launch_mode == "ehr" else scopes_standalone
+
+    # Patient-scoped flow (Issue #155): re-verify the patient is still within
+    # the user's scope (defends against session tampering / re-targeting) and
+    # persist a patient-scoped row instead of a user-scoped one.
+    if patient_id is not None:
+        scope_now = get_scope(current_user, storage)
+        if storage.get_patient(scope_now, patient_id) is None:
+            _audit_failure(storage, request, user_id, vendor, "patient_scope_lost")
+            return _err_redirect("patient_not_found")
+        if not access_enc:  # should never happen — exchange path guarantees it
+            return _err_redirect("server_config")
+        storage.create_patient_ehr_connection(
+            patient_id=patient_id,
+            ehr_vendor=vendor,
+            iss=iss_stored,
+            access_token_enc=access_enc,
+            refresh_token_enc=refresh_enc,
+            expires_at=expires_at,
+            scope=token.scope or scope_fallback,
+            patient_fhir_id=patient_fhir_id,
+        )
+        audit.record(
+            storage,
+            action="ehr.connected_patient",
+            request=request,
+            actor_user_id=user_id,
+            entity_type="patient",
+            entity_id=str(patient_id),
+            metadata={
+                "ehr_vendor": vendor,
+                "fhir_patient_id": patient_fhir_id,
+                "patient_id": patient_id,
+            },
+        )
+        return RedirectResponse(f"/patients/{patient_id}", status_code=303)
+
     storage.create_ehr_connection(
         user_id=user_id,
         ehr_vendor=vendor,
@@ -453,6 +508,43 @@ async def connect_epic(
     storage: StorageBase = Depends(get_storage),
 ) -> Response:
     return await _connect_flow("epic_sandbox", EPIC_SCOPES, request, current_user, storage)
+
+
+@router.post("/connect/epic/patient/{patient_id}")
+async def connect_epic_patient(
+    patient_id: int,
+    request: Request,
+    current_user: dict = Depends(require_user),
+    storage: StorageBase = Depends(get_storage),
+) -> Response:
+    """Begin Epic standalone SMART launch on behalf of a dependent patient.
+
+    Issue #155 — parent connecting a child's MyChart account. The resulting
+    connection is owned by the patient row (not the parent's user_id), so a
+    parent with multiple dependents can hold a separate token per child.
+    """
+    scope = get_scope(current_user, storage)
+    if storage.get_patient(scope, patient_id) is None:
+        # Cross-tenant attempt OR patient doesn't exist — same observable
+        # behavior on purpose (don't leak existence).
+        audit.record(
+            storage,
+            action="ehr.connect_patient.cross_tenant_attempt",
+            request=request,
+            actor_user_id=current_user["id"],
+            entity_type="patient",
+            entity_id=str(patient_id),
+            metadata={"ehr_vendor": "epic_sandbox"},
+        )
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return await _connect_flow(
+        "epic_sandbox",
+        EPIC_SCOPES,
+        request,
+        current_user,
+        storage,
+        patient_id=patient_id,
+    )
 
 
 @router.get("/callback/epic")
